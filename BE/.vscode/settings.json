@@ -1,0 +1,13 @@
+{
+    "js/ts.tsdk.path": "node_modules/typescript/lib",
+    "js/ts.tsdk.promptToUseWorkspaceVersion": true,
+    "json.schemaDownload.enable": true,
+    "json.schemas": [
+        {
+            "fileMatch": [
+                "tsconfig*.json"
+            ],
+            "url": "https://json.schemastore.org/tsconfig"
+        }
+    ]
+}

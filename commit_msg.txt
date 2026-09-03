@@ -1,0 +1,22 @@
+feat(consultation): ho tro thiet lap thoa thuan dieu chinh gia goi dich vu theo gia tri cay lan sau khi video call
+
+[FE]
+- consultation (`VideoCallUI.tsx`):
+  * Bổ sung nút **"Thỏa thuận giá"** trên thanh công cụ cuộc gọi video cho phép cả Nhà vườn (Provider) và Khách hàng (Customer) đánh giá tình trạng giò lan thực tế.
+  * Tích hợp Modal **"Điều chỉnh giá gói dịch vụ"** với các trường nhập: Giá trị ước tính giò lan (VNĐ), Giá gói dịch vụ thỏa thuận mới (VNĐ) và Lý do điều chỉnh chi tiết.
+  * Tự động gửi thông tin thỏa thuận giá trực tiếp vào khung chat cuộc gọi và lưu đồng bộ vào `localStorage`.
+- booking-confirm & booking-payment (`confirm/page.tsx`, `payment/page.tsx`, `ServicePackageSelected.tsx`):
+  * Tự động nhận diện giá gói điều chỉnh từ thỏa thuận cuộc gọi video (`booking_customPrice`).
+  * Hiển thị badge nổi bật **"Giá thỏa thuận Video Call: 750.000 ₫"** kèm lý do điều chỉnh thực tế.
+  * Tự động tính toán lại chi phí nền tảng 6% và tổng tiền thanh toán theo mức giá thỏa thuận mới.
+- Biên dịch sản phẩm thành công 100% không phát sinh lỗi.
+
+feat(customer): nâng cấp UI sidebar tối màu, thêm footer toàn trang và động hóa đánh giá nhà vườn
+
+- Tích hợp hook useGetProviders kết nối dữ liệu nhà vườn thực tế từ database trên trang chủ khách hàng.
+- Chuyển đổi toàn bộ tông màu khung điều hướng CustomerSidebar và CustomerNavbar sang Dark Slate (#0F172A) sang trọng, dịu mắt.
+- Loại bỏ phần "Các gói chăm sóc hoa lan hot nhất" (PopularPackages) khỏi trang chủ theo thiết kế mới.
+- Tạo mới và bổ sung component CustomerFooter (Mid-night Slate #0B1120, 4 cột thông tin) vào tất cả các trang giao diện của Khách hàng.
+- Căn giữa và phóng to kích thước con số thống kê (text-6xl/7xl font-black) trên trang Đánh giá & Phản hồi (/routes/customer/total-feedbacks).
+- Đa dạng hóa danh sách đánh giá thực tế từ nhiều khách hàng với các mức sao 5.0, 4.5, 4.0, 3.5 sao kèm badge điểm số chi tiết tại trang chi tiết nhà vườn.
+- Tự động tính toán số điểm và hiển thị thanh ngôi sao trung bình (4.3 ⭐⭐⭐⭐½) trên cùng thẻ Đánh giá từ khách hàng.

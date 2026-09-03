@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Test
+coverage/
+*.lcov
+
+# Misc
+*.pid
+*.seed
+
+# Local routing data and archive artifacts
+/BE/osrm-data/
+/BE/osrm-routing-data/
+/BE.zip
+
+# Spec nội bộ (tài liệu nạp khi sử dụng AI / tham chiếu, không đưa lên repo chung). Giữ README.md.
+SPEC_*.md
+
+# Tài liệu thiết kế DB nội bộ (xem cục bộ, không đưa lên repo chung)
+*.dbml
+**/docs/
+
+# Nhật ký / báo cáo nội bộ (xem cục bộ, không đưa lên repo chung)
+BUSINESS_LOG.md
+DECISIONS_LOG.md
+DEFENSE_BRIEF.md
+PAYMENT_EXPLAINED.md
+BUG_REPORT*.md
+AUDIT_*.md
