@@ -24,3 +24,20 @@ export const apiClient = axios.create({
     Accept: 'application/json',
   },
 });
+
+apiClient.interceptors.request.use(
+  async (config) => {
+    try {
+      const { storage } = await import('../utils/storage');
+      const token = await storage.getToken();
+      if (token && config.headers) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+    } catch (e) {
+      console.error('Failed to attach token to request:', e);
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+

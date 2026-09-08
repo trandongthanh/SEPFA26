@@ -135,7 +135,7 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) =>
 
                 {/* Badge 2: Leaf */}
                 <View style={styles.leafBadge}>
-                  <Ionicons name="leaf-outline" size={14} color="#2E7D32" />
+                  <Ionicons name="leaf-outline" size={14} color="#6027D2" />
                 </View>
 
                 {/* Badge 3: Sun */}
