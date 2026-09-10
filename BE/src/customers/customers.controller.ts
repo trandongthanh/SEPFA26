@@ -8,6 +8,7 @@ import { UpsertCustomerProfileDto } from './dto/upsert-customer-profile.dto';
 import { VerifyCustomerDto } from './dto/verify-customer.dto';
 
 @ApiTags('customers')
+@ApiBearerAuth()
 @Controller('customers')
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) { }
