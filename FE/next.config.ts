@@ -18,9 +18,9 @@ const securityHeaders = [
       "default-src 'self'",
       // unsafe-inline và unsafe-eval bắt buộc cho Next.js + Ant Design (inline styles)
       "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
-      "style-src 'self' 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "img-src 'self' data: blob:",
-      "font-src 'self'",
+      "font-src 'self' https://fonts.gstatic.com data:",
       // Cho phép FE gọi API sang BE (thêm URL production khi deploy)
       "connect-src 'self' http://localhost:3001 http://localhost:3002",
       // Ngăn trang bị nhúng vào frame của domain khác

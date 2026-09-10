@@ -34,6 +34,12 @@ export default function LoginPage() {
         password: values.password,
       });
 
+      // Chặn đăng nhập đối với tài khoản Customer (cổng này dành riêng cho Provider)
+      if (res.account?.role === 'CUSTOMER') {
+        message.error('Tài khoản Khách hàng (Customer) không có quyền truy cập cổng Provider. Vui lòng đăng nhập trên ứng dụng dành cho khách hàng.');
+        return;
+      }
+
       setAuth(res.account, {
         accessToken: res.accessToken,
         refreshToken: res.refreshToken,

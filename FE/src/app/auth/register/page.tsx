@@ -61,14 +61,14 @@ export default function RegisterPage() {
     if (isAuthenticated) router.replace('/coming-soon');
   }, [isAuthenticated, router]);
 
-  const navigateToTerms = (e: React.MouseEvent) => {
+  const navigateToTerms = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setRegisterDraft(form.getFieldsValue());
     router.push('/auth/terms');
   };
 
-  const navigateToPrivacy = (e: React.MouseEvent) => {
+  const navigateToPrivacy = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setRegisterDraft(form.getFieldsValue());
@@ -76,9 +76,8 @@ export default function RegisterPage() {
   };
 
   const handleAgreeCheckboxChange = (e: CheckboxChangeEvent) => {
-    const checked = e.target.checked;
+    const checked = e?.target ? Boolean(e.target.checked) : Boolean(e);
     setBothAgreed(checked);
-    form.setFieldValue('agree', checked);
   };
 
   const onFinish = async (values: RegisterFormValues) => {
@@ -305,21 +304,29 @@ export default function RegisterPage() {
               <Checkbox onChange={handleAgreeCheckboxChange}>
                 <span className="text-[11.5px] text-[#6E6A8A] select-none">
                   Tôi đồng ý với{' '}
-                  <button
-                    type="button"
+                  <span
+                    role="button"
+                    tabIndex={0}
                     onClick={navigateToTerms}
-                    className="font-semibold text-[#6027D2] hover:underline cursor-pointer bg-transparent border-none p-0 inline align-baseline"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') navigateToTerms(e);
+                    }}
+                    className="font-semibold text-[#6027D2] hover:underline cursor-pointer inline"
                   >
                     Điều khoản dịch vụ
-                  </button>
+                  </span>
                   {' '}và{' '}
-                  <button
-                    type="button"
+                  <span
+                    role="button"
+                    tabIndex={0}
                     onClick={navigateToPrivacy}
-                    className="font-semibold text-[#6027D2] hover:underline cursor-pointer bg-transparent border-none p-0 inline align-baseline"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') navigateToPrivacy(e);
+                    }}
+                    className="font-semibold text-[#6027D2] hover:underline cursor-pointer inline"
                   >
                     Chính sách bảo mật
-                  </button>
+                  </span>
                 </span>
               </Checkbox>
             </Form.Item>
