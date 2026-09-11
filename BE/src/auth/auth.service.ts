@@ -78,8 +78,8 @@ export class AuthService {
           phone: this.crypto.encrypt(dto.phone),
           phoneHash,
           role: dto.role,
-          // Providers become ACTIVE only when an admin approves the profile.
-          status: dto.role === 'PROVIDER' ? 'PENDING' : 'ACTIVE',
+          // Customer và Provider đều cần admin duyệt hồ sơ mới được ACTIVE.
+          status: 'PENDING',
         }),
       );
 

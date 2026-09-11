@@ -54,6 +54,15 @@ export class CustomerProfile extends BaseEntity {
   })
   gpsLng!: string | null;
 
+  // Số căn cước công dân — mã hóa AES, chỉ admin/chủ tài khoản thấy bản gốc.
+  @Column({ type: 'varchar', length: 500, name: 'cccd_number', nullable: true })
+  cccdNumber!: string | null;
+
+  // Hash SHA-256 của số CCCD gốc → ràng buộc unique, không thể trùng giữa các customer.
+  @Index({ unique: true })
+  @Column({ type: 'varchar', length: 64, name: 'cccd_number_hash', nullable: true })
+  cccdNumberHash!: string | null;
+
   @Column({ type: 'varchar', length: 20, name: 'verification_status', default: 'PENDING' })
   verificationStatus!: 'PENDING' | 'APPROVED' | 'REJECTED';
 

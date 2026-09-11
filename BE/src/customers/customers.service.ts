@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { createHash } from 'crypto';
@@ -26,7 +26,11 @@ export class CustomersService {
       throw new NotFoundException('CUSTOMER_PROFILE_NOT_FOUND');
     }
     const account = await this.accountRepo.findOne({ where: { id: accountId } });
-    return { ...profile, phone: account?.phone ? this.crypto.decrypt(account.phone) : null };
+    return {
+      ...profile,
+      phone: account?.phone ? this.crypto.decrypt(account.phone) : null,
+      cccdNumber: profile.cccdNumber ? this.crypto.decrypt(profile.cccdNumber) : null,
+    };
   }
 
   // C2: MERGE — chỉ cập nhật field client GỬI (!== undefined); field không gửi giữ nguyên.
@@ -39,6 +43,18 @@ export class CustomersService {
     assertGpsPair(dto.gpsLat, dto.gpsLng);
     const profile = await this.getMyProfile(accountId);
 
+    // Đã duyệt → khóa toàn bộ giấy tờ định danh, không cho sửa.
+    const identityFieldsSent = dto.cccdNumber !== undefined
+      || dto.cccdFrontUrl !== undefined
+      || dto.cccdBackUrl !== undefined
+      || dto.selfieWithIdUrl !== undefined;
+
+    if (identityFieldsSent && profile.verificationStatus === 'APPROVED') {
+      throw new BadRequestException(
+        'IDENTITY_LOCKED_AFTER_APPROVAL',
+      );
+    }
+
     if (dto.address !== undefined) profile.address = dto.address;
     if (dto.defaultPickupAddress !== undefined)
       profile.defaultPickupAddress = dto.defaultPickupAddress;
@@ -48,18 +64,23 @@ export class CustomersService {
     if (dto.cccdBackUrl !== undefined) profile.cccdBackUrl = dto.cccdBackUrl;
     if (dto.selfieWithIdUrl !== undefined) profile.selfieWithIdUrl = dto.selfieWithIdUrl;
 
+    // Mã hóa AES + hash SHA-256 để check unique (giống SĐT).
+    if (dto.cccdNumber !== undefined) {
+      const cccdNumberHash = createHash('sha256').update(dto.cccdNumber).digest('hex');
+      const duplicate = await this.profileRepo.findOne({ where: { cccdNumberHash } });
+      if (duplicate && duplicate.accountId !== accountId) {
+        throw new ConflictException('CCCD_NUMBER_EXISTS');
+      }
+      profile.cccdNumber = this.crypto.encrypt(dto.cccdNumber);
+      profile.cccdNumberHash = cccdNumberHash;
+    }
+
     if (dto.phone !== undefined) {
       const normalized = this.normalizePhone(dto.phone);
       const phoneHash = createHash('sha256').update(normalized).digest('hex');
       const duplicate = await this.accountRepo.findOne({ where: { phoneHash } });
       if (duplicate && duplicate.id !== accountId) throw new ConflictException('PHONE_EXISTS');
       await this.accountRepo.update(accountId, { phone: this.crypto.encrypt(normalized), phoneHash });
-    }
-
-    // Mỗi khi thay ảnh giấy tờ, hồ sơ quay lại chờ duyệt để admin kiểm tra đúng ảnh gốc.
-    if (dto.cccdFrontUrl !== undefined || dto.cccdBackUrl !== undefined || dto.selfieWithIdUrl !== undefined) {
-      profile.verificationStatus = 'PENDING';
-      profile.verificationNote = null;
     }
 
     const saved = await this.profileRepo.save(profile);
@@ -71,23 +92,38 @@ export class CustomersService {
     return profiles.map((profile) => ({
       ...profile,
       phone: profile.account.phone ? this.crypto.decrypt(profile.account.phone) : null,
+      cccdNumber: profile.cccdNumber ? this.crypto.decrypt(profile.cccdNumber) : null,
     }));
   }
 
   async getForAdmin(customerId: string) {
     const profile = await this.profileRepo.findOne({ where: { id: customerId }, relations: { account: true } });
     if (!profile) throw new NotFoundException('CUSTOMER_PROFILE_NOT_FOUND');
-    return { ...profile, phone: profile.account.phone ? this.crypto.decrypt(profile.account.phone) : null };
+    return {
+      ...profile,
+      phone: profile.account.phone ? this.crypto.decrypt(profile.account.phone) : null,
+      cccdNumber: profile.cccdNumber ? this.crypto.decrypt(profile.cccdNumber) : null,
+    };
   }
 
   async verifyForAdmin(customerId: string, dto: VerifyCustomerDto) {
-    const profile = await this.profileRepo.findOne({ where: { id: customerId } });
+    const profile = await this.profileRepo.findOne({
+      where: { id: customerId },
+      relations: { account: true },
+    });
     if (!profile) throw new NotFoundException('CUSTOMER_PROFILE_NOT_FOUND');
-    if (dto.decision === 'APPROVED' && (!profile.cccdFrontUrl || !profile.cccdBackUrl || !profile.selfieWithIdUrl)) {
+    if (dto.decision === 'APPROVED' && (!profile.cccdFrontUrl || !profile.cccdBackUrl || !profile.selfieWithIdUrl || !profile.cccdNumber)) {
       throw new ConflictException('CUSTOMER_IDENTITY_DOCUMENTS_REQUIRED');
     }
     profile.verificationStatus = dto.decision;
     profile.verificationNote = dto.note?.trim() || null;
+
+    // Đồng bộ account.status giống Provider: APPROVED → ACTIVE, REJECTED → PENDING.
+    if (profile.account) {
+      profile.account.status = dto.decision === 'APPROVED' ? 'ACTIVE' : 'PENDING';
+      await this.accountRepo.save(profile.account);
+    }
+
     return this.profileRepo.save(profile);
   }
 
