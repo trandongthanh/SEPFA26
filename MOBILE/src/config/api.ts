@@ -1,17 +1,27 @@
 import axios from 'axios';
 import { Platform } from 'react-native';
 
-// Tự động xác định IP phù hợp cho môi trường chạy Expo/React Native:
-// - Android Emulator: 10.0.2.2
-// - iOS Simulator / Web: localhost
-// - Thiết bị thật: đổi IP thành IP máy tính trong cùng mạng Wi-Fi (ví dụ: http://192.168.1.10:3001)
-const DEV_API_URL = Platform.select({
-  android: 'http://10.0.2.2:3001/api/v1',
-  ios: 'http://localhost:3001/api/v1',
-  default: 'http://localhost:3001/api/v1',
-});
+import Constants from 'expo-constants';
 
-const rawBaseUrl = process.env.EXPO_PUBLIC_API_URL || DEV_API_URL;
+// Tự động lấy IP máy tính từ Expo Host URI để điện thoại thật quét Expo Go kết nối được Backend
+function getAutoDevApiUrl(): string {
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL;
+  }
+
+  const hostUri = Constants.expoConfig?.hostUri || (Constants as any).manifest?.debuggerHost;
+  if (hostUri) {
+    const hostIp = hostUri.split(':')[0];
+    if (hostIp && hostIp !== 'localhost' && hostIp !== '127.0.0.1') {
+      return `http://${hostIp}:3001/api/v1`;
+    }
+  }
+
+  const defaultHost = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
+  return `http://${defaultHost}:3001/api/v1`;
+}
+
+const rawBaseUrl = getAutoDevApiUrl();
 export const API_BASE_URL = rawBaseUrl.endsWith('/api/v1')
   ? rawBaseUrl
   : `${rawBaseUrl.replace(/\/$/, '')}/api/v1`;
