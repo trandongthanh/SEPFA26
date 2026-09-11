@@ -47,6 +47,12 @@ export class UpsertCustomerProfileDto {
   @Max(180)
   gpsLng?: number;
 
+  @ApiPropertyOptional({ description: 'Số căn cước công dân (12 chữ số)', example: '001234567890' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{12}$/, { message: 'Số căn cước phải gồm đúng 12 chữ số.' })
+  cccdNumber?: string;
+
   @ApiPropertyOptional({ description: 'URL ảnh mặt trước CCCD/Căn cước' })
   @IsOptional()
   @IsUrl({}, { message: 'Ảnh CCCD mặt trước chưa hợp lệ.' })
