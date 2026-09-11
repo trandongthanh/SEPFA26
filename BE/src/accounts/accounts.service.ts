@@ -19,14 +19,14 @@ export class AccountsService {
     private readonly passwords: PasswordService,
   ) {}
 
-  // Trả null nếu không tồn tại / đã xóa mềm / không ACTIVE. (Soft-delete được TypeORM tự lọc.)
+  // ACTIVE luôn cho phép. PENDING cho phép Customer/Provider đăng nhập để upload giấy tờ chờ duyệt.
+  // Chỉ SUSPENDED mới bị chặn hoàn toàn.
   isAllowedToAuthenticate(
     account: Pick<Account, 'role' | 'status'> | null | undefined,
   ): boolean {
     return Boolean(
       account &&
-      (account.status === 'ACTIVE' ||
-        (account.role === 'PROVIDER' && account.status === 'PENDING')),
+      (account.status === 'ACTIVE' || account.status === 'PENDING'),
     );
   }
 
