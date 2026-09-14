@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600;700&family=Great+Vibes&family=Satisfy&display=swap');
 @import 'tailwindcss';
 
 html, body {
@@ -8,4 +9,27 @@ html, body {
   background-color: #F6F4FC;
   color: #1E1B2E;
   -webkit-font-smoothing: antialiased;
+}
+
+.font-logo-script {
+  font-family: 'Dancing Script', 'Great Vibes', 'Satisfy', cursive;
+}
+
+/* Custom slender scrollbars for independent frame scrolling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
 }
