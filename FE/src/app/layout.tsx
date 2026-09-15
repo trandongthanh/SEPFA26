@@ -18,8 +18,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="vi" className={inter.variable}>
-      <body className={inter.className}>
+    <html lang="vi" className={inter.variable} suppressHydrationWarning>
+      <body className={inter.className} suppressHydrationWarning>
         <AntdProvider>{children}</AntdProvider>
       </body>
     </html>

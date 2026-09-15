@@ -92,23 +92,24 @@ export default function LoginPage() {
           <div className="absolute inset-0 pointer-events-none bg-gradient-to-t from-[#1d0738]/95 via-[#2a0e52]/40 via-35% to-transparent" />
 
           {/* Top: Logo + Slogan */}
-          <div className="relative z-10 flex items-center gap-2.5">
-            <div className="relative w-9 h-9 rounded-full overflow-hidden border border-purple-200/80 shadow-sm bg-white/80 shrink-0">
-              <Image
-                src="/Login-image.webp"
-                alt="Logo icon"
-                fill
-                sizes="36px"
-                className="object-cover scale-150"
-              />
-            </div>
+          <div className="relative z-10 flex items-center gap-3">
+            <img
+              src="/logo_app.png"
+              alt="LanCare Hub logo"
+              className="w-14 h-14 object-contain shrink-0"
+            />
             <div>
-              <h2 className="font-bold text-[17px] leading-tight text-[#6027D2] tracking-wide">
-                LanCare Hub
+              <h2 className="font-logo-script text-[26px] font-bold leading-tight tracking-wide flex items-center">
+                <span className="text-white">LanCare</span>
+                <span className="text-[#C4B5FD] ml-1.5">Hub</span>
               </h2>
-              <p className="text-[11px] font-medium text-white">
-                Kết nối người yêu lan &nbsp;·&nbsp; Chăm lan dễ dàng hơn
-              </p>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="h-[1px] w-3 bg-purple-300/60" />
+                <span className="text-[10px] text-purple-100 tracking-[0.12em] font-medium whitespace-nowrap">
+                  Quản lý lan cao cấp
+                </span>
+                <span className="h-[1px] w-3 bg-purple-300/60" />
+              </div>
             </div>
           </div>
 
@@ -156,11 +157,11 @@ export default function LoginPage() {
           <div className="mb-1">
             <div className="relative w-10 h-10 rounded-2xl overflow-hidden border border-[#ECE7FA] shadow-sm bg-[#F9F8FD]">
               <Image
-                src="/Login-image.webp"
+                src="/logo_app.png"
                 alt="LanCare Hub logo"
                 fill
                 sizes="40px"
-                className="object-cover scale-150"
+                className="object-contain p-1"
               />
             </div>
           </div>

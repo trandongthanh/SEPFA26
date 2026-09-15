@@ -15,6 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { apiClient } from '../config/api';
+import { storage } from '../utils/storage';
 
 interface LoginScreenProps {
   navigation?: any;
@@ -40,11 +41,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
         password,
       });
 
-      const { account } = response.data;
-      Alert.alert(
-        'Đăng nhập thành công',
-        `Xin chào, ${account.fullName || account.email} (${account.role})!`
-      );
+      const { accessToken, refreshToken, account } = response.data;
+      await storage.setToken(accessToken, refreshToken);
+      await storage.setUser(account);
+
+      navigation?.reset({
+        index: 0,
+        routes: [{ name: 'MainTabs' }],
+      });
     } catch (err: any) {
       const msg = err.response?.data?.message;
       if (msg === 'INVALID_CREDENTIALS') {
@@ -107,7 +111,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
 
                 {/* Badge 2: Leaf */}
                 <View style={styles.leafBadge}>
-                  <Ionicons name="leaf-outline" size={14} color="#2E7D32" />
+                  <Ionicons name="leaf-outline" size={14} color="#6027D2" />
                 </View>
 
                 {/* Badge 3: Sun */}

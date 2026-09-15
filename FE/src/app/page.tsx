@@ -5,11 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/lib/auth.store';
 
 // Trang gốc / chỉ làm nhiệm vụ điều hướng:
-// - Đã đăng nhập → /coming-soon
+// - Provider → /provider/dashboard
+// - Khách hàng / Khác → /coming-soon
 // - Chưa đăng nhập → /auth/login
-// Dùng mounted để chờ Zustand hydrate xong từ localStorage trước khi quyết định.
 export default function RootPage() {
   const router = useRouter();
+  const user = useAuthStore((state) => state.user);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const [mounted, setMounted] = useState(false);
 
@@ -19,8 +20,17 @@ export default function RootPage() {
 
   useEffect(() => {
     if (!mounted) return;
-    router.replace(isAuthenticated ? '/coming-soon' : '/auth/login');
-  }, [mounted, isAuthenticated, router]);
+    if (!isAuthenticated) {
+      router.replace('/auth/login');
+      return;
+    }
+    if (user?.role === 'PROVIDER') {
+      router.replace('/provider/dashboard');
+    } else {
+      router.replace('/coming-soon');
+    }
+  }, [mounted, isAuthenticated, user, router]);
 
   return null;
 }
+

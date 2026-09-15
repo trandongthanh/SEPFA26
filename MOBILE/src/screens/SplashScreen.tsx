@@ -78,8 +78,8 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
     );
     floatLoop.start();
 
-    // Configurable Splash Duration (4.5 seconds)
-    const SPLASH_DURATION = 10000;
+    // Configurable Splash Duration (2 seconds)
+    const SPLASH_DURATION = 2000;
 
     // 4. Progress bar animation matching splash duration
     Animated.timing(progressAnim, {
@@ -89,10 +89,20 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
       useNativeDriver: false,
     }).start();
 
-    // 5. Navigate to Login after splash duration
-    const timer = setTimeout(() => {
+    // 5. Navigate after splash duration
+    const timer = setTimeout(async () => {
       if (navigation) {
-        navigation.replace('Login');
+        try {
+          const { storage } = await import('../utils/storage');
+          const token = await storage.getToken();
+          if (token) {
+            navigation.replace('MainTabs');
+          } else {
+            navigation.replace('Login');
+          }
+        } catch {
+          navigation.replace('Login');
+        }
       }
     }, SPLASH_DURATION);
 
