@@ -63,10 +63,36 @@ function processQueue(error: unknown, token: string | null = null) {
   failedQueue = [];
 }
 
-// ===== Request interceptor: tự động gắn Bearer token =====
+// ===== Request interceptor: tự động gắn Bearer token (chủ động refresh nếu reload trang) =====
 
-api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
-  const { accessToken } = useAuthStore.getState();
+api.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
+  let { accessToken } = useAuthStore.getState();
+  const { refreshToken, setTokens, clearAuth } = useAuthStore.getState();
+
+  // Khi reload trang (F5): accessToken trong RAM bị mất nhưng refreshToken vẫn còn trong localStorage.
+  // Chủ động gọi refresh trước khi gửi request để tránh bị lỗi 401 trên console trình duyệt.
+  if (!accessToken && refreshToken && !config.url?.includes('/auth/')) {
+    if (!isRefreshing) {
+      isRefreshing = true;
+      try {
+        const baseURL = config.baseURL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001';
+        const res = await axios.post<AuthTokensResponse>(`${baseURL}/api/v1/auth/refresh`, { refreshToken });
+        accessToken = res.data.accessToken;
+        setTokens({ accessToken: res.data.accessToken, refreshToken: res.data.refreshToken });
+        processQueue(null, accessToken);
+      } catch (err) {
+        processQueue(err, null);
+        clearAuth();
+      } finally {
+        isRefreshing = false;
+      }
+    } else {
+      accessToken = await new Promise<string>((resolve, reject) => {
+        failedQueue.push({ resolve, reject });
+      });
+    }
+  }
+
   if (accessToken && config.headers) {
     config.headers['Authorization'] = `Bearer ${accessToken}`;
   }

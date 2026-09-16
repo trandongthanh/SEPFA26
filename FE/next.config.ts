@@ -19,7 +19,7 @@ const securityHeaders = [
       // unsafe-inline và unsafe-eval bắt buộc cho Next.js + Ant Design (inline styles)
       "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-      "img-src 'self' data: blob:",
+      "img-src 'self' data: blob: https://res.cloudinary.com https:",
       "font-src 'self' https://fonts.gstatic.com data:",
       // Cho phép FE gọi API sang BE (thêm URL production khi deploy)
       "connect-src 'self' http://localhost:3001 http://localhost:3002",
@@ -33,6 +33,14 @@ const nextConfig: NextConfig = {
   reactStrictMode: true,
   // Fix: monorepo có nhiều lockfile → chỉ rõ root để Next.js không nhầm
   outputFileTracingRoot: path.join(__dirname, '../../'),
+  images: {
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: 'res.cloudinary.com',
+      },
+    ],
+  },
   async headers() {
     return [
       {
