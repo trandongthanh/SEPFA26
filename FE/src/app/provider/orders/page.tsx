@@ -8,10 +8,13 @@ import {
   ClockCircleOutlined,
   CloseCircleOutlined,
   ContainerOutlined,
+  EnvironmentOutlined,
+  EyeOutlined,
   FileTextOutlined,
+  PictureOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Segmented, Spin, Tag, message } from 'antd';
+import { Avatar, Button, Image, Modal, Segmented, Spin, Tag, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
 import ProviderHeader from '../components/ProviderHeader';
@@ -27,6 +30,11 @@ export default function OrdersPage() {
   const [profile, setProfile] = useState<ProviderProfileResponse | null>(null);
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [activeTab, setActiveTab] = useState<string>('PENDING_PROVIDER');
+
+  // State for Order Detail Modal
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [orderDetail, setOrderDetail] = useState<any | null>(null);
 
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
 
@@ -97,6 +105,20 @@ export default function OrdersPage() {
       message.error(Array.isArray(msg) ? msg.join(', ') : msg);
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const handleOpenDetail = async (orderId: string) => {
+    setDetailModalOpen(true);
+    setDetailLoading(true);
+    try {
+      const data = await providerApi.getOrderDetail(orderId);
+      setOrderDetail(data);
+    } catch (err: any) {
+      message.error('Không thể tải thông tin chi tiết đơn hàng.');
+      setDetailModalOpen(false);
+    } finally {
+      setDetailLoading(false);
     }
   };
 
@@ -241,7 +263,15 @@ export default function OrdersPage() {
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Button
+                        icon={<EyeOutlined />}
+                        onClick={() => handleOpenDetail(order.id)}
+                        className="!h-9 !px-4 !rounded-xl !bg-[#F3E8FF] !border-none !text-[#6027D2] hover:!bg-[#E9D8FD] !font-semibold text-xs flex items-center gap-1"
+                      >
+                        Xem chi tiết
+                      </Button>
+
                       {order.status === 'PENDING_PROVIDER' && (
                         <>
                           <Button
@@ -280,6 +310,173 @@ export default function OrdersPage() {
           )}
         </main>
       </div>
+
+      {/* Order Detail Modal */}
+      <Modal
+        title={
+          <div className="flex items-center gap-2 text-base font-bold text-[#1E1B2E]">
+            <ContainerOutlined className="text-[#6027D2]" />
+            <span>Chi tiết đơn hàng {orderDetail?.orderCode ? `- ${orderDetail.orderCode}` : ''}</span>
+          </div>
+        }
+        open={detailModalOpen}
+        onCancel={() => setDetailModalOpen(false)}
+        footer={
+          <div className="flex items-center justify-end gap-2 pt-2">
+            {orderDetail?.status === 'PENDING_PROVIDER' && (
+              <>
+                <Button
+                  onClick={() => {
+                    handleRespondOrder(orderDetail.id, 'REJECT');
+                    setDetailModalOpen(false);
+                  }}
+                  loading={actionLoading === orderDetail?.id}
+                  className="!rounded-xl !bg-[#F6F4FC] !border-none !text-[#4B4764]"
+                >
+                  Từ chối
+                </Button>
+                <Button
+                  type="primary"
+                  onClick={() => {
+                    handleRespondOrder(orderDetail.id, 'ACCEPT');
+                    setDetailModalOpen(false);
+                  }}
+                  loading={actionLoading === orderDetail?.id}
+                  className="!rounded-xl !bg-[#6027D2]"
+                >
+                  Chấp nhận đơn
+                </Button>
+              </>
+            )}
+            <Button onClick={() => setDetailModalOpen(false)} className="!rounded-xl">
+              Đóng
+            </Button>
+          </div>
+        }
+        width={720}
+        centered
+      >
+        {detailLoading ? (
+          <div className="py-12 text-center">
+            <Spin size="large" />
+            <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải chi tiết đơn hàng...</p>
+          </div>
+        ) : orderDetail ? (
+          <div className="space-y-5 max-h-[70vh] overflow-y-auto pr-1">
+            {/* Overview Card */}
+            <div className="bg-[#F8F6FC] rounded-2xl p-4 border border-[#ECE7FA] flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-[#1E1B2E] text-sm">Mã đơn: {orderDetail.orderCode}</span>
+                  {getStatusBadge(orderDetail.status)}
+                </div>
+                <p className="text-xs text-[#6E6A8A] mt-1">
+                  Khách hàng: <strong className="text-[#1E1B2E]">{orderDetail.customer?.account?.fullName || 'Khách hàng'}</strong>
+                  {orderDetail.customer?.account?.phone ? ` (${orderDetail.customer.account.phone})` : ''}
+                </p>
+              </div>
+              <div className="text-right">
+                <span className="text-[10px] text-[#8B86A4] uppercase font-semibold">Tạm tính</span>
+                <p className="text-lg font-bold text-[#6027D2]">
+                  {Number(orderDetail.finalTotal || orderDetail.provisionalTotal || 0).toLocaleString('vi-VN')} VNĐ
+                </p>
+              </div>
+            </div>
+
+            {/* Package & Logistics Info */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-white p-4 rounded-xl border border-[#ECE7FA]">
+                <h4 className="font-bold text-xs text-[#6027D2] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <ContainerOutlined /> Gói dịch vụ chăm sóc
+                </h4>
+                <p className="text-sm font-bold text-[#1E1B2E]">{orderDetail.servicePackage?.name || 'Gói chăm sóc tiêu chuẩn'}</p>
+                <p className="text-xs text-[#6E6A8A] mt-1">
+                  Thời hạn chăm sóc: {orderDetail.durationDaysSnapshot || orderDetail.servicePackage?.durationDays || '--'} ngày
+                </p>
+                <p className="text-xs text-[#6E6A8A] mt-0.5">
+                  Tần suất gửi báo cáo: {orderDetail.reportFrequencySnapshot || orderDetail.servicePackage?.reportFrequencyDays || '--'} ngày/lần
+                </p>
+              </div>
+
+              <div className="bg-white p-4 rounded-xl border border-[#ECE7FA]">
+                <h4 className="font-bold text-xs text-[#6027D2] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                  <EnvironmentOutlined /> Địa chỉ & Hẹn giao cây
+                </h4>
+                {orderDetail.scheduledPickupAt && (
+                  <p className="text-xs text-[#1E1B2E] font-medium flex items-center gap-1 mb-1">
+                    <CalendarOutlined className="text-[#6027D2]" /> Ngày hẹn tiếp nhận: {new Date(orderDetail.scheduledPickupAt).toLocaleDateString('vi-VN')}
+                  </p>
+                )}
+                <p className="text-xs text-[#6E6A8A]">
+                  Địa chỉ: <strong className="text-[#1E1B2E]">{orderDetail.pickupAddress || 'Chưa cung cấp'}</strong>
+                </p>
+                {orderDetail.customerNote && (
+                  <p className="text-xs text-[#DD6B20] mt-1 bg-[#FFFAF0] p-2 rounded-lg border border-[#FEEBC8]">
+                    💬 Ghi chú từ khách: "{orderDetail.customerNote}"
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Plants List */}
+            <div>
+              <h4 className="font-bold text-sm text-[#1E1B2E] mb-3">
+                Danh sách chậu lan gửi chăm sóc ({orderDetail.plants?.length || 0})
+              </h4>
+              
+              <div className="space-y-3">
+                {orderDetail.plants?.map((plant: any, idx: number) => (
+                  <div key={plant.id || idx} className="bg-white p-4 rounded-xl border border-[#ECE7FA]">
+                    <div className="flex items-center justify-between gap-2">
+                      <h5 className="font-bold text-sm text-[#1E1B2E]">
+                        Chậu #{idx + 1}: {plant.name}
+                      </h5>
+                      {plant.isValueDeclared && plant.declaredValue && (
+                        <Tag color="gold" className="!rounded-md font-medium">
+                          Giá trị khai báo: {Number(plant.declaredValue).toLocaleString('vi-VN')} VNĐ
+                        </Tag>
+                      )}
+                    </div>
+
+                    {plant.speciesName && (
+                      <p className="text-xs text-[#6E6A8A] mt-1">
+                        Giống lan / Tình trạng: <span className="text-[#1E1B2E] font-medium">{plant.speciesName}</span>
+                      </p>
+                    )}
+
+                    {/* Photos */}
+                    {(() => {
+                      const plantPhotos = plant.initialPhotos || plant.photos || [];
+                      return plantPhotos.length > 0 ? (
+                        <div className="mt-3">
+                          <p className="text-[11px] font-semibold text-[#8B86A4] mb-1.5 flex items-center gap-1">
+                            <PictureOutlined /> Ảnh chụp hiện trạng ban đầu (từ camera khách):
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {plantPhotos.map((photo: any) => (
+                              <div key={photo.id} className="relative group">
+                                <Image
+                                  src={photo.photoUrl}
+                                  alt={photo.caption || plant.name}
+                                  width={80}
+                                  height={80}
+                                  className="rounded-lg object-cover border border-[#ECE7FA]"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-[#A0AEC0] italic mt-2">Chưa có ảnh hiện trạng gửi kèm.</p>
+                      );
+                    })()}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }

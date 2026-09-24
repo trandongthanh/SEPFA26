@@ -223,7 +223,11 @@ export const ProviderDetailScreen: React.FC<ProviderDetailScreenProps> = ({
                   style={styles.bookButton}
                   activeOpacity={0.8}
                   onPress={() => {
-                    alert(`Đã chọn gói: ${pkg.name}. Tính năng tạo đơn hàng sắp ra mắt!`);
+                    navigation.navigate('CreateOrder', {
+                      providerId,
+                      providerName: provider?.displayName,
+                      package: pkg,
+                    });
                   }}
                 >
                   <Text style={styles.bookButtonText}>Chọn gói dịch vụ</Text>

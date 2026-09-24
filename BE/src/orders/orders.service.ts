@@ -365,6 +365,7 @@ export class OrdersService {
       relations: {
         servicePackage: true,
         customer: { account: true },
+        provider: true,
       },
     });
     return {
@@ -372,6 +373,7 @@ export class OrdersService {
         ...order,
         servicePackageName: order.servicePackage?.name ?? null,
         customerName: order.customer?.account?.fullName ?? null,
+        gardenName: order.provider?.displayName ?? null,
       })),
       total,
       page,
@@ -448,10 +450,14 @@ export class OrdersService {
 
     return {
       ...order,
-      plants: order.plants.map((plant) => ({
-        ...plant,
-        initialPhotos: photos.filter((photo) => photo.plantId === plant.id),
-      })),
+      plants: order.plants.map((plant) => {
+        const plantPhotos = photos.filter((photo) => photo.plantId === plant.id);
+        return {
+          ...plant,
+          initialPhotos: plantPhotos,
+          photos: plantPhotos,
+        };
+      }),
       negotiation,
       agreement: agreement
         ? {
