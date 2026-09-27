@@ -3,13 +3,13 @@ import {
   ActivityIndicator,
   FlatList,
   Modal,
-  SafeAreaView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
 import { GOONG_CONFIG, GoongPrediction, goongService } from '../config/goong';
