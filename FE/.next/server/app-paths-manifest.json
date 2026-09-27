@@ -1,7 +1,0 @@
-{
-  "/provider/packages/page": "app/provider/packages/page.js",
-  "/page": "app/page.js",
-  "/provider/dashboard/page": "app/provider/dashboard/page.js",
-  "/provider/orders/page": "app/provider/orders/page.js",
-  "/provider/reports/page": "app/provider/reports/page.js"
-}

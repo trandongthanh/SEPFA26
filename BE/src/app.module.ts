@@ -16,6 +16,7 @@ import { OrdersModule } from './orders/orders.module';
 import { PaymentsModule } from './payments/payments.module';
 import { CareReportsModule } from './care-reports/care-reports.module';
 import { UploadsModule } from './uploads/uploads.module';
+import { EkycModule } from './ekyc/ekyc.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { UploadsModule } from './uploads/uploads.module';
     VideoCallsModule,
     CareReportsModule,
     UploadsModule,
+    EkycModule,
   ],
   providers: [
     {
