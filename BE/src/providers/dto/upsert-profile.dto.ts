@@ -16,7 +16,9 @@ type ProviderType = (typeof PROVIDER_TYPES)[number];
 
 // KHÔNG nhận verificationStatus/ratingAvg: provider không tự đặt được (chỉ admin/hệ thống).
 // C1: mọi field optional → PUT kiểu merge (đổi mỗi 1 field không phải gửi lại cả hồ sơ).
-// Hồ sơ đã được auto-tạo lúc register nên providerType/displayName luôn tồn tại sẵn.
+// TODO(kích hoạt tài khoản): register KHÔNG còn tạo provider profile (nhánh auth-google-oauth)
+// → hồ sơ chưa tồn tại thì PUT hiện trả 404. Khi bổ sung bước tạo hồ sơ lần đầu, request
+// đầu tiên phải có providerType + displayName (2 cột NOT NULL của provider_profiles).
 export class UpsertProfileDto {
   @ApiPropertyOptional({ enum: PROVIDER_TYPES, example: 'NURSERY' })
   @IsOptional()

@@ -4,7 +4,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { IsNull, Repository } from 'typeorm';
+import { RefreshToken } from '../auth/entities/refresh-token.entity';
 import { CryptoService } from '../crypto/crypto.service';
 import { PasswordService } from '../crypto/password.service';
 import { Account } from './entities/account.entity';
@@ -19,44 +20,21 @@ export class AccountsService {
     private readonly passwords: PasswordService,
   ) {}
 
-  // ACTIVE luôn cho phép. PENDING cho phép Customer/Provider đăng nhập để upload giấy tờ chờ duyệt.
-  // Chỉ SUSPENDED mới bị chặn hoàn toàn.
+  // Nguồn DUY NHẤT cho luật "được đăng nhập" (login, Google, refresh, JWT guard).
+  // PENDING vẫn được vào để nộp hồ sơ kích hoạt; chỉ SUSPENDED bị chặn.
   isAllowedToAuthenticate(
-    account: Pick<Account, 'role' | 'status'> | null | undefined,
+    account: Pick<Account, 'status'> | null | undefined,
   ): boolean {
-    return Boolean(
-      account &&
-      (account.status === 'ACTIVE' || account.status === 'PENDING'),
+    return (
+      !!account && (account.status === 'ACTIVE' || account.status === 'PENDING')
     );
   }
 
   async findAuthenticatableById(id: string): Promise<Account | null> {
     const account = await this.accounts.findOne({ where: { id } });
-    if (!this.isAllowedToAuthenticate(account)) {
-      return null;
-    }
-    return account;
+    return account && this.isAllowedToAuthenticate(account) ? account : null;
   }
 
-  async changePassword(
-    id: string,
-    currentPassword: string,
-    newPassword: string,
-  ): Promise<void> {
-    const account = await this.accounts.findOne({ where: { id } });
-    if (!account) throw new NotFoundException('ACCOUNT_NOT_FOUND');
-
-    const valid = await this.passwords.compare(
-      currentPassword,
-      account.passwordHash,
-    );
-    if (!valid) throw new BadRequestException('CURRENT_PASSWORD_INCORRECT');
-
-    account.passwordHash = await this.passwords.hash(newPassword);
-    await this.accounts.save(account);
-  }
-
-  // Thông tin account hiện tại; giải mã phone, không bao giờ kèm passwordHash.
   async getProfile(id: string): Promise<AccountResponseDto> {
     const account = await this.accounts.findOne({ where: { id } });
     if (!account) {
@@ -70,5 +48,36 @@ export class AccountsService {
       role: account.role,
       status: account.status,
     };
+  }
+
+  async changePassword(
+    id: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    const account = await this.accounts.findOne({ where: { id } });
+    if (!account) {
+      throw new NotFoundException('ACCOUNT_NOT_FOUND');
+    }
+    const valid = await this.passwords.compare(
+      currentPassword,
+      account.passwordHash,
+    );
+    if (!valid) {
+      throw new BadRequestException('CURRENT_PASSWORD_INCORRECT');
+    }
+    const passwordHash = await this.passwords.hash(newPassword);
+    // Đổi mật khẩu + thu hồi MỌI phiên trong 1 transaction: mật khẩu cũ bị lộ thì
+    // kẻ đang giữ refresh token cũng bị đẩy ra. Client phải đăng nhập lại bằng mật khẩu mới.
+    // Ghi thẳng vào bảng refresh_tokens (entity của module auth) — cùng điều kiện với
+    // AuthService.revokeAllSessions; đổi cách thu hồi phiên thì sửa cả 2 chỗ.
+    await this.accounts.manager.transaction(async (manager) => {
+      await manager.update(Account, { id }, { passwordHash });
+      await manager.update(
+        RefreshToken,
+        { accountId: id, revokedAt: IsNull() },
+        { revokedAt: new Date() },
+      );
+    });
   }
 }
