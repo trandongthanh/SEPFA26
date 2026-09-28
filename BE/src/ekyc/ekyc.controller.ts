@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Controller,
   Get,
+  Param,
   Post,
   UploadedFiles,
   UseInterceptors,
@@ -12,6 +13,7 @@ import {
   ApiBody,
   ApiConsumes,
   ApiOperation,
+  ApiParam,
   ApiTags,
 } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
@@ -20,7 +22,14 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import type { CurrentUserData } from '../auth/types/current-user.type';
 import { EkycService } from './ekyc.service';
 
-const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
+// 20 MB — camera điện thoại thật chụp ảnh nặng 8-12 MB.
+const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
+
+// Cho phép mọi ảnh và cả application/octet-stream (một số điện thoại gửi kiểu này).
+const imageFileFilter = (_req: unknown, file: Express.Multer.File, cb: (err: Error | null, accept: boolean) => void) => {
+  const isImage = /^image\//i.test(file.mimetype) || file.mimetype === 'application/octet-stream';
+  cb(null, isImage);
+};
 
 @ApiTags('eKYC')
 @Controller('ekyc')
@@ -29,7 +38,8 @@ export class EkycController {
 
   /**
    * Bước 1: Upload ảnh CCCD mặt trước (bắt buộc) + mặt sau (tuỳ chọn).
-   * Backend gọi FPT.AI OCR → trả dữ liệu bóc tách cho client hiển thị xác nhận.
+   * Ảnh được upload lên Cloudinary (authenticated — không công khai).
+   * Backend gọi FPT.AI OCR → trả dữ liệu bóc tách.
    */
   @Post('ocr')
   @Roles('CUSTOMER')
@@ -37,7 +47,8 @@ export class EkycController {
   @ApiOperation({
     summary: 'Bước 1: OCR ảnh CCCD — bóc tách thông tin bằng FPT.AI',
     description:
-      'Chọn 1 hoặc 2 file ảnh JPG/PNG (tối đa 5MB/ảnh). File đầu tiên là mặt trước CCCD, file thứ 2 (nếu có) là mặt sau.',
+      'Chọn 1 hoặc 2 file ảnh (tối đa 20MB/ảnh). File 1 = mặt trước CCCD (bắt buộc), File 2 = mặt sau (tuỳ chọn). ' +
+      'Ảnh được lưu bảo mật trên Cloudinary (type: authenticated). Nếu ảnh > 4MB, server tự động resize trước khi gửi FPT.AI.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -48,7 +59,7 @@ export class EkycController {
         files: {
           type: 'array',
           items: { type: 'string', format: 'binary' },
-          description: 'Danh sách ảnh: file 1 = mặt trước CCCD, file 2 = mặt sau CCCD (tuỳ chọn)',
+          description: 'File 1 = mặt trước CCCD (bắt buộc), File 2 = mặt sau (tuỳ chọn)',
         },
       },
     },
@@ -57,9 +68,7 @@ export class EkycController {
     FilesInterceptor('files', 2, {
       storage: memoryStorage(),
       limits: { fileSize: MAX_IMAGE_SIZE_BYTES },
-      fileFilter: (_req, file, cb) => {
-        cb(null, /^image\/(jpeg|png|jpg)$/i.test(file.mimetype));
-      },
+      fileFilter: imageFileFilter,
     }),
   )
   async ocr(
@@ -67,27 +76,14 @@ export class EkycController {
     @UploadedFiles() files: Express.Multer.File[],
   ) {
     if (!files?.length) {
-      throw new BadRequestException('Vui lòng upload ít nhất 1 ảnh CCCD mặt trước (định dạng JPG/PNG).');
+      throw new BadRequestException('Vui lòng upload ít nhất 1 ảnh CCCD mặt trước.');
     }
-
-    const frontFile = files[0];
-    const backFile = files[1] ?? null;
-
-    const frontUrl = `ekyc/${user.accountId}/front_${Date.now()}.jpg`;
-    const backUrl = backFile ? `ekyc/${user.accountId}/back_${Date.now()}.jpg` : null;
-
-    return this.ekycService.ocrIdCard(
-      user.accountId,
-      frontFile.buffer,
-      frontUrl,
-      backFile?.buffer ?? null,
-      backUrl,
-    );
+    return this.ekycService.ocrIdCard(user.accountId, files);
   }
 
   /**
    * Bước 2: Upload ảnh CCCD mặt trước + ảnh selfie.
-   * Backend gọi FPT.AI Face Match → nếu khớp (similarity >= 80%) → VERIFIED.
+   * Backend gọi FPT.AI Face Match → nếu khớp (>= 80%) → VERIFIED.
    */
   @Post('face-match')
   @Roles('CUSTOMER')
@@ -95,7 +91,8 @@ export class EkycController {
   @ApiOperation({
     summary: 'Bước 2: So khớp khuôn mặt CCCD vs Selfie — FPT.AI',
     description:
-      'Chọn đúng 2 file ảnh: File 1 là ảnh mặt trước CCCD (chứa ảnh chân dung), File 2 là ảnh Selfie khuôn mặt thật.',
+      'Chọn đúng 2 file ảnh (tối đa 20MB/ảnh). File 1 = ảnh CCCD mặt trước, File 2 = ảnh selfie khuôn mặt thật. ' +
+      'Server tự động resize nếu quá nặng. Kết quả: VERIFIED (khớp ≥ 80%) hoặc REJECTED.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -106,7 +103,7 @@ export class EkycController {
         files: {
           type: 'array',
           items: { type: 'string', format: 'binary' },
-          description: '2 file ảnh: File 1 = ảnh CCCD mặt trước, File 2 = ảnh selfie trực tiếp',
+          description: '2 file ảnh: File 1 = CCCD mặt trước, File 2 = selfie',
         },
       },
     },
@@ -115,9 +112,7 @@ export class EkycController {
     FilesInterceptor('files', 2, {
       storage: memoryStorage(),
       limits: { fileSize: MAX_IMAGE_SIZE_BYTES },
-      fileFilter: (_req, file, cb) => {
-        cb(null, /^image\/(jpeg|png|jpg)$/i.test(file.mimetype));
-      },
+      fileFilter: imageFileFilter,
     }),
   )
   async faceMatch(
@@ -127,17 +122,7 @@ export class EkycController {
     if (!files || files.length < 2) {
       throw new BadRequestException('Vui lòng chọn đủ 2 ảnh: File 1 là CCCD mặt trước, File 2 là ảnh selfie.');
     }
-
-    const idCardFile = files[0];
-    const selfieFile = files[1];
-    const selfieUrl = `ekyc/${user.accountId}/selfie_${Date.now()}.jpg`;
-
-    return this.ekycService.faceMatch(
-      user.accountId,
-      idCardFile.buffer,
-      selfieFile.buffer,
-      selfieUrl,
-    );
+    return this.ekycService.faceMatch(user.accountId, files);
   }
 
   /**
@@ -146,7 +131,7 @@ export class EkycController {
   @Get('status')
   @Roles('CUSTOMER')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Xem trạng thái xác thực eKYC hiện tại của Customer' })
+  @ApiOperation({ summary: 'Xem trạng thái xác thực eKYC hiện tại' })
   async getStatus(@CurrentUser() user: CurrentUserData) {
     return this.ekycService.getStatus(user.accountId);
   }
@@ -157,8 +142,32 @@ export class EkycController {
   @Post('retry')
   @Roles('CUSTOMER')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Reset trạng thái eKYC để thử lại (khi đã bị từ chối)' })
+  @ApiOperation({ summary: 'Reset eKYC để thử lại (khi đã bị từ chối)' })
   async retry(@CurrentUser() user: CurrentUserData) {
     return this.ekycService.resetForRetry(user.accountId);
+  }
+
+  /**
+   * Xem ảnh eKYC bảo mật (Signed URL tạm thời).
+   * Customer chỉ xem được ảnh của chính mình.
+   * Admin cần tạo endpoint riêng nếu muốn xem ảnh Customer khác.
+   */
+  @Get('documents/:field')
+  @Roles('CUSTOMER')
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Lấy link ảnh eKYC bảo mật (signed URL)',
+    description: 'Trả về URL có chữ ký để xem ảnh CCCD/selfie. URL chỉ dùng để hiển thị, không lưu cache.',
+  })
+  @ApiParam({
+    name: 'field',
+    enum: ['front', 'back', 'selfie'],
+    description: 'Loại ảnh: front = mặt trước CCCD, back = mặt sau, selfie = ảnh chân dung',
+  })
+  async getDocumentImage(
+    @CurrentUser() user: CurrentUserData,
+    @Param('field') field: string,
+  ) {
+    return this.ekycService.getSignedImageUrl(user.accountId, field);
   }
 }
