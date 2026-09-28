@@ -14,13 +14,13 @@ export class AccountResponseDto {
 
   @ApiPropertyOptional({
     example: '0909123456',
-    description: 'Đã giải mã khi trả ra',
+    description: 'Đã giải mã; null khi chưa bổ sung ở bước kích hoạt',
   })
-  phone?: string | null;
+  phone!: string | null;
 
   @ApiProperty({ enum: ROLES, example: 'CUSTOMER' })
   role!: string;
 
-  @ApiProperty({ enum: ACCOUNT_STATUSES, example: 'ACTIVE' })
+  @ApiProperty({ enum: ACCOUNT_STATUSES, example: 'PENDING' })
   status!: string;
 }

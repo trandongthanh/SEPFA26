@@ -1,23 +1,30 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { ROLES, ACCOUNT_STATUSES } from '../../common/constants/roles';
+import { ACCOUNT_STATUSES, ROLES } from '../../common/constants/roles';
 
-// Thông tin account rút gọn trả kèm khi đăng nhập.
 export class AccountSummaryDto {
-  @ApiProperty({ example: 'b3f1c2a4-...', format: 'uuid' })
+  @ApiProperty({ format: 'uuid' })
   id!: string;
+
+  @ApiProperty({ example: 'customer@lancarehub.vn' })
+  email!: string;
 
   @ApiProperty({ example: 'Nguyễn Văn Lan' })
   fullName!: string;
 
   @ApiProperty({ enum: ROLES, example: 'CUSTOMER' })
   role!: string;
+
+  @ApiProperty({
+    enum: ACCOUNT_STATUSES,
+    example: 'PENDING',
+    description: 'PENDING = chưa kích hoạt (FE điều hướng sang nộp hồ sơ)',
+  })
+  status!: string;
 }
 
-// Response của login & refresh: cặp 2 token.
+// Response của login / google / refresh.
 export class AuthTokensResponseDto {
-  @ApiProperty({
-    description: 'Access token (sống ngắn ~15m), gửi kèm mọi request',
-  })
+  @ApiProperty({ description: 'Access token (sống ngắn ~15m)' })
   accessToken!: string;
 
   @ApiProperty({
@@ -25,11 +32,17 @@ export class AuthTokensResponseDto {
   })
   refreshToken!: string;
 
-  @ApiProperty({ type: AccountSummaryDto, required: false })
-  account?: AccountSummaryDto;
+  @ApiProperty({ type: AccountSummaryDto })
+  account!: AccountSummaryDto;
 }
 
-// Response của register: KHÔNG trả token (bắt đăng nhập riêng).
+// Riêng /auth/google: báo FE biết vừa tạo tài khoản mới (hiện thông báo "đã gửi mật khẩu qua mail").
+export class GoogleAuthResponseDto extends AuthTokensResponseDto {
+  @ApiProperty({ example: false })
+  isNewAccount!: boolean;
+}
+
+// Response của register: KHÔNG trả token (bắt đăng nhập riêng). Giữ shape cũ cho FE.
 export class RegisterResponseDto {
   @ApiProperty({ format: 'uuid' })
   accountId!: string;
@@ -40,7 +53,7 @@ export class RegisterResponseDto {
   @ApiProperty({ enum: ROLES, example: 'CUSTOMER' })
   role!: string;
 
-  @ApiProperty({ enum: ACCOUNT_STATUSES, example: 'ACTIVE' })
+  @ApiProperty({ enum: ACCOUNT_STATUSES, example: 'PENDING' })
   status!: string;
 }
 
