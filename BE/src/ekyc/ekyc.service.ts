@@ -338,6 +338,15 @@ export class EkycService {
       throw new NotFoundException('EKYC_IMAGE_NOT_FOUND');
     }
 
+    // Tương thích ngược: Nếu dữ liệu cũ được lưu dạng chuỗi giả lập "ekyc/..." trước khi tích hợp Cloudinary
+    if (publicId.startsWith('ekyc/')) {
+      return {
+        url: null,
+        expiresInSeconds: 0,
+        message: 'Bản ghi eKYC này được xác thực từ phiên bản cũ (trước khi tích hợp Cloudinary), chưa có file ảnh lưu trên Cloud.',
+      };
+    }
+
     // Tạo signed URL với chữ ký — chỉ có thể tạo bởi server sở hữu API secret.
     const signedUrl = cloudinary.url(publicId, {
       sign_url: true,

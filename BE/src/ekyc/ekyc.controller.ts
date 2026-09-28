@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
@@ -149,15 +150,15 @@ export class EkycController {
 
   /**
    * Xem ảnh eKYC bảo mật (Signed URL tạm thời).
-   * Customer chỉ xem được ảnh của chính mình.
-   * Admin cần tạo endpoint riêng nếu muốn xem ảnh Customer khác.
+   * - Customer: Xem ảnh của chính mình.
+   * - Admin: Có thể xem ảnh của bất kỳ Customer nào bằng cách truyền query param `accountId`.
    */
   @Get('documents/:field')
-  @Roles('CUSTOMER')
+  @Roles('CUSTOMER', 'ADMIN')
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Lấy link ảnh eKYC bảo mật (signed URL)',
-    description: 'Trả về URL có chữ ký để xem ảnh CCCD/selfie. URL chỉ dùng để hiển thị, không lưu cache.',
+    description: 'Trả về URL có chữ ký để xem ảnh CCCD/selfie. URL chỉ dùng để hiển thị, sống 10 phút. Admin có thể truyền ?targetAccountId=... để xem hồ sơ khách.',
   })
   @ApiParam({
     name: 'field',
@@ -167,7 +168,9 @@ export class EkycController {
   async getDocumentImage(
     @CurrentUser() user: CurrentUserData,
     @Param('field') field: string,
+    @Query('targetAccountId') targetAccountId?: string,
   ) {
-    return this.ekycService.getSignedImageUrl(user.accountId, field);
+    const target = user.role === 'ADMIN' && targetAccountId ? targetAccountId : user.accountId;
+    return this.ekycService.getSignedImageUrl(target, field);
   }
 }
