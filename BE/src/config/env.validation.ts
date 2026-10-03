@@ -1,5 +1,8 @@
 import * as Joi from 'joi';
 
+// SMTP được coi là bật khi SMTP_HOST có giá trị (không rỗng).
+const SMTP_ENABLED = Joi.string().min(1).required();
+
 export const envValidationSchema = Joi.object({
   NODE_ENV: Joi.string()
     .valid('development', 'test', 'production')
@@ -51,7 +54,11 @@ export const envValidationSchema = Joi.object({
   STREAM_API_KEY: Joi.string().required(),
   STREAM_API_SECRET: Joi.string().required(),
   CLOUDINARY_URL: Joi.string().pattern(/^cloudinary:\/\//).optional(),
-  APP_BASE_URL: Joi.string().uri().optional(),
+  APP_BASE_URL: Joi.string().uri().when('SMTP_HOST', {
+    is: SMTP_ENABLED,
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
 
   // Đã dùng ở main.ts/typeorm.config.ts từ trước nhưng chưa khai schema — bổ sung cho tường minh.
   CORS_ORIGIN: Joi.string().optional(),
@@ -79,5 +86,30 @@ export const envValidationSchema = Joi.object({
 
   // ===== AI eKYC Service (Self-hosted Python/FastAPI) =====
   AI_SERVICE_URL: Joi.string().uri().default('http://localhost:8000'),
-  FPTAI_API_KEY: Joi.string().allow('').optional().default(''), // Deprecated — kept for backward compat
+
+  // ===== Google Sign-In =====
+  // Client ID OAuth (web, android, ios...) cách nhau dấu phẩy — aud hợp lệ của ID token.
+  // Để trống → POST /auth/google trả 503 GOOGLE_AUTH_NOT_CONFIGURED.
+  GOOGLE_CLIENT_IDS: Joi.string().allow('').optional(),
+
+  // ===== SMTP (gửi mật khẩu cho tài khoản tạo bằng Google) =====
+  // Để trống SMTP_HOST → không gửi mail, chỉ log cảnh báo (dev).
+  // Có SMTP_HOST → bắt buộc USER/PASS + APP_BASE_URL (link "Đổi mật khẩu" trong mail
+  // phải là URL tuyệt đối) — thiếu thì app không khởi động thay vì gửi mail hỏng.
+  SMTP_HOST: Joi.string().allow('').optional(),
+  SMTP_PORT: Joi.number().port().default(587),
+  SMTP_USER: Joi.string().when('SMTP_HOST', {
+    is: SMTP_ENABLED,
+    then: Joi.required(),
+    otherwise: Joi.allow('').optional(),
+  }),
+  SMTP_PASS: Joi.string().when('SMTP_HOST', {
+    is: SMTP_ENABLED,
+    then: Joi.required(),
+    otherwise: Joi.allow('').optional(),
+  }),
+  MAIL_FROM: Joi.string().allow('').optional(),
+
+  // ===== FPT.AI eKYC (Deprecated - kept for backward compatibility) =====
+  FPTAI_API_KEY: Joi.string().allow('').optional().default(''),
 });

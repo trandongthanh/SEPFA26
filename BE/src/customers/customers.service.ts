@@ -19,7 +19,10 @@ export class CustomersService {
     private readonly crypto: CryptoService,
   ) { }
 
-  // Profile luôn được auto-tạo trong transaction register — không tìm thấy là dữ liệu bất thường.
+  // TODO(kích hoạt tài khoản): từ nhánh auth-google-oauth, /auth/register và /auth/google
+  // CHỈ tạo ACCOUNT, KHÔNG tạo customer profile nữa → tài khoản mới gọi hàm này sẽ nhận
+  // 404 CUSTOMER_PROFILE_NOT_FOUND cho tới khi có bước tạo hồ sơ (đề xuất: tự tạo hồ sơ
+  // rỗng lần đầu gọi — ngoài account_id, mọi cột customer_profiles đều nullable hoặc có default).
   async getMyProfile(accountId: string) {
     const profile = await this.profileRepo.findOne({ where: { accountId } });
     if (!profile) {
