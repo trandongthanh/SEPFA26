@@ -40,16 +40,16 @@ export class EkycController {
   /**
    * Bước 1: Upload ảnh CCCD mặt trước (bắt buộc) + mặt sau (tuỳ chọn).
    * Ảnh được upload lên Cloudinary (authenticated — không công khai).
-   * Backend gọi FPT.AI OCR → trả dữ liệu bóc tách.
+   * Backend gọi Self-hosted AI Service (EasyOCR + Anti-Fraud) → trả dữ liệu bóc tách.
    */
   @Post('ocr')
   @Roles('CUSTOMER')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Bước 1: OCR ảnh CCCD — bóc tách thông tin bằng FPT.AI',
+    summary: 'Bước 1: OCR ảnh CCCD — Bóc tách thông tin & Chống giả mạo (Self-hosted AI)',
     description:
       'Chọn 1 hoặc 2 file ảnh (tối đa 20MB/ảnh). File 1 = mặt trước CCCD (bắt buộc), File 2 = mặt sau (tuỳ chọn). ' +
-      'Ảnh được lưu bảo mật trên Cloudinary (type: authenticated). Nếu ảnh > 4MB, server tự động resize trước khi gửi FPT.AI.',
+      'Ảnh được lưu bảo mật trên Cloudinary (type: authenticated). AI tự động bóc tách thông tin và kiểm tra gian lận thẻ.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -84,16 +84,16 @@ export class EkycController {
 
   /**
    * Bước 2: Upload ảnh CCCD mặt trước + ảnh selfie.
-   * Backend gọi FPT.AI Face Match → nếu khớp (>= 80%) → VERIFIED.
+   * Backend gọi Self-hosted AI Service Face Match (DeepFace ArcFace) + Liveness → nếu khớp (>= 80%) → VERIFIED.
    */
   @Post('face-match')
   @Roles('CUSTOMER')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Bước 2: So khớp khuôn mặt CCCD vs Selfie — FPT.AI',
+    summary: 'Bước 2: So khớp khuôn mặt CCCD vs Selfie & Anti-Deepfake (Self-hosted AI)',
     description:
       'Chọn đúng 2 file ảnh (tối đa 20MB/ảnh). File 1 = ảnh CCCD mặt trước, File 2 = ảnh selfie khuôn mặt thật. ' +
-      'Server tự động resize nếu quá nặng. Kết quả: VERIFIED (khớp ≥ 80%) hoặc REJECTED.',
+      'Mô hình DeepFace ArcFace so khớp sinh trắc học và kiểm tra liveness người thật. Kết quả: VERIFIED (khớp ≥ 80%) hoặc REJECTED.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({

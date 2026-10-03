@@ -77,6 +77,7 @@ export const envValidationSchema = Joi.object({
   BANK_ACCOUNT_NUMBER: Joi.string().default('0000000000'),
   BANK_ACCOUNT_NAME: Joi.string().default('LANCARE HUB'),
 
-  // ===== FPT.AI eKYC (Vision OCR + Face Match) =====
-  FPTAI_API_KEY: Joi.string().allow('').optional().default(''),
+  // ===== AI eKYC Service (Self-hosted Python/FastAPI) =====
+  AI_SERVICE_URL: Joi.string().uri().default('http://localhost:8000'),
+  FPTAI_API_KEY: Joi.string().allow('').optional().default(''), // Deprecated — kept for backward compat
 });
