@@ -84,6 +84,9 @@ export const envValidationSchema = Joi.object({
   BANK_ACCOUNT_NUMBER: Joi.string().default('0000000000'),
   BANK_ACCOUNT_NAME: Joi.string().default('LANCARE HUB'),
 
+  // ===== AI eKYC Service (Self-hosted Python/FastAPI) =====
+  AI_SERVICE_URL: Joi.string().uri().default('http://localhost:8000'),
+
   // ===== Google Sign-In =====
   // Client ID OAuth (web, android, ios...) cách nhau dấu phẩy — aud hợp lệ của ID token.
   // Để trống → POST /auth/google trả 503 GOOGLE_AUTH_NOT_CONFIGURED.
@@ -107,6 +110,6 @@ export const envValidationSchema = Joi.object({
   }),
   MAIL_FROM: Joi.string().allow('').optional(),
 
-  // ===== FPT.AI eKYC (Vision OCR + Face Match) =====
+  // ===== FPT.AI eKYC (Deprecated - kept for backward compatibility) =====
   FPTAI_API_KEY: Joi.string().allow('').optional().default(''),
 });

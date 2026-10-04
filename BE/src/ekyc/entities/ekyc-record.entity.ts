@@ -27,7 +27,7 @@ export class EkycRecord extends BaseEntity {
   @Column({ name: 'status', type: 'varchar', length: 20, default: 'PENDING' })
   status!: string;
 
-  // ===== Thông tin OCR bóc tách từ CCCD qua FPT.AI =====
+  // ===== Thông tin OCR bóc tách từ CCCD (Self-hosted AI Service) =====
   @Column({ name: 'id_doc_type', type: 'varchar', length: 50, nullable: true })
   idDocType!: string | null;
 
@@ -73,4 +73,14 @@ export class EkycRecord extends BaseEntity {
 
   @Column({ name: 'verified_at', type: 'timestamptz', nullable: true })
   verifiedAt!: Date | null;
+
+  // ===== Anti-Fraud Detection Results (Self-hosted AI Service) =====
+  @Column({ name: 'fraud_score', type: 'numeric', precision: 5, scale: 2, nullable: true })
+  fraudScore!: string | null;
+
+  @Column({ name: 'liveness_score', type: 'numeric', precision: 5, scale: 2, nullable: true })
+  livenessScore!: string | null;
+
+  @Column({ name: 'antifraud_details', type: 'jsonb', nullable: true })
+  antifraudDetails!: Record<string, unknown> | null;
 }

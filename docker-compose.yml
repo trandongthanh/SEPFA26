@@ -17,5 +17,25 @@ services:
       timeout: 5s
       retries: 10
 
+  # Self-hosted AI eKYC Service (replaces FPT.AI)
+  # Uses: EasyOCR (Vietnamese OCR), DeepFace (Face Matching), OpenCV (Anti-Fraud)
+  ai-ekyc:
+    build:
+      context: ./AI
+      dockerfile: Dockerfile
+    container_name: lancare-hub-ai-ekyc
+    restart: unless-stopped
+    ports:
+      - "${AI_SERVICE_PORT:-8000}:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s  # Models take time to load on first start
+
 volumes:
   postgres_data:
+
