@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
+  Allow,
   IsEmail,
   IsIn,
   IsOptional,
@@ -12,7 +13,7 @@ import {
   SELF_REGISTER_ROLES,
   type SelfRegisterRole,
 } from '../../common/constants/roles';
-import { toNormalizedEmail, toTrimmed } from '../../common/transforms';
+import { toNormalizedEmail } from '../../common/transforms';
 
 export class RegisterWithEkycDto {
   @ApiProperty({
@@ -39,7 +40,7 @@ export class RegisterWithEkycDto {
     example: 'Nguyễn Văn Lan',
     description: 'Họ và tên (tuỳ chọn — nếu không gửi, hệ thống tự lấy họ tên đã OCR từ thẻ CCCD)',
   })
-  @Transform(toTrimmed)
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : typeof value === 'string' ? value.trim() : value))
   @IsOptional()
   @IsString()
   @MaxLength(150)
@@ -59,8 +60,18 @@ export class RegisterWithEkycDto {
     example: '0901234567',
     description: 'Số điện thoại liên hệ (tuỳ chọn)',
   })
-  @Transform(toTrimmed)
+  @Transform(({ value }) => (typeof value === 'string' && value.trim() === '' ? undefined : typeof value === 'string' ? value.trim() : value))
   @IsOptional()
   @IsString()
   phone?: string;
+
+  // Cho phép Swagger hoặc Client gửi field rỗng cho file mà không bị chặn bởi forbidNonWhitelisted
+  @Allow()
+  cccdFront?: unknown;
+
+  @Allow()
+  cccdBack?: unknown;
+
+  @Allow()
+  selfie?: unknown;
 }
