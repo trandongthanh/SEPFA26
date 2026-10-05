@@ -16,9 +16,9 @@ type ProviderType = (typeof PROVIDER_TYPES)[number];
 
 // KHÔNG nhận verificationStatus/ratingAvg: provider không tự đặt được (chỉ admin/hệ thống).
 // C1: mọi field optional → PUT kiểu merge (đổi mỗi 1 field không phải gửi lại cả hồ sơ).
-// TODO(kích hoạt tài khoản): register KHÔNG còn tạo provider profile (nhánh auth-google-oauth)
-// → hồ sơ chưa tồn tại thì PUT hiện trả 404. Khi bổ sung bước tạo hồ sơ lần đầu, request
-// đầu tiên phải có providerType + displayName (2 cột NOT NULL của provider_profiles).
+// Hồ sơ chưa tồn tại (account PROVIDER mới) → PUT đầu tiên TẠO hồ sơ, khi đó bắt buộc
+// providerType + displayName (2 cột NOT NULL) — thiếu → 400 PROVIDER_PROFILE_FIELDS_REQUIRED.
+// MaxLength khớp độ dài cột — vượt cột thì Postgres ném lỗi → 500 thay vì 400.
 export class UpsertProfileDto {
   @ApiPropertyOptional({ enum: PROVIDER_TYPES, example: 'NURSERY' })
   @IsOptional()
@@ -111,35 +111,42 @@ export class UpsertProfileDto {
   @ApiPropertyOptional({ example: '5' })
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   experience?: string;
 
   @ApiPropertyOptional({ example: 'Hồ Điệp, Dendro, Vũ Nữ, Lan Hài' })
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   specialties?: string;
 
   @ApiPropertyOptional({ example: 'TP.HCM, Bình Dương' })
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   serviceAreas?: string;
 
   @ApiPropertyOptional({ example: 'Chứng chỉ nông nghiệp' })
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   certificates?: string;
 
   @ApiPropertyOptional({ example: 'Vietcombank' })
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   bankName?: string;
 
   @ApiPropertyOptional({ example: '1234567890' })
   @IsOptional()
   @IsString()
+  @MaxLength(50)
   bankAccount?: string;
 
   @ApiPropertyOptional({ example: 'NGUYEN VAN A' })
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   bankHolder?: string;
 }

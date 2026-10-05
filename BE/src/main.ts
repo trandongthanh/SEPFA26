@@ -1,18 +1,26 @@
+import { timingSafeEqual } from 'crypto';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { configureApp } from './app.setup';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const config = app.get(ConfigService);
 
-  // Vercel/proxy đứng trước app — không bật thì @Ip() ghi IP của proxy thay vì client.
-  const expressApp = app.getHttpAdapter().getInstance() as {
-    set: (key: string, value: unknown) => void;
-  };
-  expressApp.set('trust proxy', 1);
+  // Chỉ tin header X-Forwarded-For khi THẬT SỰ có proxy đứng trước (Vercel tự ghi đè header
+  // này) — không bật thì @Ip()/rate limit thấy IP của proxy thay vì client.
+  // Chạy thẳng `node dist/main` (local, demo trên laptop) mà vẫn bật thì client tự gửi
+  // X-Forwarded-For để đổi req.ip → lách rate limit, giả IP ghi trong chữ ký hợp đồng.
+  // Proxy khác (nginx, Render...): đặt TRUST_PROXY=true.
+  if (process.env.VERCEL || config.get<string>('TRUST_PROXY') === 'true') {
+    const expressApp = app.getHttpAdapter().getInstance() as {
+      set: (key: string, value: unknown) => void;
+    };
+    expressApp.set('trust proxy', 1);
+  }
 
   // ===== CORS Configuration =====
   const corsOrigin = config.get<string>('CORS_ORIGIN', 'http://localhost:3002');
@@ -22,19 +30,22 @@ async function bootstrap() {
     origin: allowedOrigins,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     credentials: true,
+    // Cho FE web (khác origin) đọc header rate limit — vd hiện "thử lại sau N giây" từ
+    // Retry-After khi nhận 429. Hậu tố -account = lớp đếm theo IP+email (common/throttle.ts).
+    exposedHeaders: ['default', 'account'].flatMap((name) => {
+      const suffix = name === 'default' ? '' : `-${name}`;
+      return [
+        `Retry-After${suffix}`,
+        `X-RateLimit-Limit${suffix}`,
+        `X-RateLimit-Remaining${suffix}`,
+        `X-RateLimit-Reset${suffix}`,
+      ];
+    }),
   });
 
   const port = config.get<number>('PORT', 3000);
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
-
-  app.setGlobalPrefix('api/v1');
+  configureApp(app);
 
   // Swagger: "hợp đồng" API cho FE. Mở tại /api/docs (FE build UI dựa trên đây).
   const swaggerConfig = new DocumentBuilder()
@@ -61,7 +72,7 @@ async function bootstrap() {
         },
         next: () => void,
       ) => {
-        if (req.headers.authorization === expected) {
+        if (safeEqual(req.headers.authorization ?? '', expected)) {
           return next();
         }
         res.setHeader('WWW-Authenticate', 'Basic realm="LanCare Docs"');
@@ -95,4 +106,11 @@ async function bootstrap() {
   );
   Logger.log(`Swagger docs: http://localhost:${port}/api/docs`, 'Bootstrap');
 }
+// So sánh constant-time — chống dò mật khẩu Swagger qua thời gian phản hồi.
+function safeEqual(received: string, expected: string): boolean {
+  const a = Buffer.from(received);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 void bootstrap();

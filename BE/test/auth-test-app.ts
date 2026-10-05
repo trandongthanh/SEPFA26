@@ -1,16 +1,17 @@
-import {
-  INestApplication,
-  UnauthorizedException,
-  ValidationPipe,
-} from '@nestjs/common';
+import { INestApplication, UnauthorizedException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/app.setup';
 import {
   GoogleIdTokenVerifier,
   type GoogleProfile,
 } from '../src/auth/google-id-token.verifier';
-import { MailService, type GooglePasswordMail } from '../src/mail/mail.service';
+import {
+  MailService,
+  type GooglePasswordMail,
+  type PasswordResetMail,
+} from '../src/mail/mail.service';
 
 /**
  * Google giả: idToken dạng "google:<email>:<tên>" → profile; "google-unverified:<email>"
@@ -47,6 +48,16 @@ export class FakeMailService {
     this.sent.push(mail);
     return Promise.resolve(true);
   }
+
+  // Mail đặt lại mật khẩu — lưu token thô để test lấy ra như người dùng bấm link.
+  readonly resetMails: PasswordResetMail[] = [];
+  sendPasswordReset(mail: PasswordResetMail): Promise<boolean> {
+    if (this.failing) {
+      return Promise.resolve(false);
+    }
+    this.resetMails.push(mail);
+    return Promise.resolve(true);
+  }
 }
 
 export interface AuthTestApp {
@@ -74,16 +85,12 @@ export async function createAuthTestApp(): Promise<AuthTestApp> {
     .compile();
 
   const app = moduleRef.createNestApplication();
-  // Giống main.ts để hành vi validate/route khớp production.
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
-  app.setGlobalPrefix('api/v1');
-  await app.init();
+  // Cùng cấu hình với main.ts → hành vi validate/route/serialize khớp production.
+  configureApp(app);
+  // Listen TƯỜNG MINH trên 127.0.0.1 (thay vì để supertest tự listen(0) trên `::`).
+  // macOS cho bind `::` trùng port mà tiến trình khác (VS Code, Postman...) đang giữ trên
+  // 127.0.0.1 → supertest gọi 127.0.0.1:port rơi vào server KHÁC → test chập chờn 404/401.
+  await app.listen(0, '127.0.0.1');
 
   const dataSource = app.get(DataSource);
   await dataSource.synchronize(true); // drop + tạo lại toàn bộ bảng
@@ -94,6 +101,7 @@ export async function createAuthTestApp(): Promise<AuthTestApp> {
     mailbox,
     reset: async () => {
       mailbox.sent.length = 0;
+      mailbox.resetMails.length = 0;
       mailbox.failing = false;
       await dataSource.query('TRUNCATE TABLE refresh_tokens, accounts CASCADE');
     },
