@@ -61,3 +61,9 @@ export class LogoutResponseDto {
   @ApiProperty({ example: true })
   success!: boolean;
 }
+
+// POST /auth/forgot-password LUÔN trả { success: true } — email có tồn tại hay không đều như nhau.
+export class ForgotPasswordResponseDto {
+  @ApiProperty({ example: true })
+  success!: boolean;
+}

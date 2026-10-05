@@ -58,3 +58,28 @@ describe('envValidationSchema — SMTP', () => {
     ]);
   });
 });
+
+describe('envValidationSchema — THROTTLE_DISABLED', () => {
+  it('dev/test được tắt rate limit', () => {
+    expect(
+      errorKeys({ ...BASE, NODE_ENV: 'test', THROTTLE_DISABLED: 'true' }),
+    ).toEqual([]);
+  });
+
+  it('production KHÔNG được tắt rate limit → app không khởi động', () => {
+    expect(
+      errorKeys({ ...BASE, NODE_ENV: 'production', THROTTLE_DISABLED: 'true' }),
+    ).toEqual(['THROTTLE_DISABLED']);
+  });
+
+  it('production để false hoặc bỏ trống → hợp lệ', () => {
+    expect(
+      errorKeys({
+        ...BASE,
+        NODE_ENV: 'production',
+        THROTTLE_DISABLED: 'false',
+      }),
+    ).toEqual([]);
+    expect(errorKeys({ ...BASE, NODE_ENV: 'production' })).toEqual([]);
+  });
+});

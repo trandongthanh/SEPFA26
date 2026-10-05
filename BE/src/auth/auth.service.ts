@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -7,12 +8,13 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes, createHash } from 'crypto';
-import { EntityManager, IsNull, Repository } from 'typeorm';
+import { EntityManager, IsNull, LessThan, MoreThan, Repository } from 'typeorm';
 import { Account } from '../accounts/entities/account.entity';
 import { AccountsService } from '../accounts/accounts.service';
 import type { SelfRegisterRole } from '../common/constants/roles';
 import { PasswordService } from '../crypto/password.service';
-import { MailService } from '../mail/mail.service';
+import { MailService, PASSWORD_RESET_LINK_MINUTES } from '../mail/mail.service';
+import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { GoogleIdTokenVerifier } from './google-id-token.verifier';
 import { TokenService, type JwtPayload } from './token.service';
@@ -21,9 +23,12 @@ import { LoginDto } from './dto/login.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import type { CurrentUserData } from './types/current-user.type';
 import {
   AuthTokensResponseDto,
+  ForgotPasswordResponseDto,
   GoogleAuthResponseDto,
   LogoutResponseDto,
   RegisterResponseDto,
@@ -38,6 +43,8 @@ import { RegisterWithEkycDto } from './dto/register-with-ekyc.dto';
 // Postgres unique_violation — 2 request đăng ký cùng email chạy song song.
 const PG_UNIQUE_VIOLATION = '23505';
 
+const PASSWORD_RESET_TTL_MS = PASSWORD_RESET_LINK_MINUTES * 60 * 1000;
+
 /**
  * Nghiệp vụ xác thực: đăng ký, đăng nhập (email/mật khẩu và Google), làm mới phiên, đăng xuất.
  *
@@ -51,6 +58,8 @@ const PG_UNIQUE_VIOLATION = '23505';
  *   Access token KHÔNG lưu DB: tự hết hạn (JWT_ACCESS_EXPIRES), guard tra account mỗi request.
  * - Tài khoản tạo bằng Google vẫn có mật khẩu (tự sinh, gửi qua mail) → đăng nhập được cả 2 cách;
  *   không có bảng liên kết Google riêng, tài khoản được nhận diện theo EMAIL.
+ * - Quên mật khẩu: token 1 lần (lưu SHA-256, hạn 30 phút) gửi qua mail; đặt lại xong thu hồi
+ *   MỌI phiên — giống đổi mật khẩu.
  */
 @Injectable()
 export class AuthService {
@@ -63,6 +72,8 @@ export class AuthService {
     private readonly customerProfiles: Repository<CustomerProfile>,
     @InjectRepository(EkycRecord)
     private readonly ekycRecords: Repository<EkycRecord>,
+    @InjectRepository(PasswordResetToken)
+    private readonly passwordResetTokens: Repository<PasswordResetToken>,
     private readonly accountsService: AccountsService,
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
@@ -393,6 +404,121 @@ export class AuthService {
     return { success: true };
   }
 
+  /**
+   * POST /auth/forgot-password — LUÔN trả { success: true } (email có tồn tại hay không như nhau,
+   * chống dò email). Account tồn tại + được đăng nhập (không SUSPENDED) → xoá token cũ của
+   * account (chỉ link mới nhất dùng được), tạo token mới, gửi mail chứa link.
+   *
+   * Rủi ro đã chấp nhận: email có account phải ghi DB + gửi SMTP nên phản hồi chậm hơn email lạ
+   * → dò email qua thời gian vẫn khả thi. Không gửi mail nền được vì Vercel huỷ tác vụ nền sau
+   * khi trả response (xem MailService). Rate limit theo IP 10/phút làm việc dò chậm lại (lớp
+   * theo IP+email 3/phút KHÔNG giúp ở đây — mỗi lần dò là 1 email khác).
+   */
+  async forgotPassword(
+    dto: ForgotPasswordDto,
+  ): Promise<ForgotPasswordResponseDto> {
+    const account = await this.accounts.findOne({
+      where: { email: dto.email },
+    });
+    if (!account || !this.accountsService.isAllowedToAuthenticate(account)) {
+      return { success: true };
+    }
+
+    const token = randomBytes(32).toString('base64url');
+    const issued = await this.refreshTokens.manager.transaction(
+      async (manager) => {
+        // Khoá dòng account: 2 yêu cầu song song chạy LẦN LƯỢT (xoá cũ → tạo mới) → chỉ còn
+        // đúng 1 token (của yêu cầu sau). Không khoá thì cả 2 cùng thấy "chưa có token" và
+        // cùng tạo → 2 link cùng dùng được.
+        // THỨ TỰ KHOÁ chung của auth: account TRƯỚC, bảng token SAU (giống reset + đổi mật
+        // khẩu) — ngược thứ tự thì 2 transaction chờ nhau vòng tròn → deadlock → 500.
+        // FOR NO KEY UPDATE: vẫn tuần tự hoá các lệnh khoá account, nhưng không chặn insert
+        // refresh token (login/refresh chỉ cần KEY SHARE qua FK).
+        const locked = await manager.findOne(Account, {
+          where: { id: account.id },
+          lock: { mode: 'for_no_key_update' },
+        });
+        if (!this.accountsService.isAllowedToAuthenticate(locked)) {
+          return false;
+        }
+        await manager.delete(PasswordResetToken, { accountId: account.id });
+        await manager.save(
+          manager.create(PasswordResetToken, {
+            accountId: account.id,
+            tokenHash: this.tokens.hashToken(token),
+            expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS),
+          }),
+        );
+        return true;
+      },
+    );
+    if (!issued) {
+      return { success: true };
+    }
+    // Mail là phụ: gửi lỗi vẫn trả success (MailService tự log) — người dùng bấm gửi lại.
+    await this.mail.sendPasswordReset({
+      to: account.email,
+      fullName: account.fullName,
+      token,
+    });
+    return { success: true };
+  }
+
+  /**
+   * POST /auth/reset-password — đổi mật khẩu bằng token trong mail, thu hồi MỌI phiên.
+   * Token sai / hết hạn / đã dùng / account bị khoá → cùng 1 mã 400 RESET_TOKEN_INVALID.
+   * "Đốt" token có điều kiện (used_at IS NULL AND expires_at > now) → 2 request song song
+   * cùng token chỉ 1 cái đổi được mật khẩu.
+   */
+  async resetPassword(dto: ResetPasswordDto): Promise<void> {
+    const tokenHash = this.tokens.hashToken(dto.token);
+    // Tra token TRƯỚC (rẻ) — token rác/đã dùng/hết hạn trả 400 ngay, không tốn bcrypt ~300ms.
+    // Đây chỉ là lọc sớm: chốt chống chạy song song vẫn là UPDATE có điều kiện bên dưới.
+    const record = await this.passwordResetTokens.findOne({
+      where: { tokenHash, usedAt: IsNull(), expiresAt: MoreThan(new Date()) },
+    });
+    if (!record) {
+      throw new BadRequestException('RESET_TOKEN_INVALID');
+    }
+    // Băm ngoài transaction — không giữ connection DB trong lúc băm.
+    const passwordHash = await this.passwords.hash(dto.newPassword);
+
+    const done = await this.refreshTokens.manager.transaction(
+      async (manager) => {
+        // Khoá account TRƯỚC khi đốt token — cùng thứ tự với forgot + đổi mật khẩu
+        // (account → token). Trước đây đốt token trước rồi mới đụng account: chạy cùng lúc
+        // với forgot/đổi mật khẩu thì 2 bên chờ nhau → deadlock (40P01) → 500.
+        const account = await manager.findOne(Account, {
+          where: { id: record.accountId },
+          lock: { mode: 'for_no_key_update' },
+        });
+        const now = new Date();
+        const consumed = await manager.update(
+          PasswordResetToken,
+          { id: record.id, usedAt: IsNull(), expiresAt: MoreThan(now) },
+          { usedAt: now },
+        );
+        if (consumed.affected !== 1) {
+          return false;
+        }
+        // Account bị khoá: token vẫn bị đốt (transaction commit), không đổi mật khẩu.
+        if (!this.accountsService.isAllowedToAuthenticate(account)) {
+          return false;
+        }
+        await manager.update(
+          Account,
+          { id: record.accountId },
+          { passwordHash },
+        );
+        await this.revokeAllSessions(record.accountId, manager);
+        return true;
+      },
+    );
+    if (!done) {
+      throw new BadRequestException('RESET_TOKEN_INVALID');
+    }
+  }
+
   // ---- helpers ----
 
   private async loginExistingWithGoogle(
@@ -442,8 +568,13 @@ export class AuthService {
     }
   }
 
-  private async revokeAllSessions(accountId: string): Promise<void> {
-    await this.refreshTokens.update(
+  // manager: chạy trong transaction của caller (reset mật khẩu).
+  private async revokeAllSessions(
+    accountId: string,
+    manager: EntityManager = this.refreshTokens.manager,
+  ): Promise<void> {
+    await manager.update(
+      RefreshToken,
       { accountId, revokedAt: IsNull() },
       { revokedAt: new Date() },
     );
@@ -466,6 +597,13 @@ export class AuthService {
     const repo = manager
       ? manager.getRepository(RefreshToken)
       : this.refreshTokens;
+    // Dọn token ĐÃ HẾT HẠN của chính account mỗi lần cấp mới — bảng không phình vô hạn mà
+    // không cần cron (Vercel serverless không giữ process). Token hết hạn vô dụng: JWT verify
+    // đã từ chối trước khi tra DB, nên xoá không ảnh hưởng phát hiện reuse.
+    await repo.delete({
+      accountId: account.id,
+      expiresAt: LessThan(new Date()),
+    });
     await repo.save(
       repo.create({
         accountId: account.id,

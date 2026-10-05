@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createServer, type Server, type Socket } from 'net';
 import type { AddressInfo } from 'net';
@@ -51,6 +52,76 @@ describe('MailService', () => {
       const service = makeService({ SMTP_HOST: '' });
       expect(internals(service).transporter).toBeNull();
       await expect(service.sendGooglePassword(MAIL)).resolves.toBe(false);
+    });
+  });
+
+  describe('sendPasswordReset', () => {
+    type SentMail = { to: string; text: string; html: string };
+    const RESET = {
+      to: 'hoa@gmail.com',
+      fullName: '<b>Hoa</b>',
+      token: 'abc+/=_-XYZ',
+    };
+    // Thay transporter thật bằng bản giả để đọc nội dung mail mà không gửi SMTP.
+    const withFakeTransport = (env: Record<string, unknown>) => {
+      const service = makeService({ SMTP_HOST: 'smtp.gmail.com', ...env });
+      const sendMail = jest
+        .fn<Promise<unknown>, [SentMail]>()
+        .mockResolvedValue({});
+      (service as unknown as { transporter: unknown }).transporter = {
+        sendMail,
+      };
+      return { service, sendMail };
+    };
+    afterEach(() => jest.restoreAllMocks());
+
+    it('link = APP_BASE_URL/auth/reset-password?token=<encode>, bỏ "/" cuối APP_BASE_URL', async () => {
+      const { service, sendMail } = withFakeTransport({
+        APP_BASE_URL: 'https://lancarehub.vn/',
+      });
+      await expect(service.sendPasswordReset(RESET)).resolves.toBe(true);
+      const [mail] = sendMail.mock.calls[0];
+      const url = `https://lancarehub.vn/auth/reset-password?token=${encodeURIComponent(RESET.token)}`;
+      expect(mail.to).toBe('hoa@gmail.com');
+      expect(mail.text).toContain(url);
+      expect(mail.text).toContain('30 phút');
+      // HTML escape cả tên (chống chèn HTML) lẫn link.
+      expect(mail.html).toContain('&lt;b&gt;Hoa&lt;/b&gt;');
+      expect(mail.html).not.toContain('<b>Hoa</b>');
+      expect(mail.html).toContain(
+        '/auth/reset-password?token=abc%2B%2F%3D_-XYZ',
+      );
+    });
+
+    it('SMTP lỗi → trả false, không ném', async () => {
+      const { service, sendMail } = withFakeTransport({});
+      sendMail.mockRejectedValue(new Error('535 auth failed'));
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+      await expect(service.sendPasswordReset(RESET)).resolves.toBe(false);
+    });
+
+    it('không SMTP ở dev → ghi link ra log để thử tay', async () => {
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => {});
+      const service = makeService({
+        SMTP_HOST: '',
+        NODE_ENV: 'development',
+        APP_BASE_URL: 'http://localhost:3002',
+      });
+      await expect(service.sendPasswordReset(RESET)).resolves.toBe(false);
+      expect(warn.mock.calls[0][0]).toContain(
+        'http://localhost:3002/auth/reset-password?token=',
+      );
+    });
+
+    it('không SMTP ở production → KHÔNG ghi link (link là chìa khoá đổi mật khẩu)', async () => {
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => {});
+      const service = makeService({ SMTP_HOST: '', NODE_ENV: 'production' });
+      await expect(service.sendPasswordReset(RESET)).resolves.toBe(false);
+      expect(warn.mock.calls[0][0]).not.toContain('token=');
     });
   });
 

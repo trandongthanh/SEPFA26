@@ -8,6 +8,7 @@ import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
 import { EkycModule } from '../ekyc/ekyc.module';
 import { CryptoModule } from '../crypto/crypto.module';
+import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { TokenService } from './token.service';
 import { AuthService } from './auth.service';
@@ -17,7 +18,12 @@ import { AuthController } from './auth.controller';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([RefreshToken, CustomerProfile, EkycRecord]),
+    TypeOrmModule.forFeature([
+      RefreshToken,
+      PasswordResetToken,
+      CustomerProfile,
+      EkycRecord,
+    ]),
     PassportModule,
     // JwtModule rỗng: secret + expiry truyền theo từng lần ký/xác minh trong TokenService
     // (vì access và refresh dùng 2 secret khác nhau).

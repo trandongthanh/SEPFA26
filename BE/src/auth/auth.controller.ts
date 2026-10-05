@@ -18,6 +18,8 @@ import {
 } from '@nestjs/swagger';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
+import { Throttle } from '@nestjs/throttler';
+import { RATE_LIMIT_WINDOW_MS } from '../common/throttle';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { CurrentUserData } from './types/current-user.type';
@@ -28,12 +30,28 @@ import { LoginDto } from './dto/login.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import {
   AuthTokensResponseDto,
+  ForgotPasswordResponseDto,
   GoogleAuthResponseDto,
   LogoutResponseDto,
   RegisterResponseDto,
 } from './dto/auth-response.dto';
+
+// Rate limit riêng cho route public dễ bị dò/spam (cửa sổ 1 phút, xem common/throttle.ts):
+// - ip: mọi request từ 1 IP (chống 1 máy spam / thử nhiều email);
+// - account: theo IP + email trong body — chặn dò 1 email mà không chặn người khác chung IP
+//   (cả phòng chung Wi-Fi khi demo). Chỉ đếm khi body có email.
+// Vượt → 429 ThrottlerException.
+const throttle = (limits: { ip: number; account?: number }) =>
+  Throttle({
+    default: { limit: limits.ip, ttl: RATE_LIMIT_WINDOW_MS },
+    ...(limits.account !== undefined && {
+      account: { limit: limits.account, ttl: RATE_LIMIT_WINDOW_MS },
+    }),
+  });
 
 // Controller mỏng: chỉ map HTTP → AuthService. User-Agent được lưu kèm refresh token để
 // nhận diện phiên/thiết bị khi tra bảng refresh_tokens. Nghiệp vụ + mã lỗi: xem AuthService.
@@ -111,6 +129,8 @@ export class AuthController {
 
   @Public()
   @Post('register')
+  // Chống spam tạo account.
+  @throttle({ ip: 30, account: 5 })
   @HttpCode(201)
   @ApiOperation({
     summary: 'Đăng ký tài khoản cơ bản (status PENDING - khuyến khích dùng /register-with-ekyc để tự động kích hoạt)',
@@ -123,6 +143,8 @@ export class AuthController {
 
   @Public()
   @Post('login')
+  // Chống dò mật khẩu (brute-force).
+  @throttle({ ip: 30, account: 5 })
   @HttpCode(200)
   @ApiOperation({ summary: 'Đăng nhập email + mật khẩu' })
   @ApiResponse({ status: 200, type: AuthTokensResponseDto })
@@ -137,6 +159,8 @@ export class AuthController {
 
   @Public()
   @Post('google')
+  // Mỗi lần gọi tải/kiểm chữ ký Google; lần đầu có thể gửi mail.
+  @throttle({ ip: 10 })
   @HttpCode(200)
   @ApiOperation({
     summary:
@@ -167,6 +191,8 @@ export class AuthController {
 
   @Public()
   @Post('refresh')
+  // App tự gọi khi access token hết hạn — nới hơn login.
+  @throttle({ ip: 30 })
   @HttpCode(200)
   @ApiOperation({ summary: 'Làm mới token bằng refresh token (có xoay token)' })
   @ApiResponse({ status: 200, type: AuthTokensResponseDto })
@@ -179,6 +205,40 @@ export class AuthController {
     @Headers('user-agent') userAgent?: string,
   ): Promise<AuthTokensResponseDto> {
     return this.auth.refresh(dto, userAgent);
+  }
+
+  @Public()
+  @Post('forgot-password')
+  // Mỗi lần gọi gửi 1 mail — chặn spam hộp thư người khác.
+  @throttle({ ip: 10, account: 3 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Quên mật khẩu — gửi link đặt lại qua mail (hạn 30 phút, dùng 1 lần). LUÔN 200, kể cả email không tồn tại',
+  })
+  @ApiResponse({ status: 200, type: ForgotPasswordResponseDto })
+  forgotPassword(
+    @Body() dto: ForgotPasswordDto,
+  ): Promise<ForgotPasswordResponseDto> {
+    return this.auth.forgotPassword(dto);
+  }
+
+  @Public()
+  @Post('reset-password')
+  // Chống dò token.
+  @throttle({ ip: 5 })
+  @HttpCode(204)
+  @ApiOperation({
+    summary:
+      'Đặt lại mật khẩu bằng token trong link mail — thành công thì MỌI phiên bị đăng xuất',
+  })
+  @ApiResponse({ status: 204 })
+  @ApiResponse({
+    status: 400,
+    description: 'RESET_TOKEN_INVALID (sai / hết hạn / đã dùng)',
+  })
+  resetPassword(@Body() dto: ResetPasswordDto): Promise<void> {
+    return this.auth.resetPassword(dto);
   }
 
   @Post('logout')

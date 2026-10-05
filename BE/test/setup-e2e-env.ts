@@ -23,6 +23,9 @@ const defaults: Record<string, string> = {
   SEPAY_WEBHOOK_KEY: 'e2e-sepay-webhook-key',
   GOOGLE_CLIENT_IDS: 'e2e-google-client-id',
   APP_BASE_URL: 'http://localhost:3002',
+  // Tắt rate limit (test đăng nhập hàng chục lần/phút cùng 1 IP). Test riêng về rate limit
+  // tự bật lại trong phạm vi của nó.
+  THROTTLE_DISABLED: 'true',
 };
 
 // E2E_DB_* cho phép trỏ sang DB test khác mà không đụng DB_* của dev.
