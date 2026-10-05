@@ -369,11 +369,30 @@ export class OrdersService {
       },
     });
     return {
-      data: data.map((order) => ({
+      // KHÔNG spread `customer`/`provider` nguyên entity sang bên kia của đơn:
+      // customer kèm Account (passwordHash, SĐT mã hoá...), provider kèm STK ngân hàng,
+      // ảnh CCCD, GPKD, ghi chú admin. Chỉ giữ field hiển thị:
+      // - FE provider đọc `customer.account.fullName`;
+      // - Mobile customer đọc `provider.gardenName` (= displayName của vườn).
+      data: data.map(({ customer, provider, ...order }) => ({
         ...order,
+        customer: customer
+          ? {
+              id: customer.id,
+              account: { fullName: customer.account?.fullName ?? null },
+            }
+          : null,
+        provider: provider
+          ? {
+              id: provider.id,
+              displayName: provider.displayName,
+              gardenName: provider.displayName,
+              address: provider.address,
+            }
+          : null,
         servicePackageName: order.servicePackage?.name ?? null,
-        customerName: order.customer?.account?.fullName ?? null,
-        gardenName: order.provider?.displayName ?? null,
+        customerName: customer?.account?.fullName ?? null,
+        gardenName: provider?.displayName ?? null,
       })),
       total,
       page,

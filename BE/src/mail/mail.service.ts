@@ -4,11 +4,19 @@ import { createTransport, type Transporter } from 'nodemailer';
 
 const SMTP_TIMEOUT_MS = 10_000;
 const SMTP_SOCKET_TIMEOUT_MS = 15_000;
+// Hạn link đặt lại mật khẩu — nguồn duy nhất: AuthService dùng để đặt expires_at, mail in ra cho người dùng.
+export const PASSWORD_RESET_LINK_MINUTES = 30;
 
 export interface GooglePasswordMail {
   to: string;
   fullName: string;
   password: string;
+}
+
+export interface PasswordResetMail {
+  to: string;
+  fullName: string;
+  token: string; // token thô — chỉ xuất hiện trong link của mail này
 }
 
 /**
@@ -21,6 +29,7 @@ export class MailService {
   private readonly transporter: Transporter | null;
   private readonly from: string;
   private readonly appBaseUrl: string;
+  private readonly isProduction: boolean;
 
   constructor(config: ConfigService) {
     // Chuỗi rỗng trong .env (vd `MAIL_FROM=`) coi như chưa cấu hình → dùng `||`, không dùng `??`.
@@ -48,6 +57,44 @@ export class MailService {
       /\/$/,
       '',
     );
+    this.isProduction = config.get<string>('NODE_ENV') === 'production';
+  }
+
+  // Mail đặt lại mật khẩu (POST /auth/forgot-password). Link trỏ trang web FE
+  // `${APP_BASE_URL}/auth/reset-password?token=...` (cùng nhóm /auth/* với trang login/register của FE)
+  // — FE đọc token rồi gọi POST /api/v1/auth/reset-password.
+  // Nuốt mọi lỗi như sendGooglePassword. Thiếu SMTP ở dev/test → ghi link ra log để thử tay;
+  // production KHÔNG ghi (link là chìa khoá đổi mật khẩu).
+  async sendPasswordReset(mail: PasswordResetMail): Promise<boolean> {
+    const resetUrl = `${this.appBaseUrl}/auth/reset-password?token=${encodeURIComponent(mail.token)}`;
+    if (!this.transporter) {
+      this.logger.warn(
+        this.isProduction
+          ? `SMTP chưa cấu hình — bỏ qua mail đặt lại mật khẩu cho ${mail.to}`
+          : `SMTP chưa cấu hình — link đặt lại mật khẩu cho ${mail.to}: ${resetUrl}`,
+      );
+      return false;
+    }
+    try {
+      await this.transporter.sendMail({
+        from: this.from,
+        to: mail.to,
+        subject: 'LanCare Hub — Đặt lại mật khẩu',
+        text: [
+          `Xin chào ${mail.fullName},`,
+          'Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản LanCare Hub của bạn.',
+          `Đặt lại mật khẩu (link hết hạn sau ${PASSWORD_RESET_LINK_MINUTES} phút, dùng 1 lần): ${resetUrl}`,
+          'Nếu bạn không yêu cầu, hãy bỏ qua email này — mật khẩu hiện tại vẫn giữ nguyên.',
+        ].join('\n'),
+        html: this.passwordResetHtml(mail, resetUrl),
+      });
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `Gửi mail đặt lại mật khẩu cho ${mail.to} thất bại: ${(err as Error).message}`,
+      );
+      return false;
+    }
   }
 
   // Mail gửi mật khẩu tự sinh khi tài khoản được tạo bằng Google.
@@ -84,6 +131,20 @@ export class MailService {
       );
       return false;
     }
+  }
+
+  private passwordResetHtml(mail: PasswordResetMail, url: string): string {
+    const name = escapeHtml(mail.fullName);
+    const href = escapeHtml(url);
+    return `
+<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#1f1b2e">
+  <h2 style="color:#6027D2">LanCare Hub</h2>
+  <p>Xin chào <b>${name}</b>,</p>
+  <p>Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản LanCare Hub của bạn.</p>
+  <p><a href="${href}" style="background:#6027D2;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none">Đặt lại mật khẩu</a></p>
+  <p style="color:#6b6880;font-size:13px">Link hết hạn sau ${PASSWORD_RESET_LINK_MINUTES} phút và chỉ dùng được 1 lần.
+     Nếu bạn không yêu cầu, hãy bỏ qua email này — mật khẩu hiện tại vẫn giữ nguyên.</p>
+</div>`;
   }
 
   private googlePasswordHtml(mail: GooglePasswordMail, url: string): string {

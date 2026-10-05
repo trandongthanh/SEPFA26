@@ -4,6 +4,7 @@ import { PassportModule } from '@nestjs/passport';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AccountsModule } from '../accounts/accounts.module';
 import { MailModule } from '../mail/mail.module';
+import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { TokenService } from './token.service';
 import { AuthService } from './auth.service';
@@ -13,7 +14,7 @@ import { AuthController } from './auth.controller';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([RefreshToken]),
+    TypeOrmModule.forFeature([RefreshToken, PasswordResetToken]),
     PassportModule,
     // JwtModule rỗng: secret + expiry truyền theo từng lần ký/xác minh trong TokenService
     // (vì access và refresh dùng 2 secret khác nhau).

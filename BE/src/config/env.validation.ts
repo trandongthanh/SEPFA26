@@ -110,6 +110,21 @@ export const envValidationSchema = Joi.object({
   }),
   MAIL_FROM: Joi.string().allow('').optional(),
 
+  // 'true' → tin X-Forwarded-For (có proxy đứng trước: nginx, Render...). Trên Vercel tự bật
+  // (process.env.VERCEL) — không cần đặt. Chạy thẳng không qua proxy: KHÔNG đặt (xem main.ts).
+  TRUST_PROXY: Joi.string().valid('true', 'false').optional(),
+
+  // ===== Rate limit (@nestjs/throttler) =====
+  // 'true' → tắt hẳn rate limit (CHỈ cho e2e — test đăng nhập hàng chục lần/phút).
+  // Production cấm bật: lỡ copy .env test lên server là app không khởi động.
+  THROTTLE_DISABLED: Joi.string()
+    .when('NODE_ENV', {
+      is: 'production',
+      then: Joi.valid('false'),
+      otherwise: Joi.valid('true', 'false'),
+    })
+    .optional(),
+
   // ===== FPT.AI eKYC (Deprecated - kept for backward compatibility) =====
   FPTAI_API_KEY: Joi.string().allow('').optional().default(''),
 });
