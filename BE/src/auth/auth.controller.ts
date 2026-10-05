@@ -1,15 +1,29 @@
-import { Body, Controller, Headers, HttpCode, Post } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Headers,
+  HttpCode,
+  Post,
+  UploadedFiles,
+  UseInterceptors,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
   ApiOperation,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { CurrentUserData } from './types/current-user.type';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
+import { RegisterWithEkycDto } from './dto/register-with-ekyc.dto';
 import { LoginDto } from './dto/login.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
@@ -29,10 +43,77 @@ export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Public()
+  @Post('register-with-ekyc')
+  @HttpCode(201)
+  @ApiOperation({
+    summary: 'Đăng ký tài khoản tự động lồng eKYC (Check trùng Email + CCCD, tự động ACTIVE/APPROVED)',
+    description:
+      'Đăng ký tài khoản kèm xác thực eKYC trọn gói. Nhận thông tin đăng ký + ảnh mặt trước CCCD + ảnh selfie. ' +
+      'AI tự động bóc tách thông tin, check trùng email, check trùng số CCCD, kiểm tra thẻ giả và so khớp khuôn mặt. ' +
+      'Thành công sẽ tự động kích hoạt tài khoản (status: ACTIVE, hồ sơ: APPROVED), không cần Admin duyệt tay!',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['email', 'password', 'cccdFront', 'selfie'],
+      properties: {
+        email: { type: 'string', format: 'email', example: 'customer@lancarehub.vn' },
+        password: { type: 'string', example: 'MatKhau123@' },
+        fullName: { type: 'string', example: 'Nguyễn Văn Lan (tuỳ chọn - AI tự đọc)' },
+        role: { type: 'string', enum: ['CUSTOMER', 'PROVIDER'], default: 'CUSTOMER' },
+        phone: { type: 'string', example: '0901234567' },
+        cccdFront: { type: 'string', format: 'binary', description: 'Ảnh mặt trước CCCD (bắt buộc)' },
+        selfie: { type: 'string', format: 'binary', description: 'Ảnh selfie khuôn mặt thật (bắt buộc)' },
+        cccdBack: { type: 'string', format: 'binary', description: 'Ảnh mặt sau CCCD (tuỳ chọn)' },
+      },
+    },
+  })
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'cccdFront', maxCount: 1 },
+        { name: 'selfie', maxCount: 1 },
+        { name: 'cccdBack', maxCount: 1 },
+      ],
+      {
+        storage: memoryStorage(),
+        limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB (hỗ trợ camera điện thoại phân giải cao)
+      },
+    ),
+  )
+  async registerWithEkyc(
+    @Body() dto: RegisterWithEkycDto,
+    @UploadedFiles()
+    files: {
+      cccdFront?: Express.Multer.File[];
+      selfie?: Express.Multer.File[];
+      cccdBack?: Express.Multer.File[];
+    },
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    if (!files?.cccdFront?.[0]) {
+      throw new BadRequestException('Vui lòng tải lên ảnh mặt trước CCCD (field: cccdFront).');
+    }
+    if (!files?.selfie?.[0]) {
+      throw new BadRequestException('Vui lòng tải lên ảnh selfie khuôn mặt (field: selfie).');
+    }
+    return this.auth.registerWithEkyc(
+      dto,
+      {
+        cccdFront: files.cccdFront[0],
+        selfie: files.selfie[0],
+        cccdBack: files.cccdBack?.[0],
+      },
+      userAgent,
+    );
+  }
+
+  @Public()
   @Post('register')
   @HttpCode(201)
   @ApiOperation({
-    summary: 'Đăng ký tài khoản base (CUSTOMER/PROVIDER, status PENDING)',
+    summary: 'Đăng ký tài khoản cơ bản (status PENDING - khuyến khích dùng /register-with-ekyc để tự động kích hoạt)',
   })
   @ApiResponse({ status: 201, type: RegisterResponseDto })
   @ApiResponse({ status: 409, description: 'EMAIL_EXISTS' })
