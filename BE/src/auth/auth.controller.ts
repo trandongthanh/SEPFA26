@@ -12,6 +12,7 @@ import {
   ApiBearerAuth,
   ApiBody,
   ApiConsumes,
+  ApiHeader,
   ApiOperation,
   ApiResponse,
   ApiTags,
@@ -100,6 +101,12 @@ export class AuthController {
       },
     ),
   )
+  @ApiHeader({
+    name: 'user-agent',
+    required: false,
+    description: 'Thiết bị / trình duyệt gửi request (tuỳ chọn)',
+    schema: { default: 'Swagger UI / Browser' },
+  })
   async registerWithEkyc(
     @Body() dto: RegisterWithEkycDto,
     @UploadedFiles()
