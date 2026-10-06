@@ -7,7 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 import { EntityManager, IsNull, LessThan, MoreThan, Repository } from 'typeorm';
 import { Account } from '../accounts/entities/account.entity';
 import { AccountsService } from '../accounts/accounts.service';
@@ -34,6 +34,12 @@ import {
   RegisterResponseDto,
 } from './dto/auth-response.dto';
 
+import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
+import { EkycService } from '../ekyc/ekyc.service';
+import { CryptoService } from '../crypto/crypto.service';
+import { RegisterWithEkycDto } from './dto/register-with-ekyc.dto';
+
 // Postgres unique_violation — 2 request đăng ký cùng email chạy song song.
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -43,8 +49,9 @@ const PASSWORD_RESET_TTL_MS = PASSWORD_RESET_LINK_MINUTES * 60 * 1000;
  * Nghiệp vụ xác thực: đăng ký, đăng nhập (email/mật khẩu và Google), làm mới phiên, đăng xuất.
  *
  * Quy ước chung (đọc trước khi sửa):
- * - ACCOUNT là tài khoản "base": đăng ký chỉ tạo 1 dòng accounts (status PENDING), KHÔNG tạo
- *   hồ sơ customer/provider. SĐT, CCCD, hồ sơ thuộc bước KÍCH HOẠT (module customers/providers/ekyc).
+ * - ACCOUNT là tài khoản "base": đăng ký thông thường tạo 1 dòng accounts (status PENDING).
+ * - ĐĂNG KÝ KÈM eKYC (registerWithEkyc): tự động tạo account ACTIVE + CustomerProfile APPROVED
+ *   ngay sau khi xác thực CCCD và khuôn mặt thành công, không cần Admin duyệt tay.
  * - Luật "ai được đăng nhập" nằm DUY NHẤT ở AccountsService.isAllowedToAuthenticate
  *   (dùng chung cho login, Google, refresh và JWT guard) — đổi luật thì sửa ở đó.
  * - Phiên = refresh token, lưu ở bảng refresh_tokens dưới dạng SHA-256 (không lưu token thô).
@@ -61,6 +68,10 @@ export class AuthService {
     private readonly accounts: Repository<Account>,
     @InjectRepository(RefreshToken)
     private readonly refreshTokens: Repository<RefreshToken>,
+    @InjectRepository(CustomerProfile)
+    private readonly customerProfiles: Repository<CustomerProfile>,
+    @InjectRepository(EkycRecord)
+    private readonly ekycRecords: Repository<EkycRecord>,
     @InjectRepository(PasswordResetToken)
     private readonly passwordResetTokens: Repository<PasswordResetToken>,
     private readonly accountsService: AccountsService,
@@ -68,6 +79,8 @@ export class AuthService {
     private readonly tokens: TokenService,
     private readonly google: GoogleIdTokenVerifier,
     private readonly mail: MailService,
+    private readonly ekycService: EkycService,
+    private readonly crypto: CryptoService,
   ) {}
 
   /**
@@ -91,6 +104,133 @@ export class AuthService {
       email: account.email,
       role: account.role,
       status: account.status,
+    };
+  }
+
+  /**
+   * POST /auth/register-with-ekyc — Đăng ký tài khoản kèm eKYC tự động:
+   * - Check trùng Email
+   * - AI OCR bóc tách CCCD
+   * - Check trùng số CCCD với các tài khoản khác
+   * - AI Anti-Fraud kiểm tra thẻ giả
+   * - AI Anti-Fraud Liveness kiểm tra người thật
+   * - AI Face Matching sinh trắc học CCCD vs Selfie
+   * - Tự động kích hoạt tài khoản: Account.status = 'ACTIVE'
+   * - Tự động phê duyệt hồ sơ: CustomerProfile.verificationStatus = 'APPROVED'
+   * - Tự động tạo EkycRecord với status: 'VERIFIED'
+   * - Cấp tokens và trả kết quả để đăng nhập ngay lập tức.
+   */
+  async registerWithEkyc(
+    dto: RegisterWithEkycDto,
+    files: {
+      cccdFront: Express.Multer.File;
+      selfie: Express.Multer.File;
+      cccdBack?: Express.Multer.File;
+    },
+    userAgent?: string,
+  ) {
+    if (await this.accounts.exists({ where: { email: dto.email } })) {
+      throw new ConflictException('EMAIL_EXISTS');
+    }
+
+    // Chạy toàn bộ quy trình eKYC: OCR + check trùng CCCD + Fraud check + Face match + Cloudinary
+    const ekycData = await this.ekycService.verifyAndProcessRegistrationEkyc(
+      files.cccdFront,
+      files.selfie,
+      files.cccdBack,
+    );
+
+    // Băm mật khẩu
+    const passwordHash = await this.passwords.hash(dto.password);
+
+    // Xử lý số điện thoại nếu có
+    let phoneEnc: string | null = null;
+    let phoneHash: string | null = null;
+    if (dto.phone?.trim()) {
+      const cleanPhone = dto.phone.trim().replace(/[\s.()-]/g, '').replace(/^\+84/, '0').replace(/^84/, '0');
+      phoneHash = createHash('sha256').update(cleanPhone).digest('hex');
+      const dupPhone = await this.accounts.findOne({ where: { phoneHash } });
+      if (dupPhone) {
+        throw new ConflictException('Số điện thoại này đã được sử dụng bởi một tài khoản khác.');
+      }
+      phoneEnc = this.crypto.encrypt(cleanPhone);
+    }
+
+    // Ưu tiên tên người dùng nhập, nếu không có thì lấy tên chính xác do AI đọc từ thẻ CCCD
+    const fullName = dto.fullName?.trim() || ekycData.fullName || 'Khách hàng';
+
+    // 1. Tạo Account ở trạng thái ACTIVE (đã xác thực eKYC thành công, không cần Admin duyệt tay)
+    const account = await this.accounts.save(
+      this.accounts.create({
+        email: dto.email,
+        passwordHash,
+        fullName,
+        role: dto.role,
+        phone: phoneEnc,
+        phoneHash,
+        status: 'ACTIVE',
+      }),
+    );
+
+    // 2. Tạo CustomerProfile nếu là CUSTOMER với trạng thái APPROVED
+    if (account.role === 'CUSTOMER') {
+      const profile = this.customerProfiles.create({
+        accountId: account.id,
+        verificationStatus: 'APPROVED',
+        verificationNote: 'eKYC tự động xác thực thành công khi đăng ký',
+        cccdNumber: this.crypto.encrypt(ekycData.rawCccdNumber),
+        cccdNumberHash: ekycData.cccdNumberHash,
+        cccdFrontUrl: ekycData.frontUploadId,
+        cccdBackUrl: ekycData.backUploadId,
+        selfieWithIdUrl: ekycData.selfieUploadId,
+      });
+      await this.customerProfiles.save(profile);
+    }
+
+    // 3. Tạo bản ghi EkycRecord đã VERIFIED
+    const ekycRecord = this.ekycRecords.create({
+      accountId: account.id,
+      status: 'VERIFIED',
+      idDocType: ekycData.idDocType,
+      idDocNumberEnc: this.crypto.encrypt(ekycData.rawCccdNumber),
+      idDocNumberHash: ekycData.cccdNumberHash,
+      fullNameExtracted: ekycData.fullName,
+      dateOfBirth: ekycData.dateOfBirth,
+      gender: ekycData.gender,
+      nationality: ekycData.nationality,
+      placeOfOrigin: ekycData.placeOfOrigin,
+      frontImageUrl: ekycData.frontUploadId,
+      backImageUrl: ekycData.backUploadId,
+      selfieImageUrl: ekycData.selfieUploadId,
+      faceMatch: true,
+      faceSimilarity: ekycData.similarity.toFixed(2),
+      fraudScore: ekycData.fraudScore?.toFixed(2) ?? null,
+      livenessScore: ekycData.livenessScore?.toFixed(2) ?? null,
+      antifraudDetails: ekycData.antifraudDetails as any,
+      verifiedAt: new Date(),
+    });
+    await this.ekycRecords.save(ekycRecord);
+
+    // 4. Cấp token đăng nhập luôn để FE/Mobile vào app trực tiếp
+    const tokens = await this.issueTokens(account, userAgent);
+
+    return {
+      success: true,
+      message: 'Đăng ký và xác thực eKYC thành công! Tài khoản đã được tự động kích hoạt.',
+      account: {
+        id: account.id,
+        email: account.email,
+        fullName: account.fullName,
+        role: account.role,
+        status: account.status,
+      },
+      ekyc: {
+        status: 'VERIFIED',
+        fullName: ekycData.fullName,
+        idNumber: this.ekycService.maskIdNumber(ekycData.rawCccdNumber),
+        similarity: Number(ekycData.similarity.toFixed(2)),
+      },
+      tokens,
     };
   }
 
@@ -408,10 +548,17 @@ export class AuthService {
     passwordHash: string;
     fullName: string;
     role: SelfRegisterRole;
+    status?: 'ACTIVE' | 'PENDING';
   }): Promise<Account> {
     try {
       return await this.accounts.save(
-        this.accounts.create({ ...input, status: 'PENDING' }),
+        this.accounts.create({
+          email: input.email,
+          passwordHash: input.passwordHash,
+          fullName: input.fullName,
+          role: input.role,
+          status: input.status ?? 'PENDING',
+        }),
       );
     } catch (err) {
       if ((err as { code?: string }).code === PG_UNIQUE_VIOLATION) {

@@ -35,6 +35,11 @@ export class EkycRecord extends BaseEntity {
   @Column({ name: 'id_doc_number_enc', type: 'varchar', length: 500, nullable: true })
   idDocNumberEnc!: string | null;
 
+  // Hash SHA-256 của số CCCD — dùng để check trùng lặp giữa các tài khoản mà không cần giải mã.
+  @Index()
+  @Column({ name: 'id_doc_number_hash', type: 'varchar', length: 64, nullable: true })
+  idDocNumberHash!: string | null;
+
   @Column({ name: 'full_name_extracted', type: 'varchar', length: 255, nullable: true })
   fullNameExtracted!: string | null;
 

@@ -152,6 +152,28 @@ export class EkycService {
       throw new BadRequestException(ocrError || 'EKYC_OCR_FAILED');
     }
 
+    // 2.5. Check trùng số CCCD với các tài khoản khác trong hệ thống
+    let cccdHash: string | null = null;
+    if (ocrResult.id_number) {
+      cccdHash = createHash('sha256').update(ocrResult.id_number).digest('hex');
+
+      // Kiểm tra trong CustomerProfile
+      const dupProfile = await this.customerProfileRepo.findOne({
+        where: { cccdNumberHash: cccdHash },
+      });
+      if (dupProfile && dupProfile.accountId !== accountId) {
+        throw new ConflictException('Số CCCD này đã được sử dụng bởi một tài khoản khác trong hệ thống.');
+      }
+
+      // Kiểm tra trong EkycRecord đã VERIFIED
+      const dupEkyc = await this.ekycRepo.findOne({
+        where: { idDocNumberHash: cccdHash, status: 'VERIFIED' },
+      });
+      if (dupEkyc && dupEkyc.accountId !== accountId) {
+        throw new ConflictException('Số CCCD này đã được xác thực cho một tài khoản khác.');
+      }
+    }
+
     // 3. Chạy Anti-Fraud Detection trên ảnh CCCD (phát hiện thẻ giả mạo)
     const fraudResult = await this.callAiAntiFraud(frontFile.buffer, null);
     const fraudScore = fraudResult?.data?.document_fraud?.fraud_score ?? null;
@@ -168,6 +190,7 @@ export class EkycService {
       status: 'PROCESSING',
       idDocType: ocrResult.id_doc_type || 'CCCD',
       idDocNumberEnc: ocrResult.id_number ? this.crypto.encrypt(ocrResult.id_number) : null,
+      idDocNumberHash: cccdHash,
       fullNameExtracted: ocrResult.full_name,
       dateOfBirth: ocrResult.date_of_birth,
       gender: ocrResult.gender,
@@ -663,9 +686,118 @@ export class EkycService {
 
   // ---- Utilities ----
 
-  private maskIdNumber(idNumber: string): string {
+  maskIdNumber(idNumber: string): string {
     if (idNumber.length <= 6) return '***' + idNumber.slice(-3);
     return idNumber.slice(0, 3) + '***' + idNumber.slice(-3);
+  }
+
+  /**
+   * Quy trình eKYC tự động trọn gói cho đăng ký tài khoản mới:
+   * 1. Quét OCR CCCD mặt trước -> Lấy thông tin
+   * 2. Check trùng số CCCD trong database
+   * 3. Anti-Fraud trên CCCD (phát hiện thẻ giả / chụp lại màn hình)
+   * 4. Anti-Fraud Liveness trên Selfie (phát hiện người thật)
+   * 5. Face Matching sinh trắc học CCCD vs Selfie
+   * 6. Upload ảnh lên Cloudinary
+   */
+  async verifyAndProcessRegistrationEkyc(
+    frontFile: Express.Multer.File,
+    selfieFile: Express.Multer.File,
+    backFile?: Express.Multer.File,
+  ) {
+    this.ensureAiService();
+    this.ensureCloudinary();
+
+    if (!frontFile || !selfieFile) {
+      throw new BadRequestException('Vui lòng cung cấp cả ảnh mặt trước CCCD và ảnh selfie chân dung.');
+    }
+
+    // 1. Quét OCR
+    const { data: ocrResult, error: ocrError } = await this.callAiOcr(frontFile.buffer);
+    if (!ocrResult || !ocrResult.id_number) {
+      throw new BadRequestException(
+        ocrError || 'Không thể đọc được số CCCD từ ảnh mặt trước. Vui lòng chụp rõ nét, đủ ánh sáng và không bị lóa.',
+      );
+    }
+
+    // 2. Check trùng CCCD
+    const rawCccdNumber = ocrResult.id_number;
+    const cccdNumberHash = createHash('sha256').update(rawCccdNumber).digest('hex');
+
+    const duplicateProfile = await this.customerProfileRepo.findOne({
+      where: { cccdNumberHash },
+    });
+    if (duplicateProfile) {
+      throw new ConflictException('Số CCCD này đã được sử dụng bởi một tài khoản khác trong hệ thống.');
+    }
+
+    const duplicateEkyc = await this.ekycRepo.findOne({
+      where: { idDocNumberHash: cccdNumberHash, status: 'VERIFIED' },
+    });
+    if (duplicateEkyc) {
+      throw new ConflictException('Số CCCD này đã được xác thực cho một tài khoản khác.');
+    }
+
+    // 3. Chạy Anti-Fraud trên CCCD
+    const docFraud = await this.callAiAntiFraud(frontFile.buffer, null);
+    const fraudScore = docFraud?.data?.document_fraud?.fraud_score ?? null;
+    const fraudPassed = docFraud?.data?.document_fraud?.passed ?? true;
+    if (!fraudPassed || (fraudScore !== null && fraudScore >= FRAUD_SCORE_THRESHOLD)) {
+      throw new BadRequestException(
+        `Phát hiện dấu hiệu thẻ CCCD không hợp lệ hoặc chụp lại từ màn hình (điểm rủi ro: ${fraudScore}). Vui lòng chụp thẻ thật gốc.`,
+      );
+    }
+
+    // 4. Chạy Anti-Fraud Liveness trên Selfie
+    const selfieFraud = await this.callAiAntiFraud(null, selfieFile.buffer);
+    const livenessScore = selfieFraud?.data?.selfie_liveness?.liveness_score ?? null;
+    const isLive = selfieFraud?.data?.selfie_liveness?.is_live ?? true;
+    if (!isLive || (livenessScore !== null && livenessScore < LIVENESS_SCORE_THRESHOLD)) {
+      throw new BadRequestException(
+        `Ảnh selfie không vượt qua kiểm tra người thật (liveness=${livenessScore?.toFixed(1) ?? 'N/A'}). Vui lòng chụp ảnh người thật trực tiếp từ camera.`,
+      );
+    }
+
+    // 5. So khớp khuôn mặt CCCD vs Selfie
+    const matchRes = await this.callAiFaceMatch(frontFile.buffer, selfieFile.buffer);
+    if (!matchRes.result) {
+      throw new BadRequestException(matchRes.error || 'So khớp khuôn mặt eKYC thất bại.');
+    }
+    const { isMatch, similarity } = matchRes.result;
+    if (!isMatch || similarity < FACE_MATCH_THRESHOLD) {
+      throw new BadRequestException(
+        `Khuôn mặt selfie không trùng khớp với ảnh trên thẻ CCCD (độ tương đồng: ${similarity.toFixed(1)}%, yêu cầu ≥ ${FACE_MATCH_THRESHOLD}%).`,
+      );
+    }
+
+    // 6. Upload ảnh lên Cloudinary
+    const tempPrefix = `reg_${Date.now()}`;
+    const frontUpload = await this.uploadToCloudinary(frontFile.buffer, `${tempPrefix}/front`);
+    const selfieUpload = await this.uploadToCloudinary(selfieFile.buffer, `${tempPrefix}/selfie`);
+    const backUpload = backFile
+      ? await this.uploadToCloudinary(backFile.buffer, `${tempPrefix}/back`)
+      : null;
+
+    return {
+      rawCccdNumber,
+      cccdNumberHash,
+      fullName: ocrResult.full_name,
+      dateOfBirth: ocrResult.date_of_birth,
+      gender: ocrResult.gender,
+      nationality: ocrResult.nationality || 'Việt Nam',
+      placeOfOrigin: ocrResult.place_of_origin,
+      idDocType: ocrResult.id_doc_type || 'CCCD',
+      frontUploadId: frontUpload.public_id,
+      backUploadId: backUpload?.public_id ?? null,
+      selfieUploadId: selfieUpload.public_id,
+      similarity,
+      fraudScore,
+      livenessScore,
+      antifraudDetails: {
+        docFraud: docFraud?.data,
+        selfieFraud: selfieFraud?.data,
+      },
+    };
   }
 
   /**
@@ -683,7 +815,7 @@ export class EkycService {
       if (record.idDocNumberEnc) {
         const rawIdNumber = this.crypto.decrypt(record.idDocNumberEnc);
         updateData.cccdNumber = record.idDocNumberEnc;
-        updateData.cccdNumberHash = createHash('sha256').update(rawIdNumber).digest('hex');
+        updateData.cccdNumberHash = record.idDocNumberHash || createHash('sha256').update(rawIdNumber).digest('hex');
       }
 
       if (record.frontImageUrl) updateData.cccdFrontUrl = record.frontImageUrl;

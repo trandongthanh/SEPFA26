@@ -99,7 +99,7 @@ async function bootstrap() {
       : undefined,
   );
 
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
   Logger.log(
     `LanCare Hub API listening on http://localhost:${port}/api/v1`,
     'Bootstrap',
