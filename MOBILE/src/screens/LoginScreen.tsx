@@ -58,8 +58,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
         Alert.alert('Tài khoản bị khóa', 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ hỗ trợ.');
       } else if (msg === 'ACCOUNT_INACTIVE') {
         Alert.alert('Tài khoản chờ duyệt', 'Tài khoản Provider của bạn đang chờ Admin phê duyệt.');
+      } else if (!err.response) {
+        Alert.alert(
+          'Lỗi kết nối máy chủ',
+          'Không thể kết nối đến Backend. Vui lòng đảm bảo điện thoại và máy tính đang kết nối chung một mạng Wi-Fi.'
+        );
       } else {
-        Alert.alert('Lỗi đăng nhập', 'Có lỗi xảy ra, vui lòng thử lại.');
+        const displayMsg = Array.isArray(msg) ? msg.join('\n') : msg || err.message || 'Có lỗi xảy ra, vui lòng thử lại.';
+        Alert.alert('Lỗi đăng nhập', displayMsg);
       }
     } finally {
       setLoading(false);

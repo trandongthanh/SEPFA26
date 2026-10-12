@@ -4,12 +4,9 @@ import { Platform } from 'react-native';
 // @ts-ignore
 import Constants from 'expo-constants';
 
-// Tự động lấy IP máy tính từ Expo Host URI để điện thoại thật quét Expo Go kết nối được Backend
+// Tự động lấy IP máy tính từ Expo Host URI để điện thoại thật kết nối Backend chuẩn xác
 function getAutoDevApiUrl(): string {
-  if (process.env.EXPO_PUBLIC_API_URL) {
-    return process.env.EXPO_PUBLIC_API_URL;
-  }
-
+  // 1. Nếu đang chạy trên Expo Go / Dev Client: Lấy IP động từ Metro Bundler
   const hostUri = Constants.expoConfig?.hostUri || (Constants as any).manifest?.debuggerHost;
   if (hostUri) {
     const hostIp = hostUri.split(':')[0];
@@ -18,7 +15,13 @@ function getAutoDevApiUrl(): string {
     }
   }
 
-  const defaultHost = '192.168.88.128';
+  // 2. Nếu là bản build độc lập (APK), đọc từ biến môi trường
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL;
+  }
+
+  // 3. IP LAN hiện tại của máy tính
+  const defaultHost = '192.168.0.132';
   return `http://${defaultHost}:3001/api/v1`;
 }
 
