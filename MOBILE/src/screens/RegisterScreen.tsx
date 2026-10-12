@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { registerUser } from '../services/authService';
 import { UserRole } from '../types/auth';
+import { GoogleSignInButton } from '../components/GoogleSignInButton';
 
 interface RegisterScreenProps {
   navigation?: any;
@@ -127,7 +128,7 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) =>
                   style={styles.orchidPotImage}
                   resizeMode="contain"
                 />
-                
+
                 {/* Badge 1: Water */}
                 <View style={styles.waterBadge}>
                   <Ionicons name="water-outline" size={14} color="#6C38FF" />
@@ -313,6 +314,20 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) =>
                 </View>
               )}
             </TouchableOpacity>
+
+            {/* Divider */}
+            <View style={styles.dividerRow}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>HOẶC</Text>
+              <View style={styles.dividerLine} />
+            </View>
+
+            {/* Google Sign-Up */}
+            <GoogleSignInButton
+              mode="register"
+              navigation={navigation}
+              style={styles.googleBtn}
+            />
 
             {/* Bottom Section inside Card */}
             <View style={styles.cardFooter}>
@@ -594,9 +609,30 @@ const styles = StyleSheet.create({
   },
 
   /* Footer Navigation */
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 14,
+    zIndex: 2,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#ECE7FA',
+  },
+  dividerText: {
+    marginHorizontal: 12,
+    fontSize: 11,
+    color: '#A098C2',
+    fontWeight: '600',
+    letterSpacing: 0.8,
+  },
+  googleBtn: {
+    zIndex: 2,
+  },
   cardFooter: {
     alignItems: 'center',
-    marginTop: 22,
+    marginTop: 16,
     marginBottom: 6,
     zIndex: 2,
   },

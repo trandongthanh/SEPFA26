@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import { authApi, type LoginPayload } from '@/lib/api';
 import { useAuthStore } from '@/lib/auth.store';
+import { GoogleAuthButton } from '@/features/auth/components/GoogleAuthButton';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -255,6 +256,11 @@ export default function LoginPage() {
               <span className="relative bg-white px-3.5 text-[11px] text-[#A098C2] uppercase tracking-widest">
                 Hoặc
               </span>
+            </div>
+
+            {/* Đăng nhập bằng Google */}
+            <div className="flex justify-center mb-3.5">
+              <GoogleAuthButton mode="login" />
             </div>
 
             {/* Register Link */}

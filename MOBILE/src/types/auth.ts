@@ -25,3 +25,20 @@ export interface ApiErrorResponse {
   message: string | string[];
   error?: string;
 }
+
+export interface GoogleLoginPayload {
+  idToken: string;
+  role?: UserRole;
+}
+
+export interface GoogleLoginResponse {
+  accessToken: string;
+  refreshToken: string;
+  account: {
+    id: string;
+    fullName: string;
+    role: UserRole;
+    email?: string;
+  };
+  isNewAccount?: boolean;
+}

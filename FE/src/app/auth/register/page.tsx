@@ -16,6 +16,7 @@ import {
 import { authApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/auth.store';
 import { useAgreementStore } from '@/stores/agreement.store';
+import { GoogleAuthButton } from '@/features/auth/components/GoogleAuthButton';
 import type { CheckboxChangeEvent } from 'antd/es/checkbox';
 
 interface RegisterFormValues {
@@ -346,9 +347,33 @@ export default function RegisterPage() {
             </Form.Item>
 
             {/* Badge thông báo màu xanh */}
-            <div className="py-1.5 px-3 mb-2.5 rounded-xl bg-[#ecfdf5] border border-emerald-200/80 flex items-center justify-center gap-1.5 text-[11px] text-emerald-700 font-medium">
+            <div className="py-1.5 px-3 mb-2 rounded-xl bg-[#ecfdf5] border border-emerald-200/80 flex items-center justify-center gap-1.5 text-[11px] text-emerald-700 font-medium">
               <CheckCircleFilled className="text-emerald-500 text-xs shrink-0" />
               <span>Bạn có thể bắt đầu tìm dịch vụ ngay sau khi đăng ký</span>
+            </div>
+
+            {/* Divider */}
+            <div className="relative my-3 text-center">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-[#ECE7FA]" />
+              </div>
+              <span className="relative bg-white px-3.5 text-[11px] text-[#A098C2] uppercase tracking-widest">
+                Hoặc
+              </span>
+            </div>
+
+            {/* Đăng ký bằng Google */}
+            <div className="flex justify-center mb-3">
+              <GoogleAuthButton
+                mode="register"
+                beforeSubmit={() => {
+                  if (!bothAgreed) {
+                    message.error('Vui lòng đọc và đồng ý cả Điều khoản dịch vụ và Chính sách bảo mật trước khi tiếp tục!');
+                    return false;
+                  }
+                  return true;
+                }}
+              />
             </div>
 
             {/* Link chuyển Đăng nhập */}

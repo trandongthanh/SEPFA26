@@ -8,6 +8,7 @@ import { MainTabNavigator } from './MainTabNavigator';
 import { ProviderDetailScreen } from '../screens/ProviderDetailScreen';
 import { CreateOrderScreen } from '../screens/CreateOrderScreen';
 import { OrderDetailScreen } from '../screens/OrderDetailScreen';
+import { EkycScreen } from '../screens/EkycScreen';
 
 export type RootStackParamList = {
   Splash: undefined;
@@ -30,6 +31,7 @@ export type RootStackParamList = {
     };
   };
   OrderDetail: { orderId: string };
+  Ekyc: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -51,6 +53,7 @@ export const AppNavigator: React.FC = () => {
         <Stack.Screen name="ProviderDetail" component={ProviderDetailScreen} />
         <Stack.Screen name="CreateOrder" component={CreateOrderScreen} />
         <Stack.Screen name="OrderDetail" component={OrderDetailScreen} />
+        <Stack.Screen name="Ekyc" component={EkycScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

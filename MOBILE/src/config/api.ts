@@ -18,7 +18,7 @@ function getAutoDevApiUrl(): string {
     }
   }
 
-  const defaultHost = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
+  const defaultHost = '192.168.88.128';
   return `http://${defaultHost}:3001/api/v1`;
 }
 

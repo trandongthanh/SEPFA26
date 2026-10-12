@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Alert,
@@ -19,6 +20,7 @@ import { customerService } from '../services/customerService';
 import { uploadService } from '../services/uploadService';
 import { CustomerProfileResponse, UpdateCustomerProfilePayload } from '../types/customer';
 import { storage } from '../utils/storage';
+import { GoogleSignin } from '../utils/googleAuth';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -92,6 +94,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   useEffect(() => {
     loadProfile();
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadProfile();
+    }, [])
+  );
 
   // Open Modal 1: Personal Info & Delivery Profile
   const handleOpenProfileModal = () => {
@@ -283,6 +291,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         text: 'Đăng xuất',
         style: 'destructive',
         onPress: async () => {
+          try {
+            if (GoogleSignin) {
+              await GoogleSignin.signOut();
+            }
+          } catch (_) {
+            // Bỏ qua lỗi nếu chưa có tài khoản Google nào
+          }
           await storage.clearAll();
           navigation.getParent()?.reset({
             index: 0,
@@ -454,19 +469,19 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               </View>
             </TouchableOpacity>
 
-            {/* Card 2: Cập nhật CCCD */}
+            {/* Card 2: Định danh eKYC (AI) */}
             <TouchableOpacity
               style={[styles.cardContainerHalf, { justifyContent: 'space-between' }]}
               activeOpacity={0.9}
-              onPress={handleOpenCccdModal}
+              onPress={() => navigation.navigate('Ekyc')}
             >
               <View style={styles.cardHeaderRow}>
                 <View style={styles.cardHeaderLeft}>
-                  <View style={styles.headerIconCircle}>
-                    <Ionicons name="card-outline" size={16} color="#6027D2" />
+                  <View style={[styles.headerIconCircle, { backgroundColor: '#F5F3FF' }]}>
+                    <Ionicons name="finger-print" size={16} color="#6027D2" />
                   </View>
                   <Text style={styles.cardTitleText} numberOfLines={1}>
-                    Cập nhật CCCD
+                    Định danh eKYC (AI)
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={16} color="#A0AEC0" />
@@ -474,8 +489,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
 
               <View style={styles.cccdInnerBox}>
                 <View style={styles.cccdGraphicContainer}>
-                  <View style={styles.cccdCardIllustration}>
-                    <Ionicons name="id-card-outline" size={32} color="#8B5CF6" />
+                  <View style={[styles.cccdCardIllustration, { backgroundColor: '#EDE9FE' }]}>
+                    <Ionicons name="scan" size={30} color="#7C3AED" />
                   </View>
                   <View style={styles.cccdCheckBadge}>
                     <Ionicons
@@ -500,31 +515,41 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
 
                 <Text style={styles.cccdStatusTitle}>
                   {isVerified
-                    ? 'Đã cập nhật thông tin CCCD'
+                    ? 'Đã xác thực sinh trắc học'
                     : profile?.verificationStatus === 'REJECTED'
-                    ? 'Hồ sơ bị từ chối'
+                    ? 'Xác thực thất bại'
                     : hasUploadedDocs
-                    ? 'Đang chờ Admin duyệt'
-                    : 'Chưa cập nhật CCCD'}
+                    ? 'Đang xử lý hồ sơ'
+                    : 'Chưa xác thực eKYC'}
                 </Text>
 
                 <Text style={styles.cccdStatusSubtitle}>
                   {profile?.cccdNumber
                     ? `Mã CCCD: ${profile.cccdNumber}`
                     : isVerified
-                    ? 'Thông tin của bạn đã được xác thực'
+                    ? 'Hồ sơ đã được AI phê duyệt tự động'
                     : profile?.verificationStatus === 'REJECTED'
-                    ? profile.verificationNote || 'Vui lòng tải lại ảnh giấy tờ'
-                    : hasUploadedDocs
-                    ? 'Hệ thống đang xử lý hồ sơ'
-                    : 'Tải ảnh CCCD để xác thực'}
+                    ? 'Bấm để chụp lại CCCD & Selfie'
+                    : 'Quét CCCD & khuôn mặt chỉ 1 phút'}
                 </Text>
               </View>
 
-              <TouchableOpacity style={styles.softPurpleBtn} onPress={handleOpenCccdModal}>
-                <Ionicons name="create-outline" size={14} color="#6027D2" />
-                <Text style={styles.softPurpleBtnText}>
-                  {hasUploadedDocs ? 'Xem thông tin' : 'Cập nhật ngay'}
+              <TouchableOpacity
+                style={[styles.softPurpleBtn, { backgroundColor: isVerified ? '#F0FDF4' : '#F5F3FF' }]}
+                onPress={() => navigation.navigate('Ekyc')}
+              >
+                <Ionicons
+                  name={isVerified ? 'shield-checkmark' : 'sparkles'}
+                  size={14}
+                  color={isVerified ? '#16A34A' : '#6027D2'}
+                />
+                <Text
+                  style={[
+                    styles.softPurpleBtnText,
+                    { color: isVerified ? '#16A34A' : '#6027D2' },
+                  ]}
+                >
+                  {isVerified ? 'Xem hồ sơ AI' : 'Xác thực AI ngay'}
                 </Text>
               </TouchableOpacity>
             </TouchableOpacity>
