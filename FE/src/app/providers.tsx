@@ -4,6 +4,7 @@ import { useEffect, type ReactNode } from 'react';
 import { ConfigProvider, App as AntdApp } from 'antd';
 import viVN from 'antd/locale/vi_VN';
 import { Colors } from '@/lib/colors';
+import { IncomingCallListener } from '@/features/video-call';
 
 if (typeof window !== 'undefined') {
   window.addEventListener('error', (event) => {
@@ -52,7 +53,10 @@ const theme = {
 export default function AntdProvider({ children }: { children: ReactNode }) {
   return (
     <ConfigProvider locale={viVN} theme={theme}>
-      <AntdApp>{children}</AntdApp>
+      <AntdApp>
+        {children}
+        <IncomingCallListener />
+      </AntdApp>
     </ConfigProvider>
   );
 }

@@ -21,8 +21,8 @@ const securityHeaders = [
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       "img-src 'self' data: blob: https://res.cloudinary.com https:",
       "font-src 'self' https://fonts.gstatic.com data:",
-      // Cho phép FE gọi API sang BE (thêm URL production khi deploy)
-      "connect-src 'self' http://localhost:3001 http://localhost:3002",
+      // Cho phép FE gọi API sang BE + GetStream Video SDK domains (API + Video SFU WebSockets)
+      "connect-src 'self' http://localhost:3001 http://localhost:3002 ws://localhost:3001 wss://*.stream-io-api.com https://*.stream-io-api.com https://*.stream-io-cdn.com https://getstream.io https://*.stream-io-video.com wss://*.stream-io-video.com https://*.stream-io.com wss://*.stream-io.com",
       // Ngăn trang bị nhúng vào frame của domain khác
       "frame-ancestors 'none'",
     ].join('; '),

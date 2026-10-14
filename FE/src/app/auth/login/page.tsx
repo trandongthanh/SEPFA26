@@ -22,15 +22,24 @@ export default function LoginPage() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const { message } = App.useApp();
 
-  // Guard: đã đăng nhập → chuyển đến trang tương ứng (Admin → /admin/verify/providers)
+  // Guard: đã đăng nhập → chuyển đến trang tương ứng
   useEffect(() => {
     if (isAuthenticated) {
+      const redirectParam = typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('redirect')
+        : null;
+
+      if (redirectParam && redirectParam.startsWith('/')) {
+        router.replace(redirectParam);
+        return;
+      }
+
       if (user?.role === 'ADMIN') {
         router.replace('/admin/verify/providers');
       } else if (user?.role === 'PROVIDER') {
         router.replace('/provider/dashboard');
       } else {
-        router.replace('/admin/verify/providers');
+        router.replace('/');
       }
     }
   }, [isAuthenticated, user, router]);
@@ -43,22 +52,28 @@ export default function LoginPage() {
         password: values.password,
       });
 
-      // Chặn đăng nhập đối với tài khoản Customer (cổng này dành cho Provider & Admin)
-      if (res.account?.role === 'CUSTOMER') {
-        message.error('Tài khoản Khách hàng (Customer) không có quyền truy cập cổng này. Vui lòng đăng nhập trên ứng dụng dành cho khách hàng.');
-        return;
-      }
-
       setAuth(res.account, {
         accessToken: res.accessToken,
         refreshToken: res.refreshToken,
       });
 
       message.success('Đăng nhập thành công!');
+
+      const redirectParam = typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('redirect')
+        : null;
+
+      if (redirectParam && redirectParam.startsWith('/')) {
+        router.push(redirectParam);
+        return;
+      }
+
       if (res.account?.role === 'PROVIDER') {
         router.push('/provider/dashboard');
-      } else {
+      } else if (res.account?.role === 'ADMIN') {
         router.push('/admin/verify/providers');
+      } else {
+        router.push('/');
       }
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { message?: string }; status?: number } };
