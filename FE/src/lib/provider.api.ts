@@ -110,7 +110,24 @@ export const providerApi = {
   // Danh sách đơn hàng phía Provider
   listOrders: async (status?: string) => {
     const params = status ? { status } : {};
-    const res = await api.get<{ items: OrderItem[]; total: number }>('/api/v1/orders', { params });
+    const res = await api.get<any>('/api/v1/orders', { params });
+    const raw = res.data;
+    const items: OrderItem[] = Array.isArray(raw)
+      ? raw
+      : raw?.items
+      ? raw.items
+      : raw?.data
+      ? raw.data
+      : [];
+    return {
+      items,
+      total: raw?.total ?? items.length,
+    };
+  },
+
+  // Chi tiết đơn hàng phía Provider
+  getOrderDetail: async (orderId: string) => {
+    const res = await api.get<any>(`/api/v1/orders/${orderId}`);
     return res.data;
   },
 

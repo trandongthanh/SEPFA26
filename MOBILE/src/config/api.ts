@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { Platform } from 'react-native';
 
+// @ts-ignore
 import Constants from 'expo-constants';
 
 // Tự động lấy IP máy tính từ Expo Host URI để điện thoại thật quét Expo Go kết nối được Backend
@@ -41,6 +42,10 @@ apiClient.interceptors.request.use(
       const { storage } = await import('../utils/storage');
       const token = await storage.getToken();
       if (token && config.headers) {
+        if (typeof (config.headers as any).set === 'function') {
+          (config.headers as any).set('Authorization', `Bearer ${token}`);
+        }
+        config.headers['Authorization'] = `Bearer ${token}`;
         config.headers.Authorization = `Bearer ${token}`;
       }
     } catch (e) {
