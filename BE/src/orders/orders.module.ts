@@ -25,6 +25,7 @@ import { HandoverService } from './handover.service';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
 import { PlantRecognitionService } from './plant-recognition.service';
+import { ContractTemplateService } from './contract-template.service';
 
 // Import Customers/Providers module để lấy repo profile + package (2 module đó export TypeOrmModule).
 // PaymentComponent/EscrowLedger đăng ký thẳng ở đây (sinh khoản phải trả lúc ký + bút toán REFUND
@@ -53,7 +54,7 @@ import { PlantRecognitionService } from './plant-recognition.service';
     VideoCallsModule,
   ],
   controllers: [OrdersController, DisputesController, AdminShippingRatesController],
-  providers: [OrdersService, HandoverService, DistanceService, DisputesService, PlantRecognitionService],
+  providers: [OrdersService, HandoverService, DistanceService, DisputesService, PlantRecognitionService, ContractTemplateService],
   exports: [TypeOrmModule, DistanceService],
 })
 export class OrdersModule {}
