@@ -53,6 +53,33 @@ export const envValidationSchema = Joi.object({
   SEED_ADMIN_PASSWORD: Joi.string().min(8).required(),
   STREAM_API_KEY: Joi.string().required(),
   STREAM_API_SECRET: Joi.string().required(),
+
+  // ===== Video call 1-1 (src/video-calls) — đều có mặc định =====
+  // Call type riêng trên GetStream (tạo bằng script src/video-calls/scripts/setup-stream-call-type.ts).
+  STREAM_CALL_TYPE: Joi.string()
+    .pattern(/^[a-z0-9_]+$/)
+    .default('lancare_call'),
+  // User hệ thống đứng tên mọi cuộc gọi trên GetStream.
+  STREAM_SYSTEM_USER_ID: Joi.string().default('lancare-system'),
+  // Đổ chuông bao lâu thì thành cuộc gọi nhỡ (MISSED).
+  VIDEO_CALL_RING_TIMEOUT_SECONDS: Joi.number()
+    .integer()
+    .min(10)
+    .max(300)
+    .default(45),
+  // Đang nói mà thiếu người được chờ quay lại bao lâu trước khi DROPPED.
+  VIDEO_CALL_RECONNECT_GRACE_SECONDS: Joi.number()
+    .integer()
+    .min(10)
+    .max(600)
+    .default(300),
+  // Thời lượng tối đa tính từ lúc nghe (TIMEOUT).
+  VIDEO_CALL_MAX_DURATION_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .max(14400)
+    .default(3600),
+
   CLOUDINARY_URL: Joi.string().pattern(/^cloudinary:\/\//).optional(),
   APP_BASE_URL: Joi.string().uri().when('SMTP_HOST', {
     is: SMTP_ENABLED,
