@@ -83,3 +83,52 @@ describe('envValidationSchema — THROTTLE_DISABLED', () => {
     expect(errorKeys({ ...BASE, NODE_ENV: 'production' })).toEqual([]);
   });
 });
+
+describe('envValidationSchema — video call', () => {
+  const validated = (env: Record<string, unknown>) =>
+    envValidationSchema.validate(env, { abortEarly: false }).value as Record<
+      string,
+      unknown
+    >;
+
+  it('không khai gì → mặc định (lancare_call, 45s đổ chuông, chờ 300s, tối đa 3600s)', () => {
+    expect(errorKeys(BASE)).toEqual([]);
+    expect(validated(BASE)).toMatchObject({
+      STREAM_CALL_TYPE: 'lancare_call',
+      STREAM_SYSTEM_USER_ID: 'lancare-system',
+      VIDEO_CALL_RING_TIMEOUT_SECONDS: 45,
+      VIDEO_CALL_RECONNECT_GRACE_SECONDS: 300,
+      VIDEO_CALL_MAX_DURATION_SECONDS: 3600,
+    });
+  });
+
+  it('giá trị chuỗi trong .env → ép về số; giá trị biên hợp lệ', () => {
+    const env = {
+      ...BASE,
+      VIDEO_CALL_RING_TIMEOUT_SECONDS: '10',
+      VIDEO_CALL_RECONNECT_GRACE_SECONDS: '600',
+      VIDEO_CALL_MAX_DURATION_SECONDS: '14400',
+    };
+    expect(errorKeys(env)).toEqual([]);
+    expect(validated(env)).toMatchObject({
+      VIDEO_CALL_RING_TIMEOUT_SECONDS: 10,
+      VIDEO_CALL_RECONNECT_GRACE_SECONDS: 600,
+      VIDEO_CALL_MAX_DURATION_SECONDS: 14400,
+    });
+  });
+
+  it.each<[string, unknown]>([
+    ['VIDEO_CALL_RING_TIMEOUT_SECONDS', 9],
+    ['VIDEO_CALL_RING_TIMEOUT_SECONDS', 301],
+    ['VIDEO_CALL_RING_TIMEOUT_SECONDS', 45.5],
+    ['VIDEO_CALL_RECONNECT_GRACE_SECONDS', 9],
+    ['VIDEO_CALL_RECONNECT_GRACE_SECONDS', 601],
+    ['VIDEO_CALL_MAX_DURATION_SECONDS', 59],
+    ['VIDEO_CALL_MAX_DURATION_SECONDS', 14401],
+    ['STREAM_CALL_TYPE', 'Lancare_Call'],
+    ['STREAM_CALL_TYPE', 'lancare-call'],
+    ['STREAM_CALL_TYPE', 'default:x'],
+  ])('%s = %p không hợp lệ → app không khởi động', (key, value) => {
+    expect(errorKeys({ ...BASE, [key]: value })).toEqual([key]);
+  });
+});
