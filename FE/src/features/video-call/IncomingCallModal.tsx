@@ -1,33 +1,74 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { PhoneOutlined, VideoCameraOutlined, CloseOutlined } from '@ant-design/icons';
-
-export interface IncomingCallEvent {
-  eventType: string;
-  callId: string;
-  callType: string;
-  orderId: string;
-  createdBy?: string;
-}
+import { videoCallApi, type VideoCallRingingPayload } from '@/lib/video-call.api';
 
 interface IncomingCallModalProps {
-  call: IncomingCallEvent | null;
+  call: VideoCallRingingPayload | null;
   onClose: () => void;
 }
 
 export default function IncomingCallModal({ call, onClose }: IncomingCallModalProps) {
   const router = useRouter();
+  const [isAccepting, setIsAccepting] = useState(false);
+  const [isDeclining, setIsDeclining] = useState(false);
+
+  // Đếm ngược thời gian đổ chuông còn lại
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!call?.ringExpiresAt) return;
+
+    const updateCountdown = () => {
+      const remaining = Math.max(
+        0,
+        Math.ceil((new Date(call.ringExpiresAt).getTime() - Date.now()) / 1000),
+      );
+      setSecondsLeft(remaining);
+      if (remaining <= 0) {
+        onClose(); // Hết giờ đổ chuông → tự đóng popup
+      }
+    };
+
+    updateCountdown();
+    const interval = setInterval(updateCountdown, 1000);
+    return () => clearInterval(interval);
+  }, [call?.ringExpiresAt, onClose]);
 
   if (!call) return null;
 
-  const handleAccept = () => {
-    onClose();
-    router.push(`/calls/${call.callType || 'default'}/${call.callId}`);
+  const handleAccept = async () => {
+    if (isAccepting) return;
+    setIsAccepting(true);
+    try {
+      // Gọi API join → BE trả về stream credentials → chuyển trang phòng gọi
+      const session = await videoCallApi.joinCall(call.callId);
+      onClose();
+      // Truyền stream credentials qua sessionStorage để VideoCallRoom dùng luôn
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem(
+          `lancare_call_session_${call.callId}`,
+          JSON.stringify(session),
+        );
+      }
+      router.push(`/calls/${session.stream.callType}/${call.callId}`);
+    } catch (err: any) {
+      console.error('[IncomingCallModal] Join call failed:', err);
+      onClose();
+    }
   };
 
-  const handleDecline = () => {
+  const handleDecline = async () => {
+    if (isDeclining) return;
+    setIsDeclining(true);
+    try {
+      // Báo BE từ chối → BE sẽ gửi socket video_call.ended cho phía người gọi
+      await videoCallApi.declineCall(call.callId);
+    } catch {
+      // Lỗi cũng đóng popup bình thường
+    }
     onClose();
   };
 
@@ -52,11 +93,16 @@ export default function IncomingCallModal({ call, onClose }: IncomingCallModalPr
             Cuộc gọi video đến
           </p>
           <h3 className="text-lg font-bold text-white">
-            Nhà vườn LanCare
+            {call.caller.fullName || 'Người dùng LanCare'}
           </h3>
           <p className="text-xs text-white/60">
             Đơn hàng #{call.orderId ? call.orderId.slice(0, 8).toUpperCase() : '---'}
           </p>
+          {secondsLeft !== null && secondsLeft > 0 && (
+            <p className="text-xs text-white/40 mt-1">
+              Tự động tắt sau {secondsLeft}s
+            </p>
+          )}
         </div>
 
         {/* Buttons */}
@@ -64,19 +110,21 @@ export default function IncomingCallModal({ call, onClose }: IncomingCallModalPr
           {/* Decline */}
           <button
             onClick={handleDecline}
-            className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-2xl bg-white/10 hover:bg-red-500/20 text-white hover:text-red-400 border border-white/10 hover:border-red-500/30 font-medium text-sm transition-all"
+            disabled={isDeclining || isAccepting}
+            className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-2xl bg-white/10 hover:bg-red-500/20 text-white hover:text-red-400 border border-white/10 hover:border-red-500/30 font-medium text-sm transition-all disabled:opacity-50"
           >
             <CloseOutlined />
-            <span>Từ chối</span>
+            <span>{isDeclining ? 'Đang từ chối...' : 'Từ chối'}</span>
           </button>
 
           {/* Accept */}
           <button
             onClick={handleAccept}
-            className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-2xl bg-[#6027D2] hover:bg-[#7134E5] text-white font-medium text-sm shadow-lg shadow-[#6027D2]/40 transition-all hover:scale-[1.02] active:scale-[0.98]"
+            disabled={isAccepting || isDeclining}
+            className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-2xl bg-[#6027D2] hover:bg-[#7134E5] text-white font-medium text-sm shadow-lg shadow-[#6027D2]/40 transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50"
           >
             <PhoneOutlined className="rotate-[135deg]" />
-            <span>Tham gia</span>
+            <span>{isAccepting ? 'Đang kết nối...' : 'Tham gia'}</span>
           </button>
         </div>
       </div>

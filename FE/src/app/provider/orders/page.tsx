@@ -120,33 +120,36 @@ function OrdersPageContent() {
   const handleStartVideoCall = async (orderId: string) => {
     setVideoCallLoading(orderId);
     try {
-      // 1. Kiểm tra có phòng call đang mở không
+      // 1. Kiểm tra xem đã có cuộc gọi đang diễn ra của đơn này không
       try {
-        const current = await videoCallApi.getCurrentOrderCall(orderId);
-        if (current?.call) {
-          router.push(`/calls/${current.call.callType}/${current.call.callId}`);
+        const active = await videoCallApi.getActive(orderId);
+        if (active?.call) {
+          const session = await videoCallApi.joinCall(active.call.id);
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem(
+              `lancare_call_session_${active.call.id}`,
+              JSON.stringify(session),
+            );
+          }
+          router.push(`/calls/${session.stream.callType}/${active.call.id}`);
           return;
         }
       } catch {
-        // Tiếp tục tạo phòng mới
+        // Bỏ qua lỗi getActive, tiếp tục tạo cuộc gọi mới
       }
 
-      // 2. Thử tạo phòng qua BE API
-      let callType = 'default';
-      let callId = '';
-      try {
-        const result = await videoCallApi.createCall({ orderId });
-        callType = result.callType || 'default';
-        callId = result.callId;
-      } catch (createErr: any) {
-        console.warn(
-          '[handleStartVideoCall] BE createCall failed, using client fallback:',
-          createErr?.response?.data || createErr?.message,
+      // 2. Tạo cuộc gọi mới qua BE API
+      const session = await videoCallApi.createCall(orderId);
+      // URL phải dùng id cuộc gọi của BE (call.id) — VideoCallRoom dùng nó để gọi
+      // POST /video-calls/:id/join khi F5; stream.callId chỉ dùng để kết nối GetStream
+      const callId = session.call.id;
+      const callType = session.stream?.callType || 'default';
+
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem(
+          `lancare_call_session_${callId}`,
+          JSON.stringify(session),
         );
-        // Fallback: Tự sinh callId theo format của hệ thống: order_<orderKey>_<sessionKey>
-        const orderKey = orderId.replace(/-/g, '');
-        const sessionKey = Math.random().toString(36).substring(2, 14);
-        callId = `order_${orderKey}_${sessionKey}`;
       }
 
       router.push(`/calls/${callType}/${callId}`);

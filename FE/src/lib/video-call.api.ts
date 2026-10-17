@@ -1,92 +1,172 @@
 import { api } from './api';
 
-// ===== Response types khớp với BE DTO =====
+// ===== Response types — khớp 1:1 với BE DTO (video-call-response.dto.ts) =====
 
-export interface TokenResponse {
-  token: string;
+/** Một bên của cuộc gọi */
+export interface VideoCallPartyDto {
+  accountId: string;
+  fullName: string;
 }
 
-export interface CreateCallPayload {
+/** Trạng thái cuộc gọi: đổ chuông → đang nói → kết thúc */
+export type VideoCallStatus = 'RINGING' | 'ACTIVE' | 'ENDED';
+
+/** Lý do kết thúc cuộc gọi */
+export type VideoCallEndReason =
+  | 'COMPLETED'
+  | 'DECLINED'
+  | 'CANCELLED'
+  | 'MISSED'
+  | 'DROPPED'
+  | 'TIMEOUT';
+
+/** Vai trò trong cuộc gọi */
+export type VideoCallRole = 'CALLER' | 'CALLEE';
+
+/** Thông tin một cuộc gọi (GET, POST trả về) */
+export interface VideoCallResponseDto {
+  id: string;
   orderId: string;
-  type?: 'default' | 'livestream' | 'audio_room';
-  providerId?: string;
+  status: VideoCallStatus;
+  endReason: VideoCallEndReason | null;
+  myRole: VideoCallRole;
+  endedBy: VideoCallRole | null;
+  caller: VideoCallPartyDto;
+  callee: VideoCallPartyDto;
+  createdAt: string;
+  /** Mốc hết giờ đổ chuông (ISO) — FE đếm ngược theo mốc này */
+  ringExpiresAt: string;
+  answeredAt: string | null;
+  endedAt: string | null;
+  /** Giây đã nói (chỉ khi đã nghe và đã kết thúc, còn lại null) */
+  durationSeconds: number | null;
 }
 
-export interface CreateCallResponse {
-  callId: string;
-  joinUrl: string;
-  createdBy: string;
+/** GET /video-calls/active — cuộc gọi đang diễn ra của đơn */
+export interface ActiveVideoCallResponseDto {
+  call: VideoCallResponseDto | null;
+}
+
+/** Thông tin để FE kết nối GetStream */
+export interface VideoCallStreamCredentialsDto {
+  apiKey: string;
   callType: string;
-}
-
-export interface CallMember {
-  userId: string;
-  role?: string;
-}
-
-export interface CallInfoResponse {
-  callId: string;
-  createdBy: string;
-  providerId: string | null;
-  providerName: string | null;
-  orderId: string | null;
-  members: CallMember[];
-}
-
-export interface JoinCallResponse {
   callId: string;
   token: string;
   userId: string;
-  userName: string;
 }
 
-export interface CurrentOrderCallResponse {
-  call: {
-    callId: string;
-    callType: string;
-    status: string;
-  } | null;
-  canCreate: boolean;
+/** POST /video-calls, POST /video-calls/:id/join — cuộc gọi + thông tin vào GetStream */
+export interface VideoCallSessionResponseDto {
+  call: VideoCallResponseDto;
+  stream: VideoCallStreamCredentialsDto;
+  deviceSessionId: string;
 }
+
+// ===== Socket event payloads — khớp BE gateway (video-calls.gateway.ts §5.3) =====
+
+export interface VideoCallRingingPayload {
+  callId: string;
+  orderId: string;
+  caller: { accountId: string; fullName: string };
+  ringExpiresAt: string;
+}
+
+export interface VideoCallAcceptedPayload {
+  callId: string;
+  deviceSessionId: string;
+}
+
+export interface VideoCallMovedPayload {
+  callId: string;
+  deviceSessionId: string;
+}
+
+export interface VideoCallEndedPayload {
+  callId: string;
+  endReason: VideoCallEndReason;
+  endedAt: string;
+}
+
+/**
+ * Tên window event để useIncomingCall (giữ socket global) chuyển tiếp sự kiện socket
+ * cho phòng gọi đang mở — tránh mở thêm một kết nối socket thứ hai.
+ * detail: payload tương ứng của socket event.
+ */
+export const VIDEO_CALL_MOVED_EVENT = 'lancare:video_call.moved';
+export const VIDEO_CALL_ENDED_EVENT = 'lancare:video_call.ended';
 
 // ===== Video Call API functions =====
 
 export const videoCallApi = {
-  /** Lấy GetStream user token cho account hiện tại */
-  getToken: async (): Promise<TokenResponse> => {
-    const res = await api.post<TokenResponse>('/api/v1/video-calls/token');
-    return res.data;
-  },
-
-  /** Tạo phòng call mới (chỉ Provider) */
-  createCall: async (payload: CreateCallPayload): Promise<CreateCallResponse> => {
-    const res = await api.post<CreateCallResponse>('/api/v1/video-calls', payload);
-    return res.data;
-  },
-
-  /** Kiểm tra order có đang mở phòng call không */
-  getCurrentOrderCall: async (orderId: string): Promise<CurrentOrderCallResponse> => {
-    const res = await api.get<CurrentOrderCallResponse>(
-      `/api/v1/video-calls/orders/${orderId}/current`
+  /**
+   * Gọi video bên còn lại của đơn (bắt đầu đổ chuông).
+   * POST /api/v1/video-calls  body: { orderId }
+   * Trả về: cuộc gọi + thông tin GetStream (apiKey, callType, callId, token, userId).
+   */
+  createCall: async (orderId: string): Promise<VideoCallSessionResponseDto> => {
+    const res = await api.post<VideoCallSessionResponseDto>(
+      '/api/v1/video-calls',
+      { orderId },
     );
     return res.data;
   },
 
-  /** Lấy thông tin call (members, provider name...) */
-  getCallInfo: async (callId: string): Promise<CallInfoResponse> => {
-    const res = await api.get<CallInfoResponse>(`/api/v1/video-calls/${callId}`);
+  /**
+   * Cuộc gọi đang diễn ra của đơn (mở lại app, lỡ sự kiện socket) — null nếu không có.
+   * GET /api/v1/video-calls/active?orderId=...
+   */
+  getActive: async (orderId: string): Promise<ActiveVideoCallResponseDto> => {
+    const res = await api.get<ActiveVideoCallResponseDto>(
+      '/api/v1/video-calls/active',
+      { params: { orderId } },
+    );
     return res.data;
   },
 
-  /** Join vào call — trả về token + userId + userName */
-  joinCall: async (callId: string): Promise<JoinCallResponse> => {
-    const res = await api.post<JoinCallResponse>(`/api/v1/video-calls/${callId}/join`);
+  /**
+   * Lịch sử cuộc gọi của đơn (mới nhất trước, tối đa 50).
+   * GET /api/v1/video-calls?orderId=...
+   */
+  listHistory: async (orderId: string): Promise<VideoCallResponseDto[]> => {
+    const res = await api.get<VideoCallResponseDto[]>(
+      '/api/v1/video-calls',
+      { params: { orderId } },
+    );
     return res.data;
   },
 
-  /** Rời call */
-  leaveCall: async (callId: string): Promise<{ status: string }> => {
-    const res = await api.post<{ status: string }>(`/api/v1/video-calls/${callId}/leave`);
+  /**
+   * Nghe cuộc gọi (đang đổ chuông) / vào lại, chuyển máy (đang nói).
+   * POST /api/v1/video-calls/:id/join
+   * Trả về: cuộc gọi + thông tin GetStream.
+   */
+  joinCall: async (callId: string): Promise<VideoCallSessionResponseDto> => {
+    const res = await api.post<VideoCallSessionResponseDto>(
+      `/api/v1/video-calls/${callId}/join`,
+    );
+    return res.data;
+  },
+
+  /**
+   * Người nhận từ chối cuộc gọi đang đổ chuông.
+   * POST /api/v1/video-calls/:id/decline
+   */
+  declineCall: async (callId: string): Promise<VideoCallResponseDto> => {
+    const res = await api.post<VideoCallResponseDto>(
+      `/api/v1/video-calls/${callId}/decline`,
+    );
+    return res.data;
+  },
+
+  /**
+   * Hủy (đang đổ chuông) / cúp (đang nói); đã kết thúc thì trả nguyên trạng.
+   * POST /api/v1/video-calls/:id/end
+   */
+  endCall: async (callId: string): Promise<VideoCallResponseDto> => {
+    const res = await api.post<VideoCallResponseDto>(
+      `/api/v1/video-calls/${callId}/end`,
+    );
     return res.data;
   },
 };

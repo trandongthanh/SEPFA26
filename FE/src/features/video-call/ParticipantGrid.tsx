@@ -15,7 +15,7 @@ import {
  *
  * Layout rules:
  * - 1 người: full screen + banner "chờ người khác"
- * - 2 người: 2 ô xếp DỌC (flex-col) — tránh layout ngang kỳ
+ * - 2 người: luôn 2 ô cạnh nhau (kiểu Google Meet)
  * - 3-4 người: 2x2 grid
  * - 5+ người: 3 cột grid
  * - Khi có screen share: spotlight + sidebar
@@ -24,6 +24,10 @@ import {
  * - ParticipantViewUI={EmptyUI}: tắt hoàn toàn UI mặc định của Stream SDK để KHÔNG bị đè 2 lần tên
  * - hasVideo / hasAudio từ SDK phản ánh chính xác trạng thái
  * - Dedup participants theo userId (tránh duplicate tile)
+ * - Tile luôn nằm gọn trong khung (grid h-full, không dùng aspect-video full width):
+ *   Stream SDK theo dõi tile bằng IntersectionObserver (ngưỡng 35%). Nếu tile bị tràn/cắt
+ *   bởi overflow-hidden → SDK đánh dấu INVISIBLE → ẩn video + ngừng subscribe video đối phương
+ *   → nhìn như cả hai bên "tự tắt cam".
  */
 const EmptyUI = () => null;
 
@@ -122,17 +126,17 @@ export default function ParticipantGrid() {
   const isSingle = count === 1;
   const isTwo = count === 2;
 
-  // 2 người luôn xếp dọc, không bị horizontal lệch tỷ lệ
+  // Grid có số hàng cố định để tile chia đều chiều cao, không bao giờ tràn khỏi khung
   const gridClass = isSingle
-    ? 'flex flex-col'
+    ? 'grid-cols-1 grid-rows-1'
     : isTwo
-    ? 'flex flex-col'
+    ? 'grid-cols-2 grid-rows-1'
     : count <= 4
-    ? 'grid grid-cols-2'
-    : 'grid grid-cols-3';
+    ? 'grid-cols-2 grid-rows-2'
+    : 'grid-cols-3 auto-rows-fr';
 
   return (
-    <div className="flex-1 p-3 overflow-hidden relative flex flex-col justify-center">
+    <div className="flex-1 min-h-0 p-3 overflow-hidden relative">
       {/* Banner khi chỉ có 1 mình trong phòng */}
       {isSingle && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 px-4 py-2 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-white/80 text-xs flex items-center gap-2 shadow-lg">
@@ -141,11 +145,11 @@ export default function ParticipantGrid() {
         </div>
       )}
 
-      <div className={`w-full h-full items-center justify-center gap-3 ${gridClass}`}>
+      <div className={`grid w-full h-full gap-3 ${gridClass}`}>
         {uniqueParticipants.map((participant) => (
           <div
             key={participant.sessionId}
-            className={`w-full aspect-video rounded-2xl overflow-hidden bg-[#1a1a2e] relative group transition-all flex items-center justify-center shadow-xl
+            className={`w-full h-full min-h-0 min-w-0 rounded-2xl overflow-hidden bg-[#1a1a2e] relative group transition-all flex items-center justify-center shadow-xl
               ${
                 participant.isSpeaking
                   ? 'ring-2 ring-green-400 shadow-[0_0_20px_rgba(74,222,128,0.25)]'
@@ -159,7 +163,7 @@ export default function ParticipantGrid() {
               participant={participant}
               className="h-full w-full [&_video]:w-full [&_video]:h-full [&_video]:object-cover"
               ParticipantViewUI={EmptyUI}
-              VideoPlaceholder={() => <NoVideoFallback participant={participant} />}
+              VideoPlaceholder={NoVideoFallback}
             />
             {/* Duy nhất custom label của chúng ta hiển thị */}
             <ParticipantLabel
@@ -244,11 +248,24 @@ function ParticipantLabel({
   );
 }
 
-function NoVideoFallback({ participant }: { participant: StreamVideoParticipant }) {
+/**
+ * Component ổn định (không khai báo inline) để SDK không remount placeholder mỗi lần render.
+ * Nhận `style` (position: absolute) từ SDK để phủ lên video thay vì đẩy layout.
+ * Chỉ ghi "Camera tắt" khi đối phương thật sự không publish video — còn lại là đang tải.
+ */
+const NoVideoFallback = React.forwardRef<
+  HTMLDivElement,
+  { participant: StreamVideoParticipant; style?: React.CSSProperties }
+>(function NoVideoFallback({ participant, style }, ref) {
   const initials = getInitials(participant.name || participant.userId || '?');
+  const isCamOff = !hasVideo(participant);
 
   return (
-    <div className="h-full w-full flex items-center justify-center bg-gradient-to-br from-[#1E1B2E] to-[#2d2654]">
+    <div
+      ref={ref}
+      style={style}
+      className="inset-0 h-full w-full flex items-center justify-center bg-gradient-to-br from-[#1E1B2E] to-[#2d2654]"
+    >
       <div className="flex flex-col items-center gap-3">
         <div className="w-20 h-20 rounded-full bg-gradient-to-br from-[#6027D2] to-[#8B5CF6] flex items-center justify-center text-white text-2xl font-bold shadow-lg shadow-[#6027D2]/30">
           {initials}
@@ -256,17 +273,21 @@ function NoVideoFallback({ participant }: { participant: StreamVideoParticipant 
         <span className="text-white/70 text-sm font-medium">
           {participant.name || participant.userId}
         </span>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/40 border border-white/10">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="1" y1="1" x2="23" y2="23" />
-            <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34m-7.72-2.06a4 4 0 1 1-5.56-5.56" />
-          </svg>
-          <span className="text-white/50 text-[10px]">Camera tắt</span>
-        </div>
+        {isCamOff ? (
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/40 border border-white/10">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="1" y1="1" x2="23" y2="23" />
+              <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34m-7.72-2.06a4 4 0 1 1-5.56-5.56" />
+            </svg>
+            <span className="text-white/50 text-[10px]">Camera tắt</span>
+          </div>
+        ) : (
+          <span className="text-white/40 text-[10px]">Đang tải video...</span>
+        )}
       </div>
     </div>
   );
-}
+});
 
 // ===== Helpers =====
 

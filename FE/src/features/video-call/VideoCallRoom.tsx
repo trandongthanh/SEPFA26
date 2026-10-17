@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -13,8 +13,22 @@ import '@stream-io/video-react-sdk/dist/css/styles.css';
 import { useVideoCall } from './useVideoCall';
 import ParticipantGrid from './ParticipantGrid';
 import CallControls from './CallControls';
-import { videoCallApi, type CallInfoResponse } from '@/lib/video-call.api';
+import {
+  videoCallApi,
+  VIDEO_CALL_ENDED_EVENT,
+  VIDEO_CALL_MOVED_EVENT,
+  type VideoCallSessionResponseDto,
+  type VideoCallEndedPayload,
+  type VideoCallMovedPayload,
+} from '@/lib/video-call.api';
 import { useAuthStore } from '@/lib/auth.store';
+
+/** Xóa session + mốc giờ bắt đầu của cuộc gọi khỏi sessionStorage */
+function clearCallStorage(callId: string) {
+  if (typeof window === 'undefined') return;
+  sessionStorage.removeItem(`lancare_call_started_${callId}`);
+  sessionStorage.removeItem(`lancare_call_session_${callId}`);
+}
 
 interface VideoCallRoomProps {
   callType: string;
@@ -24,27 +38,29 @@ interface VideoCallRoomProps {
 /**
  * Component phòng video call chính — full-screen, dark theme.
  *
- * Flow & Tối ưu:
- * 1. Timer chuẩn Google Meet: chỉ bắt đầu đếm khi CẢ 2 NGƯỜI CÙNG Ở TRONG PHÒNG
- *    -> Không bị nhảy lên 400+ phút do phòng cũ từ trước
- *    -> 2 bên cùng đếm từ 00:00 đồng bộ từng giây
- * 2. Tự động kết thúc khi bên kia tắt (call.ended)
- * 3. Không gọi /join gây 403 đỏ lòm console
+ * Luồng mới (khớp bản chốt BE §5.1):
+ * - Người gọi: tạo qua handleStartVideoCall → lưu session vào sessionStorage → chuyển trang
+ * - Người nhận: accept từ IncomingCallModal → lưu session vào sessionStorage → chuyển trang
+ * - Nếu mở lại trang (F5): gọi getActive → nếu còn cuộc gọi → joinCall → lấy session mới
+ * - Kết thúc: gọi POST /video-calls/:id/end
  */
 export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) {
   const router = useRouter();
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
-  const [callInfo, setCallInfo] = useState<CallInfoResponse | null>(null);
-  const [callInfoLoading, setCallInfoLoading] = useState(true);
+  const [session, setSession] = useState<VideoCallSessionResponseDto | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [initError, setInitError] = useState<string | null>(null);
+  /** Cuộc gọi đã được chuyển sang thiết bị khác của chính mình */
+  const [movedAway, setMovedAway] = useState(false);
 
   const routerRef = useRef(router);
-  useEffect(() => { routerRef.current = router; }, [router]);
+  useEffect(() => {
+    routerRef.current = router;
+  }, [router]);
 
   const onCallEnded = useCallback(() => {
     // Xóa session timer khi cuộc gọi kết thúc
-    if (typeof window !== 'undefined') {
-      sessionStorage.removeItem(`lancare_call_started_${callId}`);
-    }
+    clearCallStorage(callId);
     if (typeof window !== 'undefined' && window.history.length > 1) {
       routerRef.current.back();
     } else {
@@ -58,42 +74,97 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
     isJoining,
     isJoined,
     error,
-    userInfo,
     joinCall,
     leaveCall,
-  } = useVideoCall({ callType, callId, onCallEnded });
+    disconnect,
+  } = useVideoCall({ session, onCallEnded });
 
-  // Load call info từ BE
+  // Khởi tạo session: (1) lấy từ sessionStorage nếu có, (2) không thì gọi joinCall API
   useEffect(() => {
     if (!isAuthenticated) {
-      setCallInfoLoading(false);
+      setLoading(false);
       return;
     }
     let cancelled = false;
+
     (async () => {
       try {
-        const info = await videoCallApi.getCallInfo(callId);
-        if (!cancelled) setCallInfo(info);
-      } catch (err) {
-        console.error('[VideoCallRoom] Failed to load call info:', err);
+        // Thử đọc session đã được lưu (từ IncomingCallModal hoặc handleStartVideoCall)
+        if (typeof window !== 'undefined') {
+          const cached = sessionStorage.getItem(`lancare_call_session_${callId}`);
+          if (cached) {
+            const parsed = JSON.parse(cached) as VideoCallSessionResponseDto;
+            if (!cancelled) {
+              setSession(parsed);
+              setLoading(false);
+              return;
+            }
+          }
+        }
+
+        // Không có session cache → gọi joinCall API để lấy session mới
+        // (trường hợp mở lại trang / F5 / vào link trực tiếp)
+        const joinSession = await videoCallApi.joinCall(callId);
+        if (!cancelled) {
+          setSession(joinSession);
+        }
+      } catch (err: any) {
+        console.error('[VideoCallRoom] Init session failed:', err);
+        if (!cancelled) {
+          const msg =
+            err?.response?.data?.message || err?.message || 'Không thể tham gia cuộc gọi.';
+          setInitError(Array.isArray(msg) ? msg.join(', ') : msg);
+        }
       } finally {
-        if (!cancelled) setCallInfoLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+    };
   }, [callId, isAuthenticated]);
 
-  // Auto-join khi mount
+  // Khi đã có session → tự động join vào phòng GetStream (chỉ 1 lần, lỗi thì dừng — không retry vô hạn)
   useEffect(() => {
-    if (isAuthenticated) {
+    if (session && isAuthenticated && !isJoined && !isJoining && !error && !movedAway) {
       joinCall();
     }
-  }, [joinCall, isAuthenticated]);
+  }, [session, isAuthenticated, isJoined, isJoining, error, movedAway, joinCall]);
+
+  // Sự kiện socket của cuộc gọi hiện tại (được useIncomingCall phát lại qua window event)
+  useEffect(() => {
+    const currentCallId = session?.call.id;
+    if (!currentCallId) return;
+
+    const handleMoved = (e: Event) => {
+      const data = (e as CustomEvent<VideoCallMovedPayload>).detail;
+      // Thiết bị khác của chính mình vừa vào cuộc gọi → thiết bị này rời phòng (không end cuộc gọi)
+      if (data.callId !== currentCallId || data.deviceSessionId === session.deviceSessionId) return;
+      clearCallStorage(callId);
+      setMovedAway(true);
+      disconnect();
+    };
+
+    const handleEnded = (e: Event) => {
+      const data = (e as CustomEvent<VideoCallEndedPayload>).detail;
+      if (data.callId !== currentCallId) return;
+      // Đối phương cúp / hết giờ → rời phòng; nếu chính mình vừa bấm Kết thúc thì bỏ qua
+      disconnect().then((didLeave) => {
+        if (didLeave) onCallEnded();
+      });
+    };
+
+    window.addEventListener(VIDEO_CALL_MOVED_EVENT, handleMoved);
+    window.addEventListener(VIDEO_CALL_ENDED_EVENT, handleEnded);
+    return () => {
+      window.removeEventListener(VIDEO_CALL_MOVED_EVENT, handleMoved);
+      window.removeEventListener(VIDEO_CALL_ENDED_EVENT, handleEnded);
+    };
+  }, [session, callId, disconnect, onCallEnded]);
 
   const handleLeave = async () => {
-    if (typeof window !== 'undefined') {
-      sessionStorage.removeItem(`lancare_call_started_${callId}`);
-    }
+    clearCallStorage(callId);
     await leaveCall();
     if (typeof window !== 'undefined' && window.history.length > 1) {
       router.back();
@@ -119,7 +190,10 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
           </p>
           <button
             onClick={() => {
-              const redirectPath = typeof window !== 'undefined' ? window.location.pathname : `/calls/${callType}/${callId}`;
+              const redirectPath =
+                typeof window !== 'undefined'
+                  ? window.location.pathname
+                  : `/calls/${callType}/${callId}`;
               router.push(`/auth/login?redirect=${encodeURIComponent(redirectPath)}`);
             }}
             className="px-6 py-2.5 rounded-full bg-gradient-to-r from-[#6027D2] to-[#8B5CF6] hover:opacity-90 text-white text-sm font-medium transition-all shadow-lg shadow-[#6027D2]/30 cursor-pointer"
@@ -131,8 +205,35 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
     );
   }
 
+  // ===== Cuộc gọi đã chuyển sang thiết bị khác =====
+  if (movedAway) {
+    return (
+      <div className="h-screen w-screen bg-[#0f0e1a] flex items-center justify-center">
+        <div className="text-center max-w-md px-6">
+          <div className="w-20 h-20 rounded-full bg-[#6027D2]/20 flex items-center justify-center mx-auto mb-6">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#A78BFA" strokeWidth="2">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+              <line x1="8" y1="21" x2="16" y2="21" />
+              <line x1="12" y1="17" x2="12" y2="21" />
+            </svg>
+          </div>
+          <h2 className="text-white text-lg font-semibold mb-2">Cuộc gọi đã chuyển sang thiết bị khác</h2>
+          <p className="text-white/50 text-sm mb-6">
+            Bạn đã tham gia cuộc gọi này từ một thiết bị hoặc tab khác.
+          </p>
+          <button
+            onClick={() => router.back()}
+            className="px-6 py-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-sm font-medium transition-colors"
+          >
+            Quay lại
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ===== Loading state =====
-  if (isJoining || callInfoLoading) {
+  if (loading || isJoining) {
     return (
       <div className="h-screen w-screen bg-[#0f0e1a] flex items-center justify-center">
         <div className="text-center">
@@ -148,8 +249,8 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
           </div>
           <h2 className="text-white text-lg font-semibold mb-2">Đang kết nối cuộc gọi...</h2>
           <p className="text-white/50 text-sm">
-            {callInfo?.providerName
-              ? `Phòng của ${callInfo.providerName}`
+            {session?.call.caller.fullName
+              ? `Cuộc gọi với ${session.call.myRole === 'CALLER' ? session.call.callee.fullName : session.call.caller.fullName}`
               : 'Vui lòng đợi trong giây lát'}
           </p>
         </div>
@@ -158,7 +259,8 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
   }
 
   // ===== Error state =====
-  if (error) {
+  const displayError = initError || error;
+  if (displayError) {
     return (
       <div className="h-screen w-screen bg-[#0f0e1a] flex items-center justify-center">
         <div className="text-center max-w-md px-6">
@@ -170,7 +272,7 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
             </svg>
           </div>
           <h2 className="text-white text-lg font-semibold mb-2">Không thể tham gia cuộc gọi</h2>
-          <p className="text-white/50 text-sm mb-6">{error}</p>
+          <p className="text-white/50 text-sm mb-6">{displayError}</p>
           <button
             onClick={() => router.back()}
             className="px-6 py-2.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-sm font-medium transition-colors"
@@ -197,7 +299,7 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
       <StreamCall call={call}>
         <StreamTheme className="h-screen w-screen flex flex-col bg-[#0f0e1a] overflow-hidden">
           {/* Header với đồng hồ đồng bộ chuẩn Google Meet */}
-          <CallTopBar callInfo={callInfo} callId={callId} />
+          <CallTopBar session={session} callId={callId} />
 
           {/* Participant grid */}
           <ParticipantGrid />
@@ -213,10 +315,10 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
 // ===== Call Header Component =====
 
 function CallTopBar({
-  callInfo,
+  session,
   callId,
 }: {
-  callInfo: CallInfoResponse | null;
+  session: VideoCallSessionResponseDto | null;
   callId: string;
 }) {
   const { useParticipants } = useCallStateHooks();
@@ -270,6 +372,13 @@ function CallTopBar({
     }
   };
 
+  // Tên người đối diện
+  const otherPartyName = session
+    ? session.call.myRole === 'CALLER'
+      ? session.call.callee.fullName
+      : session.call.caller.fullName
+    : null;
+
   return (
     <div className="shrink-0 flex items-center justify-between px-5 py-3 bg-[#0f0e1a]/80 backdrop-blur-xl border-b border-white/5">
       <div className="flex items-center gap-3">
@@ -281,13 +390,13 @@ function CallTopBar({
         </div>
         <div>
           <h1 className="text-white text-sm font-semibold leading-tight">
-            {callInfo?.providerName
-              ? `Cuộc gọi với ${callInfo.providerName}`
+            {otherPartyName
+              ? `Cuộc gọi với ${otherPartyName}`
               : 'Cuộc gọi Video'}
           </h1>
-          {callInfo?.orderId && (
+          {session?.call.orderId && (
             <p className="text-white/40 text-xs">
-              Đơn hàng #{callInfo.orderId.slice(0, 8)}...
+              Đơn hàng #{session.call.orderId.slice(0, 8)}...
             </p>
           )}
         </div>

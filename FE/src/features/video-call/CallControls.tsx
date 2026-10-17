@@ -16,12 +16,24 @@ interface CallControlsProps {
  * Style tối giản, premium, hiện đại.
  */
 export default function CallControls({ onLeave }: CallControlsProps) {
-  const { useMicrophoneState, useCameraState, useScreenShareState, useCallSettings } =
-    useCallStateHooks();
+  const {
+    useMicrophoneState,
+    useCameraState,
+    useScreenShareState,
+    useCallSettings,
+    useHasPermissions,
+  } = useCallStateHooks();
 
   const { microphone, isMute: isMicMuted } = useMicrophoneState();
   const { camera, isMute: isCamOff } = useCameraState();
   const { screenShare, isMute: isScreenShareOff } = useScreenShareState();
+
+  // Share màn hình chạy hoàn toàn qua GetStream SDK (không cần API BE),
+  // nhưng call type phải bật screensharing và role phải có quyền `screenshare`
+  const settings = useCallSettings();
+  const hasScreenSharePermission = useHasPermissions(OwnCapability.SCREENSHARE);
+  const canScreenShare =
+    hasScreenSharePermission && settings?.screensharing?.enabled !== false;
 
   const [isLeavingAnimation, setIsLeavingAnimation] = useState(false);
 
@@ -42,12 +54,15 @@ export default function CallControls({ onLeave }: CallControlsProps) {
   }, [camera]);
 
   const toggleScreenShare = useCallback(async () => {
+    if (!canScreenShare) return;
     try {
       await screenShare.toggle();
-    } catch (err) {
+    } catch (err: any) {
+      // Người dùng bấm Hủy ở hộp chọn màn hình của trình duyệt → không phải lỗi
+      if (err?.name === 'NotAllowedError') return;
       console.error('Toggle screen share failed:', err);
     }
-  }, [screenShare]);
+  }, [screenShare, canScreenShare]);
 
   const handleLeave = useCallback(() => {
     setIsLeavingAnimation(true);
@@ -81,10 +96,17 @@ export default function CallControls({ onLeave }: CallControlsProps) {
         <ControlButton
           active={!isScreenShareOff}
           icon={<ScreenShareIcon />}
-          label={isScreenShareOff ? 'Chia sẻ màn hình' : 'Dừng chia sẻ'}
+          label={
+            !canScreenShare
+              ? 'Cuộc gọi chưa được cấp quyền chia sẻ màn hình'
+              : isScreenShareOff
+              ? 'Chia sẻ màn hình'
+              : 'Dừng chia sẻ'
+          }
           onClick={toggleScreenShare}
           activeColor="bg-[#6027D2]"
           inactiveColor="bg-white/10"
+          disabled={!canScreenShare}
         />
 
         {/* Divider */}
@@ -116,6 +138,7 @@ function ControlButton({
   onClick,
   activeColor,
   inactiveColor,
+  disabled = false,
 }: {
   active: boolean;
   icon: React.ReactNode;
@@ -123,13 +146,17 @@ function ControlButton({
   onClick: () => void;
   activeColor: string;
   inactiveColor: string;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
+      aria-disabled={disabled}
       className={`group relative w-12 h-12 rounded-full flex items-center justify-center
-        transition-all duration-200 hover:scale-105 active:scale-95
-        ${active ? activeColor + ' hover:bg-white/20 text-white' : inactiveColor + ' hover:bg-red-600 text-white'}`}
+        transition-all duration-200
+        ${disabled
+          ? 'bg-white/5 text-white/30 cursor-not-allowed'
+          : `hover:scale-105 active:scale-95 ${active ? activeColor + ' hover:bg-white/20 text-white' : inactiveColor + ' hover:bg-red-600 text-white'}`}`}
       title={label}
     >
       {icon}
