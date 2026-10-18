@@ -46,6 +46,7 @@ export default function AdminProviderDetailPage() {
   const [packages, setPackages] = useState<AdminServicePackage[]>([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [actionLoadingPkg, setActionLoadingPkg] = useState<string | null>(null);
   const [note, setNote] = useState('');
 
   useEffect(() => { setMounted(true); }, []);
@@ -72,6 +73,29 @@ export default function AdminProviderDetailPage() {
       message.error('Không thể tải thông tin nhà cung cấp.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleVerifyPackage = async (
+    packageId: string,
+    decision: 'APPROVED' | 'REJECTED',
+  ) => {
+    setActionLoadingPkg(packageId);
+    try {
+      await adminApi.verifyPackage(packageId, {
+        decision,
+        isActive: decision === 'APPROVED',
+      });
+      message.success(
+        decision === 'APPROVED'
+          ? 'Đã phê duyệt gói dịch vụ! Gói hiện đã hiển thị cho Khách hàng.'
+          : 'Đã từ chối gói dịch vụ.'
+      );
+      fetchDetail();
+    } catch {
+      message.error('Thao tác thất bại. Vui lòng thử lại.');
+    } finally {
+      setActionLoadingPkg(null);
     }
   };
 
@@ -198,19 +222,59 @@ export default function AdminProviderDetailPage() {
                         </h3>
                         <div className="space-y-3">
                           {packages.map((pkg) => (
-                            <div key={pkg.id} className="flex items-center gap-3 p-3 rounded-xl bg-[#F6F4FC] border border-[#ECE7FA]">
-                              <div className="w-8 h-8 rounded-lg bg-[#6027D2]/10 flex items-center justify-center shrink-0">
-                                <ShopOutlined className="text-[#6027D2] text-sm" />
+                            <div key={pkg.id} className="flex items-center justify-between gap-3 p-3.5 rounded-xl bg-[#F6F4FC] border border-[#ECE7FA]">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-[#6027D2]/10 flex items-center justify-center shrink-0">
+                                  <ShopOutlined className="text-[#6027D2] text-sm" />
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-[#1E1B2E] truncate">{pkg.name}</p>
+                                  <p className="text-xs text-[#6E6A8A]">
+                                    {pkg.durationDays} ngày · Tối đa {pkg.maxPlants} cây · {Number(pkg.basePrice).toLocaleString('vi-VN')}đ
+                                  </p>
+                                </div>
                               </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm font-medium text-[#1E1B2E] truncate">{pkg.name}</p>
-                                <p className="text-xs text-[#6E6A8A]">
-                                  {pkg.durationDays} ngày · Tối đa {pkg.maxPlants} cây · {Number(pkg.basePrice).toLocaleString('vi-VN')}đ
-                                </p>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Tag color={pkg.approvalStatus === 'APPROVED' ? 'success' : pkg.approvalStatus === 'REJECTED' ? 'error' : 'warning'} className="!text-xs">
+                                  {pkg.approvalStatus === 'APPROVED' ? 'Đã duyệt' : pkg.approvalStatus === 'REJECTED' ? 'Từ chối' : 'Chờ duyệt'}
+                                </Tag>
+
+                                {pkg.approvalStatus === 'PENDING' && (
+                                  <div className="flex items-center gap-1.5 ml-2">
+                                    <Button
+                                      size="small"
+                                      type="primary"
+                                      className="!bg-[#10B981] hover:!bg-[#059669] !rounded-lg !text-xs font-medium"
+                                      onClick={() => handleVerifyPackage(pkg.id, 'APPROVED')}
+                                      loading={actionLoadingPkg === pkg.id}
+                                    >
+                                      Duyệt gói
+                                    </Button>
+                                    <Button
+                                      size="small"
+                                      danger
+                                      className="!rounded-lg !text-xs font-medium"
+                                      onClick={() => handleVerifyPackage(pkg.id, 'REJECTED')}
+                                      loading={actionLoadingPkg === pkg.id}
+                                    >
+                                      Từ chối
+                                    </Button>
+                                  </div>
+                                )}
+
+                                {pkg.approvalStatus === 'APPROVED' && (
+                                  <Button
+                                    size="small"
+                                    type={pkg.isActive ? 'default' : 'primary'}
+                                    className={pkg.isActive ? '!text-xs !rounded-lg' : '!bg-[#6027D2] !text-xs !rounded-lg'}
+                                    onClick={() => handleVerifyPackage(pkg.id, pkg.isActive ? 'REJECTED' : 'APPROVED')}
+                                    loading={actionLoadingPkg === pkg.id}
+                                  >
+                                    {pkg.isActive ? 'Tạm ngưng gói' : 'Kích hoạt bán'}
+                                  </Button>
+                                )}
                               </div>
-                              <Tag color={pkg.approvalStatus === 'APPROVED' ? 'success' : pkg.approvalStatus === 'REJECTED' ? 'error' : 'warning'} className="!text-xs">
-                                {pkg.approvalStatus === 'APPROVED' ? 'Đã duyệt' : pkg.approvalStatus === 'REJECTED' ? 'Từ chối' : 'Chờ duyệt'}
-                              </Tag>
                             </div>
                           ))}
                         </div>

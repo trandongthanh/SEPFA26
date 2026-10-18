@@ -50,12 +50,29 @@ const safeRemove = async (key: string): Promise<void> => {
   }
 };
 
+type TokenListener = (token: string | null) => void;
+const tokenListeners: Set<TokenListener> = new Set();
+
+export const onTokenChange = (listener: TokenListener) => {
+  tokenListeners.add(listener);
+  return () => {
+    tokenListeners.delete(listener);
+  };
+};
+
 export const storage = {
   async setToken(accessToken: string, refreshToken?: string): Promise<void> {
     await safeSet(TOKEN_KEY, accessToken);
     if (refreshToken) {
       await safeSet(REFRESH_TOKEN_KEY, refreshToken);
     }
+    tokenListeners.forEach((fn) => {
+      try {
+        fn(accessToken);
+      } catch (e) {
+        console.warn('[storage] Token listener error:', e);
+      }
+    });
   },
 
   async getToken(): Promise<string | null> {
@@ -84,5 +101,12 @@ export const storage = {
     await safeRemove(TOKEN_KEY);
     await safeRemove(REFRESH_TOKEN_KEY);
     await safeRemove(USER_KEY);
+    tokenListeners.forEach((fn) => {
+      try {
+        fn(null);
+      } catch (e) {
+        console.warn('[storage] Token listener error:', e);
+      }
+    });
   },
 };

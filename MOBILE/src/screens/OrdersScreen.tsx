@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   RefreshControl,
   StyleSheet,
@@ -12,6 +13,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { OrderItem, orderService } from '../services/orderService';
+import {
+  videoCallService,
+  CALLABLE_ORDER_STATUSES,
+} from '../services/videoCallService';
 
 interface OrdersScreenProps {
   navigation: any;
@@ -41,6 +46,32 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({ navigation }) => {
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<string>('ALL');
+  const [callingOrderId, setCallingOrderId] = useState<string | null>(null);
+
+  const handleQuickCall = async (orderId: string) => {
+    setCallingOrderId(orderId);
+    try {
+      const active = await videoCallService.getActive(orderId).catch(() => ({ call: null }));
+      let session;
+      if (active?.call) {
+        session = await videoCallService.joinCall(active.call.id);
+      } else {
+        session = await videoCallService.createCall(orderId);
+      }
+      navigation.navigate('VideoCall', {
+        callId: session.call.id,
+        session,
+        orderId,
+      });
+    } catch (err: any) {
+      console.error('Quick call error:', err);
+      const msg =
+        err?.response?.data?.message || err?.message || 'Không thể bắt đầu cuộc gọi.';
+      Alert.alert('Gọi video', Array.isArray(msg) ? msg.join('\n') : msg);
+    } finally {
+      setCallingOrderId(null);
+    }
+  };
 
   const fetchOrders = async (statusTab = activeTab) => {
     try {
@@ -121,10 +152,30 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({ navigation }) => {
         </View>
 
         <View style={styles.cardFooter}>
-          <Text style={styles.priceLabel}>Tổng tiền:</Text>
-          <Text style={styles.priceValue}>
-            {Number(item.provisionalTotal || 0).toLocaleString('vi-VN')} VNĐ
-          </Text>
+          <View>
+            <Text style={styles.priceLabel}>Tổng tiền:</Text>
+            <Text style={styles.priceValue}>
+              {Number(item.provisionalTotal || 0).toLocaleString('vi-VN')} VNĐ
+            </Text>
+          </View>
+
+          {CALLABLE_ORDER_STATUSES.includes(item.status as any) && (
+            <TouchableOpacity
+              style={styles.quickCallBtn}
+              onPress={() => handleQuickCall(item.id)}
+              disabled={callingOrderId === item.id}
+              activeOpacity={0.8}
+            >
+              {callingOrderId === item.id ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons name="videocam" size={14} color="#FFFFFF" />
+                  <Text style={styles.quickCallText}>Gọi video</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -346,6 +397,20 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '800',
     color: '#6027D2',
+  },
+  quickCallBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#6027D2',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    gap: 4,
+  },
+  quickCallText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
   },
   emptyContainer: {
     flex: 1,

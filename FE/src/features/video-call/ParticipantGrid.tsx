@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import React, { useMemo } from 'react';
 import {
@@ -32,9 +32,11 @@ import {
 const EmptyUI = () => null;
 
 export default function ParticipantGrid() {
-  const { useParticipants, useLocalParticipant } = useCallStateHooks();
+  const { useParticipants, useLocalParticipant, useCameraState, useMicrophoneState } = useCallStateHooks();
   const allParticipants = useParticipants();
   const localParticipant = useLocalParticipant();
+  const cameraState = useCameraState();
+  const microphoneState = useMicrophoneState();
 
   // Lọc bỏ session trùng lặp của chính local user
   const uniqueParticipants = useMemo(() => {
@@ -58,6 +60,20 @@ export default function ParticipantGrid() {
 
     return result.length > 0 ? result : allParticipants;
   }, [allParticipants, localParticipant]);
+
+  React.useEffect(() => {
+    const isCamOn = cameraState.status === 'enabled' || (localParticipant ? hasVideo(localParticipant) : false);
+    const isMicOn = microphoneState.status === 'enabled' || (localParticipant ? hasAudio(localParticipant) : false);
+    try {
+      (window as any).ReactNativeWebView?.postMessage(
+        JSON.stringify({
+          type: 'LOCAL_MEDIA_STATE',
+          isCamOn,
+          isMicOn,
+        })
+      );
+    } catch {}
+  }, [cameraState.status, microphoneState.status, localParticipant, allParticipants]);
 
   // Phát hiện screen share
   const screenShareParticipant = useMemo(
@@ -130,7 +146,7 @@ export default function ParticipantGrid() {
   const gridClass = isSingle
     ? 'grid-cols-1 grid-rows-1'
     : isTwo
-    ? 'grid-cols-2 grid-rows-1'
+    ? 'grid-cols-1 md:grid-cols-2 grid-rows-2 md:grid-rows-1'
     : count <= 4
     ? 'grid-cols-2 grid-rows-2'
     : 'grid-cols-3 auto-rows-fr';

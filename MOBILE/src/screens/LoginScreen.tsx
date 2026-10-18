@@ -16,6 +16,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { apiClient } from '../config/api';
 import { storage } from '../utils/storage';
+import { GoogleSignInButton } from '../components/GoogleSignInButton';
+import { socketService } from '../services/socketService';
 
 interface LoginScreenProps {
   navigation?: any;
@@ -44,6 +46,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
       const { accessToken, refreshToken, account } = response.data;
       await storage.setToken(accessToken, refreshToken);
       await storage.setUser(account);
+      socketService.connect(accessToken);
 
       navigation?.reset({
         index: 0,
@@ -57,8 +60,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
         Alert.alert('Tài khoản bị khóa', 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ hỗ trợ.');
       } else if (msg === 'ACCOUNT_INACTIVE') {
         Alert.alert('Tài khoản chờ duyệt', 'Tài khoản Provider của bạn đang chờ Admin phê duyệt.');
+      } else if (!err.response) {
+        Alert.alert(
+          'Lỗi kết nối máy chủ',
+          'Không thể kết nối đến Backend. Vui lòng đảm bảo điện thoại và máy tính đang kết nối chung một mạng Wi-Fi.'
+        );
       } else {
-        Alert.alert('Lỗi đăng nhập', 'Có lỗi xảy ra, vui lòng thử lại.');
+        const displayMsg = Array.isArray(msg) ? msg.join('\n') : msg || err.message || 'Có lỗi xảy ra, vui lòng thử lại.';
+        Alert.alert('Lỗi đăng nhập', displayMsg);
       }
     } finally {
       setLoading(false);
@@ -103,7 +112,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
                   style={styles.orchidPotImage}
                   resizeMode="contain"
                 />
-                
+
                 {/* Badge 1: Water */}
                 <View style={styles.waterBadge}>
                   <Ionicons name="water-outline" size={14} color="#6C38FF" />
@@ -234,6 +243,20 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
                 </View>
               )}
             </TouchableOpacity>
+
+            {/* Divider */}
+            <View style={styles.dividerRow}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>HOẶC</Text>
+              <View style={styles.dividerLine} />
+            </View>
+
+            {/* Google Sign-In */}
+            <GoogleSignInButton
+              mode="login"
+              navigation={navigation}
+              style={styles.googleBtn}
+            />
 
             {/* Bottom Section inside Card */}
             <View style={styles.cardFooter}>
@@ -516,9 +539,30 @@ const styles = StyleSheet.create({
   },
 
   /* Footer Navigation */
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 14,
+    zIndex: 2,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#ECE7FA',
+  },
+  dividerText: {
+    marginHorizontal: 12,
+    fontSize: 11,
+    color: '#A098C2',
+    fontWeight: '600',
+    letterSpacing: 0.8,
+  },
+  googleBtn: {
+    zIndex: 2,
+  },
   cardFooter: {
     alignItems: 'center',
-    marginTop: 22,
+    marginTop: 16,
     marginBottom: 6,
     zIndex: 2,
   },

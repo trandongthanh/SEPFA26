@@ -220,10 +220,23 @@ function PackagesPageContent() {
                         <h3 className="font-bold text-base text-[#1E1B2E] group-hover:text-[#6027D2] transition-colors">
                           {pkg.name}
                         </h3>
-                        <div className="mt-1 flex items-center gap-2">
-                          <Tag color={pkg.isActive !== false ? 'purple' : 'default'}>
-                            {pkg.isActive !== false ? 'Đang hoạt động' : 'Tạm ngưng'}
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                          {pkg.approvalStatus === 'APPROVED' ? (
+                            <Tag color="success" icon={<CheckCircleOutlined />}>
+                              Đã duyệt
+                            </Tag>
+                          ) : pkg.approvalStatus === 'REJECTED' ? (
+                            <Tag color="error">Bị từ chối</Tag>
+                          ) : (
+                            <Tag color="warning" icon={<SyncOutlined spin />}>
+                              Chờ Admin duyệt
+                            </Tag>
+                          )}
+
+                          <Tag color={pkg.isActive ? 'purple' : 'default'}>
+                            {pkg.isActive ? 'Đang mở bán' : 'Tạm ngưng'}
                           </Tag>
+
                           <span className="text-[11px] text-[#8B86A4]">
                             {pkg.durationDays || 30} ngày chăm sóc
                           </span>
@@ -243,6 +256,12 @@ function PackagesPageContent() {
                         </button>
                       </Popconfirm>
                     </div>
+
+                    {pkg.approvalStatus === 'PENDING' && (
+                      <div className="text-[11px] text-[#92400E] bg-[#FFFBEB] p-2 rounded-xl border border-[#FDE68A] mb-3">
+                        ⏳ Gói dịch vụ đang chờ Admin phê duyệt trước khi mở bán công khai.
+                      </div>
+                    )}
 
                     <p className="text-xs text-[#4B4764] leading-relaxed mb-4 line-clamp-3">
                       {pkg.description || 'Chưa có mô tả chi tiết cho gói chăm sóc này.'}

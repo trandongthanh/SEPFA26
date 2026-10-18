@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   ScrollView,
   StyleSheet,
@@ -11,6 +12,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { OrderItem, orderService } from '../services/orderService';
+import {
+  videoCallService,
+  VideoCallResponseDto,
+  CALLABLE_ORDER_STATUSES,
+} from '../services/videoCallService';
 
 interface OrderDetailScreenProps {
   navigation: any;
@@ -33,6 +39,15 @@ const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> =
   CANCELLED: { label: 'Đã hủy', color: '#A0AEC0', bg: '#E2E8F0' },
 };
 
+const CALL_END_REASON_MAP: Record<string, { label: string; color: string; bg: string }> = {
+  COMPLETED: { label: 'Thành công', color: '#10B981', bg: '#D1FAE5' },
+  MISSED: { label: 'Cuộc gọi nhỡ', color: '#F59E0B', bg: '#FEF3C7' },
+  DECLINED: { label: 'Đã từ chối', color: '#EF4444', bg: '#FEE2E2' },
+  CANCELLED: { label: 'Đã hủy', color: '#6B7280', bg: '#F3F4F6' },
+  TIMEOUT: { label: 'Hết giờ', color: '#D97706', bg: '#FEF3C7' },
+  DROPPED: { label: 'Mất kết nối', color: '#6B7280', bg: '#F3F4F6' },
+};
+
 export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
   navigation,
   route,
@@ -43,12 +58,24 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Video call state
+  const [callLoading, setCallLoading] = useState<boolean>(false);
+  const [activeCall, setActiveCall] = useState<VideoCallResponseDto | null>(null);
+  const [callHistory, setCallHistory] = useState<VideoCallResponseDto[]>([]);
+
   const fetchDetail = async () => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const data = await orderService.getOrderDetail(orderId);
-      setOrder(data);
+      const [orderData, historyData, activeData] = await Promise.all([
+        orderService.getOrderDetail(orderId),
+        videoCallService.listHistory(orderId).catch(() => []),
+        videoCallService.getActive(orderId).catch(() => ({ call: null })),
+      ]);
+
+      setOrder(orderData);
+      setCallHistory(historyData || []);
+      setActiveCall(activeData?.call || null);
     } catch (err: any) {
       console.error('Failed to load order detail:', err);
       setErrorMsg('Không thể tải thông tin đơn hàng.');
@@ -60,6 +87,33 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
   useEffect(() => {
     fetchDetail();
   }, [orderId]);
+
+  const handleStartVideoCall = async () => {
+    setCallLoading(true);
+    try {
+      let session;
+      if (activeCall) {
+        // Có cuộc gọi đang diễn ra -> tham gia luôn
+        session = await videoCallService.joinCall(activeCall.id);
+      } else {
+        // Tạo cuộc gọi mới cho đơn
+        session = await videoCallService.createCall(orderId);
+      }
+
+      navigation.navigate('VideoCall', {
+        callId: session.call.id,
+        session,
+        orderId,
+      });
+    } catch (err: any) {
+      console.error('Start video call failed:', err);
+      const msg =
+        err?.response?.data?.message || err?.message || 'Không thể bắt đầu cuộc gọi.';
+      Alert.alert('Cuộc gọi video', Array.isArray(msg) ? msg.join('\n') : msg);
+    } finally {
+      setCallLoading(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -92,6 +146,16 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
     ? new Date(order.scheduledPickupAt).toLocaleString('vi-VN')
     : 'Chưa sắp xếp';
 
+  const isCallable = CALLABLE_ORDER_STATUSES.includes(order.status as any);
+
+  const formatSeconds = (sec: number | null) => {
+    if (!sec || sec <= 0) return '0s';
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    if (m === 0) return `${s}s`;
+    return `${m}m ${s}s`;
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       {/* Header */}
@@ -111,6 +175,50 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
             Trạng thái: {statusInfo.label}
           </Text>
         </View>
+
+        {/* Video Call Action Section */}
+        {isCallable && (
+          <View style={styles.callCard}>
+            <View style={styles.callCardHeader}>
+              <View style={styles.callIconBg}>
+                <Ionicons name="videocam" size={22} color="#6027D2" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.callCardTitle}>Video Call với Nhà vườn</Text>
+                <Text style={styles.callCardSub}>
+                  {activeCall
+                    ? 'Cuộc gọi đang diễn ra, bạn có thể tham gia ngay'
+                    : 'Trao đổi trực tiếp tình trạng cây qua video call'}
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[
+                styles.videoCallBtn,
+                activeCall ? styles.videoCallBtnActive : null,
+              ]}
+              onPress={handleStartVideoCall}
+              disabled={callLoading}
+              activeOpacity={0.85}
+            >
+              {callLoading ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <>
+                  <Ionicons
+                    name={activeCall ? 'enter-outline' : 'videocam'}
+                    size={20}
+                    color="#FFFFFF"
+                  />
+                  <Text style={styles.videoCallBtnText}>
+                    {activeCall ? 'Tham gia cuộc gọi đang diễn ra' : 'Gọi video cho nhà vườn'}
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Package Info */}
         <View style={styles.card}>
@@ -193,6 +301,62 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
             <Text style={styles.emptyText}>Chưa có thông tin cây lan.</Text>
           )}
         </View>
+
+        {/* Call History Section */}
+        {callHistory.length > 0 && (
+          <View style={styles.card}>
+            <View style={styles.historyHeader}>
+              <Ionicons name="time-outline" size={18} color="#6027D2" />
+              <Text style={styles.cardTitle}>Lịch sử cuộc gọi ({callHistory.length})</Text>
+            </View>
+
+            {callHistory.map((call) => {
+              const reasonInfo =
+                (call.endReason && CALL_END_REASON_MAP[call.endReason]) || {
+                  label: call.endReason || 'Kết thúc',
+                  color: '#6B7280',
+                  bg: '#F3F4F6',
+                };
+              const roleText = call.myRole === 'CALLER' ? 'Bạn gọi đi' : 'Cuộc gọi đến';
+
+              return (
+                <View key={call.id} style={styles.historyItem}>
+                  <View style={styles.historyLeft}>
+                    <Ionicons
+                      name={call.myRole === 'CALLER' ? 'call-outline' : 'videocam-outline'}
+                      size={18}
+                      color="#6027D2"
+                    />
+                    <View>
+                      <Text style={styles.historyRole}>{roleText}</Text>
+                      <Text style={styles.historyDate}>
+                        {new Date(call.createdAt).toLocaleString('vi-VN')}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.historyRight}>
+                    <View
+                      style={[
+                        styles.reasonBadge,
+                        { backgroundColor: reasonInfo.bg },
+                      ]}
+                    >
+                      <Text style={[styles.reasonText, { color: reasonInfo.color }]}>
+                        {reasonInfo.label}
+                      </Text>
+                    </View>
+                    {call.durationSeconds ? (
+                      <Text style={styles.historyDuration}>
+                        {formatSeconds(call.durationSeconds)}
+                      </Text>
+                    ) : null}
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        )}
 
         {/* Pricing Summary */}
         <View style={styles.card}>
@@ -298,6 +462,61 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
+  callCard: {
+    backgroundColor: '#FAF5FF',
+    borderWidth: 1.5,
+    borderColor: '#E9D8FD',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+  },
+  callCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 14,
+  },
+  callIconBg: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#F3E8FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  callCardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1A202C',
+  },
+  callCardSub: {
+    fontSize: 12,
+    color: '#718096',
+    marginTop: 2,
+  },
+  videoCallBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#6027D2',
+    paddingVertical: 13,
+    borderRadius: 12,
+    gap: 8,
+    shadowColor: '#6027D2',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  videoCallBtnActive: {
+    backgroundColor: '#10B981',
+    shadowColor: '#10B981',
+  },
+  videoCallBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
   card: {
     backgroundColor: '#FFFFFF',
     borderRadius: 16,
@@ -387,6 +606,52 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#A0AEC0',
     fontStyle: 'italic',
+  },
+  historyHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  historyItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EDF2F7',
+  },
+  historyLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  historyRole: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#2D3748',
+  },
+  historyDate: {
+    fontSize: 11,
+    color: '#718096',
+    marginTop: 2,
+  },
+  historyRight: {
+    alignItems: 'flex-end',
+    gap: 3,
+  },
+  reasonBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+  },
+  reasonText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  historyDuration: {
+    fontSize: 11,
+    color: '#718096',
   },
   totalLabel: {
     fontSize: 14,

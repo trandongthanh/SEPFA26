@@ -5,12 +5,55 @@ export interface ProviderProfileResponse {
   accountId: string;
   providerType: 'NURSERY' | 'EXPERT';
   displayName: string;
-  bio?: string;
+  bio?: string | null;
+  licenseInfo?: string | null;
+  portfolioUrl?: string | null;
+  selfieUrl?: string | null;
+  cccdFrontUrl?: string | null;
+  cccdBackUrl?: string | null;
+  businessLicenseUrl?: string | null;
   verificationStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
-  ratingAvg?: string;
+  verificationNote?: string | null;
+  ratingAvg?: string | null;
+  address?: string | null;
+  gpsLat?: string | null;
+  gpsLng?: string | null;
+  experience?: string | null;
+  specialties?: string | null;
+  serviceAreas?: string | null;
+  certificates?: string | null;
+  bankName?: string | null;
+  bankAccount?: string | null;
+  bankHolder?: string | null;
+  account?: {
+    id: string;
+    fullName: string;
+    email: string;
+    phone?: string;
+    role: string;
+  } | null;
+}
+
+export interface UpsertProfilePayload {
+  providerType?: 'NURSERY' | 'EXPERT';
+  displayName?: string;
+  bio?: string;
+  licenseInfo?: string;
+  portfolioUrl?: string;
+  selfieUrl?: string;
+  cccdFrontUrl?: string;
+  cccdBackUrl?: string;
+  businessLicenseUrl?: string;
   address?: string;
-  gpsLat?: string;
-  gpsLng?: string;
+  gpsLat?: number;
+  gpsLng?: number;
+  experience?: string;
+  specialties?: string;
+  serviceAreas?: string;
+  certificates?: string;
+  bankName?: string;
+  bankAccount?: string;
+  bankHolder?: string;
 }
 
 export interface OrderItem {
@@ -42,6 +85,7 @@ export interface ServicePackageItem {
   minDeclaredValue: string | number;
   maxDeclaredValue: string | number;
   isActive?: boolean;
+  approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
   pricePerMonth?: string;
   status?: string;
   createdAt?: string;
@@ -133,10 +177,19 @@ export const providerApi = {
 
   // Quyết định đơn hàng (Chấp nhận / Từ chối)
   respondNegotiation: async (orderId: string, action: 'ACCEPT' | 'REJECT', note?: string) => {
-    const res = await api.post(`/api/v1/orders/${orderId}/negotiation/respond`, {
-      action,
-      note,
-    });
+    const payload: { response: 'ACCEPT' | 'REJECT'; providerNote?: string } = {
+      response: action,
+    };
+    if (note && note.trim()) {
+      payload.providerNote = note.trim();
+    }
+    const res = await api.post(`/api/v1/orders/${orderId}/negotiation/respond`, payload);
+    return res.data;
+  },
+
+  // Ký hợp đồng dịch vụ (POST /api/v1/orders/:orderId/agreement/sign)
+  signAgreement: async (orderId: string) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/agreement/sign`, {});
     return res.data;
   },
 
@@ -166,6 +219,24 @@ export const providerApi = {
   // Nộp báo cáo chăm sóc mới
   createCareReport: async (payload: CreateCareReportPayload) => {
     const res = await api.post<CareReportItem>('/api/v1/care-reports', payload);
+    return res.data;
+  },
+
+  // Cập nhật hoặc tạo mới hồ sơ Provider (PUT /api/v1/providers/me/profile)
+  upsertProfile: async (payload: UpsertProfilePayload) => {
+    const res = await api.put<ProviderProfileResponse>('/api/v1/providers/me/profile', payload);
+    return res.data;
+  },
+
+  // Upload tài liệu / CCCD lên Cloudinary (POST /api/v1/uploads/provider-document)
+  uploadDocument: async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await api.post<{ url: string; publicId: string }>('/api/v1/uploads/provider-document', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
     return res.data;
   },
 };

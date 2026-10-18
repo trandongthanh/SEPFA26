@@ -39,6 +39,15 @@ export interface RegisterResponse {
   status: string;
 }
 
+export interface GoogleLoginPayload {
+  idToken: string;
+  role?: 'CUSTOMER' | 'PROVIDER';
+}
+
+export interface GoogleAuthResponse extends AuthTokensResponse {
+  isNewAccount?: boolean;
+}
+
 // ===== Axios instance duy nhất =====
 
 export const api = axios.create({
@@ -186,6 +195,11 @@ export const authApi = {
       '/api/v1/auth/logout',
       refreshToken ? { refreshToken } : {}
     );
+    return res.data;
+  },
+
+  loginGoogle: async (payload: GoogleLoginPayload) => {
+    const res = await api.post<GoogleAuthResponse>('/api/v1/auth/google', payload);
     return res.data;
   },
 };

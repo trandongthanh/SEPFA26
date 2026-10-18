@@ -164,11 +164,23 @@ export default function ProviderDashboardPage() {
               <p className="text-sm text-[#4B4764] mt-1 font-medium">
                 Chúc bạn có một ngày quản lý nhà vườn và chăm sóc lan thật hiệu quả!
               </p>
-              <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/90 border border-[#ECE7FA] text-xs font-semibold text-[#6027D2] shadow-xs mt-3 backdrop-blur-xs">
+              <div
+                onClick={() => router.push('/provider/profile')}
+                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/90 border border-[#ECE7FA] text-xs font-semibold text-[#6027D2] shadow-xs mt-3 backdrop-blur-xs cursor-pointer hover:bg-white hover:border-[#6027D2] transition-colors"
+                title="Bấm để xem hoặc cập nhật hồ sơ nhà vườn"
+              >
                 <CheckCircleOutlined className="text-sm text-[#6027D2]" />
                 <span>
-                  Trạng thái hồ sơ: {profile?.verificationStatus === 'APPROVED' ? 'Đã duyệt' : 'Đang xử lý'}
+                  Trạng thái hồ sơ:{' '}
+                  {profile?.verificationStatus === 'APPROVED'
+                    ? 'Đã duyệt'
+                    : profile?.verificationStatus === 'REJECTED'
+                    ? 'Bị từ chối (Bấm để sửa)'
+                    : profile?.verificationStatus === 'PENDING'
+                    ? 'Đang chờ Admin duyệt'
+                    : 'Chưa hoàn thiện hồ sơ (Bấm nộp ngay)'}
                 </span>
+                <RightOutlined className="text-[10px] ml-0.5 text-[#6027D2]" />
               </div>
             </div>
 

@@ -96,6 +96,8 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
           const { storage } = await import('../utils/storage');
           const token = await storage.getToken();
           if (token) {
+            const { socketService } = await import('../services/socketService');
+            socketService.connect(token);
             navigation.replace('MainTabs');
           } else {
             navigation.replace('Login');

@@ -98,6 +98,42 @@ export function useVideoCall({
       // 4) Tham gia phòng — create: false vì BE đã tạo cuộc gọi trên GetStream
       await streamCall.join({ create: false });
       setIsJoined(true);
+      setIsJoining(false);
+
+      // Tự động bật camera và microphone trong nền — không bao giờ chặn màn hình phòng gọi
+      (async () => {
+        try {
+          await streamCall.camera.enable();
+        } catch (camErr: any) {
+          console.warn('[useVideoCall] Enable camera failed:', camErr);
+          try {
+            (window as any).ReactNativeWebView?.postMessage(
+              JSON.stringify({
+                type: 'INIT_MEDIA_ERROR',
+                device: 'camera',
+                name: camErr?.name,
+                message: camErr?.message || String(camErr),
+              })
+            );
+          } catch {}
+        }
+
+        try {
+          await streamCall.microphone.enable();
+        } catch (micErr: any) {
+          console.warn('[useVideoCall] Enable mic failed:', micErr);
+          try {
+            (window as any).ReactNativeWebView?.postMessage(
+              JSON.stringify({
+                type: 'INIT_MEDIA_ERROR',
+                device: 'mic',
+                name: micErr?.name,
+                message: micErr?.message || String(micErr),
+              })
+            );
+          } catch {}
+        }
+      })();
     } catch (err: any) {
       console.error('[useVideoCall] Tham gia cuộc gọi thất bại:', err);
       setError(
@@ -164,18 +200,12 @@ export function useVideoCall({
     return true;
   }, [teardown]);
 
-  // Cleanup khi unmount
+  // Cleanup khi unmount trang — chỉ teardown GetStream khi người dùng rời cuộc gọi
   useEffect(() => {
     return () => {
-      if (!hasLeftRef.current) {
+      if (hasLeftRef.current) {
         const currentCall = callRef.current;
         const currentClient = clientRef.current;
-
-        // Báo BE kết thúc (fire-and-forget)
-        if (session?.call.id) {
-          videoCallApi.endCall(session.call.id).catch(() => {});
-        }
-
         if (currentCall) currentCall.leave().catch(() => {});
         if (currentClient) {
           try {
@@ -186,7 +216,7 @@ export function useVideoCall({
         }
       }
     };
-  }, [session?.call.id]);
+  }, []);
 
   return { client, call, isJoining, isJoined, error, joinCall, leaveCall, disconnect };
 }
