@@ -21,6 +21,7 @@ import { uploadService } from '../services/uploadService';
 import { CustomerProfileResponse, UpdateCustomerProfilePayload } from '../types/customer';
 import { storage } from '../utils/storage';
 import { GoogleSignin } from '../utils/googleAuth';
+import { socketService } from '../services/socketService';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -298,6 +299,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
           } catch (_) {
             // Bỏ qua lỗi nếu chưa có tài khoản Google nào
           }
+          socketService.disconnect();
           await storage.clearAll();
           navigation.getParent()?.reset({
             index: 0,
@@ -347,8 +349,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                 isVerified
                   ? styles.approvedBadge
                   : profile?.verificationStatus === 'REJECTED'
-                  ? styles.rejectedBadge
-                  : styles.pendingBadge,
+                    ? styles.rejectedBadge
+                    : styles.pendingBadge,
               ]}
             >
               <Ionicons
@@ -356,16 +358,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                   isVerified
                     ? 'checkmark-circle'
                     : profile?.verificationStatus === 'REJECTED'
-                    ? 'close-circle'
-                    : 'time-outline'
+                      ? 'close-circle'
+                      : 'time-outline'
                 }
                 size={14}
                 color={
                   isVerified
                     ? '#2E7D32'
                     : profile?.verificationStatus === 'REJECTED'
-                    ? '#E53E3E'
-                    : '#D69E2E'
+                      ? '#E53E3E'
+                      : '#D69E2E'
                 }
               />
               <Text
@@ -374,15 +376,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                   isVerified
                     ? styles.approvedBadgeText
                     : profile?.verificationStatus === 'REJECTED'
-                    ? styles.rejectedBadgeText
-                    : styles.pendingBadgeText,
+                      ? styles.rejectedBadgeText
+                      : styles.pendingBadgeText,
                 ]}
               >
                 {isVerified
                   ? 'Đã xác thực'
                   : profile?.verificationStatus === 'REJECTED'
-                  ? 'Bị từ chối'
-                  : 'Chờ duyệt'}
+                    ? 'Bị từ chối'
+                    : 'Chờ duyệt'}
               </Text>
             </View>
           </View>
@@ -498,16 +500,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                         isVerified
                           ? 'checkmark-circle'
                           : profile?.verificationStatus === 'REJECTED'
-                          ? 'close-circle'
-                          : 'time'
+                            ? 'close-circle'
+                            : 'time'
                       }
                       size={20}
                       color={
                         isVerified
                           ? '#22C55E'
                           : profile?.verificationStatus === 'REJECTED'
-                          ? '#EF4444'
-                          : '#F59E0B'
+                            ? '#EF4444'
+                            : '#F59E0B'
                       }
                     />
                   </View>
@@ -517,20 +519,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                   {isVerified
                     ? 'Đã xác thực sinh trắc học'
                     : profile?.verificationStatus === 'REJECTED'
-                    ? 'Xác thực thất bại'
-                    : hasUploadedDocs
-                    ? 'Đang xử lý hồ sơ'
-                    : 'Chưa xác thực eKYC'}
+                      ? 'Xác thực thất bại'
+                      : hasUploadedDocs
+                        ? 'Đang xử lý hồ sơ'
+                        : 'Chưa xác thực eKYC'}
                 </Text>
 
                 <Text style={styles.cccdStatusSubtitle}>
                   {profile?.cccdNumber
                     ? `Mã CCCD: ${profile.cccdNumber}`
                     : isVerified
-                    ? 'Hồ sơ đã được AI phê duyệt tự động'
-                    : profile?.verificationStatus === 'REJECTED'
-                    ? 'Bấm để chụp lại CCCD & Selfie'
-                    : 'Quét CCCD & khuôn mặt chỉ 1 phút'}
+                      ? 'Hồ sơ đã được AI phê duyệt tự động'
+                      : profile?.verificationStatus === 'REJECTED'
+                        ? 'Bấm để chụp lại CCCD & Selfie'
+                        : 'Quét CCCD & khuôn mặt chỉ 1 phút'}
                 </Text>
               </View>
 

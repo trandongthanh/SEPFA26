@@ -257,15 +257,21 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
         {/* Package Card Summary */}
         <View style={styles.packageCard}>
           <View style={styles.packageHeaderRow}>
-            <View>
-              <Text style={styles.packageName}>{pkg.name}</Text>
+            <View style={styles.packageInfoContainer}>
+              <Text style={styles.packageName} numberOfLines={2}>
+                {pkg.name}
+              </Text>
               {providerName ? (
-                <Text style={styles.providerSub}>Nhà vườn: {providerName}</Text>
+                <Text style={styles.providerSub} numberOfLines={1}>
+                  Nhà vườn: {providerName}
+                </Text>
               ) : null}
             </View>
-            <Text style={styles.packagePrice}>
-              {priceVal ? `${priceVal.toLocaleString('vi-VN')} VNĐ` : 'Thỏa thuận'}
-            </Text>
+            <View style={styles.packagePriceContainer}>
+              <Text style={styles.packagePrice}>
+                {priceVal ? `${priceVal.toLocaleString('vi-VN')} đ` : 'Thỏa thuận'}
+              </Text>
+            </View>
           </View>
           <View style={styles.packageMetaRow}>
             <View style={styles.metaItem}>
@@ -282,8 +288,8 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
         {/* Section 1: Plants */}
         <View style={styles.sectionContainer}>
           <View style={styles.sectionHeaderRow}>
-            <Text style={styles.sectionTitle}>
-              Danh sách chậu lan gửi chăm sóc ({plants.length}/{maxPlantsAllowed})
+            <Text style={styles.sectionTitleInRow} numberOfLines={1}>
+              Danh sách chậu lan ({plants.length}/{maxPlantsAllowed})
             </Text>
             <TouchableOpacity
               style={styles.addPlantButton}
@@ -471,7 +477,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
-    paddingBottom: 24,
+    paddingBottom: 40,
   },
   packageCard: {
     backgroundColor: '#FFFFFF',
@@ -491,6 +497,15 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     marginBottom: 12,
+    gap: 8,
+  },
+  packageInfoContainer: {
+    flex: 1,
+    marginRight: 8,
+  },
+  packagePriceContainer: {
+    alignItems: 'flex-end',
+    flexShrink: 0,
   },
   packageName: {
     fontSize: 16,
@@ -503,9 +518,10 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   packagePrice: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '800',
     color: '#6027D2',
+    textAlign: 'right',
   },
   packageMetaRow: {
     flexDirection: 'row',
@@ -537,6 +553,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
+    gap: 8,
   },
   sectionTitle: {
     fontSize: 15,
@@ -544,14 +561,22 @@ const styles = StyleSheet.create({
     color: '#2D3748',
     marginBottom: 10,
   },
+  sectionTitleInRow: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#2D3748',
+    flex: 1,
+    marginRight: 6,
+  },
   addPlantButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 5,
     borderRadius: 12,
     backgroundColor: '#F3E8FF',
+    flexShrink: 0,
   },
   addPlantButtonText: {
     fontSize: 12,
@@ -693,6 +718,8 @@ const styles = StyleSheet.create({
   },
   totalPriceContainer: {
     justifyContent: 'center',
+    flexShrink: 1,
+    marginRight: 12,
   },
   totalLabel: {
     fontSize: 11,
@@ -705,9 +732,10 @@ const styles = StyleSheet.create({
   },
   submitButton: {
     backgroundColor: '#6027D2',
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
     paddingVertical: 12,
     borderRadius: 12,
+    flexShrink: 0,
   },
   submitButtonDisabled: {
     opacity: 0.6,

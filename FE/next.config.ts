@@ -22,7 +22,7 @@ const securityHeaders = [
       "img-src 'self' data: blob: https://res.cloudinary.com https:",
       "font-src 'self' https://fonts.gstatic.com data:",
       // Cho phép FE gọi API sang BE + GetStream Video SDK domains (API + Video SFU WebSockets)
-      "connect-src 'self' http://localhost:3001 http://localhost:3002 ws://localhost:3001 wss://*.stream-io-api.com https://*.stream-io-api.com https://*.stream-io-cdn.com https://getstream.io https://*.stream-io-video.com wss://*.stream-io-video.com https://*.stream-io.com wss://*.stream-io.com",
+      "connect-src 'self' http: https: ws: wss: data: blob: https://*.stream-io-api.com https://*.stream-io-cdn.com https://getstream.io https://*.stream-io-video.com wss://*.stream-io-video.com https://*.stream-io.com wss://*.stream-io.com",
       // Ngăn trang bị nhúng vào frame của domain khác
       "frame-ancestors 'none'",
     ].join('; '),
@@ -31,6 +31,7 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  devIndicators: false,
   // Fix: monorepo có nhiều lockfile → chỉ rõ root để Next.js không nhầm
   outputFileTracingRoot: path.join(__dirname, '../../'),
   images: {

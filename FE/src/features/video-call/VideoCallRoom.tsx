@@ -7,6 +7,7 @@ import {
   StreamCall,
   StreamTheme,
   useCallStateHooks,
+  ParticipantsAudio,
 } from '@stream-io/video-react-sdk';
 import '@stream-io/video-react-sdk/dist/css/styles.css';
 
@@ -30,6 +31,75 @@ function clearCallStorage(callId: string) {
   sessionStorage.removeItem(`lancare_call_session_${callId}`);
 }
 
+/** Đọc session từ mọi nguồn có thể: URL Hash -> URL Query -> sessionStorage */
+function resolveInitialSession(callId: string): VideoCallSessionResponseDto | null {
+  if (typeof window === 'undefined') return null;
+
+  // 1. Đọc từ URL Hash (#session=...) — hỗ trợ tốt nhất và tức thì cho Mobile WebView
+  try {
+    if (window.location.hash) {
+      const hashStr = window.location.hash.startsWith('#')
+        ? window.location.hash.substring(1)
+        : window.location.hash;
+      const hashParams = new URLSearchParams(hashStr);
+      const rawSession = hashParams.get('session');
+      if (rawSession) {
+        let parsed: any;
+        try {
+          parsed = JSON.parse(rawSession);
+        } catch {
+          parsed = JSON.parse(decodeURIComponent(rawSession));
+        }
+        if (parsed?.stream?.token && parsed?.stream?.apiKey) {
+          try {
+            sessionStorage.setItem(`lancare_call_session_${callId}`, JSON.stringify(parsed));
+          } catch {}
+          return parsed;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[VideoCallRoom] Parse session from hash failed:', e);
+  }
+
+  // 2. Đọc từ URL Search params (?session=... hoặc ?sessionData=...)
+  try {
+    const searchParams = new URLSearchParams(window.location.search);
+    const rawQuery = searchParams.get('session') || searchParams.get('sessionData');
+    if (rawQuery) {
+      let parsed: any;
+      try {
+        parsed = JSON.parse(rawQuery);
+      } catch {
+        parsed = JSON.parse(decodeURIComponent(rawQuery));
+      }
+      if (parsed?.stream?.token && parsed?.stream?.apiKey) {
+        try {
+          sessionStorage.setItem(`lancare_call_session_${callId}`, JSON.stringify(parsed));
+        } catch {}
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.warn('[VideoCallRoom] Parse session from query failed:', e);
+  }
+
+  // 3. Đọc từ sessionStorage đã lưu trước đó (Web flow bình thường)
+  try {
+    const cached = sessionStorage.getItem(`lancare_call_session_${callId}`);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (parsed?.stream?.token && parsed?.stream?.apiKey) {
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.warn('[VideoCallRoom] Parse cached session error:', e);
+  }
+
+  return null;
+}
+
 interface VideoCallRoomProps {
   callType: string;
   callId: string;
@@ -38,20 +108,28 @@ interface VideoCallRoomProps {
 /**
  * Component phòng video call chính — full-screen, dark theme.
  *
- * Luồng mới (khớp bản chốt BE §5.1):
- * - Người gọi: tạo qua handleStartVideoCall → lưu session vào sessionStorage → chuyển trang
- * - Người nhận: accept từ IncomingCallModal → lưu session vào sessionStorage → chuyển trang
- * - Nếu mở lại trang (F5): gọi getActive → nếu còn cuộc gọi → joinCall → lấy session mới
- * - Kết thúc: gọi POST /video-calls/:id/end
+ * Hỗ trợ đa nền tảng (Web desktop/mobile & Mobile App WebView):
+ * - Đọc session tức thì từ URL Hash (#session=...) hoặc sessionStorage
+ * - Tự động nhận diện Mobile mode (?isMobile=true) để tối ưu layout tràn viền
+ * - Đăng ký window.lancareToggleMic / window.lancareToggleCam / window.lancareEndCall
  */
 export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) {
   const router = useRouter();
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
-  const [session, setSession] = useState<VideoCallSessionResponseDto | null>(null);
-  const [loading, setLoading] = useState(true);
+
+  const initialSession = useMemo(() => resolveInitialSession(callId), [callId]);
+  const [session, setSession] = useState<VideoCallSessionResponseDto | null>(initialSession);
+  const [loading, setLoading] = useState<boolean>(!initialSession);
   const [initError, setInitError] = useState<string | null>(null);
   /** Cuộc gọi đã được chuyển sang thiết bị khác của chính mình */
   const [movedAway, setMovedAway] = useState(false);
+
+  // Nhận diện xem có đang chạy trong Mobile WebView hay không
+  const isMobile = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    const sp = new URLSearchParams(window.location.search);
+    return sp.get('isMobile') === 'true' || sp.get('embedded') === 'true' || sp.has('isMobile');
+  }, []);
 
   const routerRef = useRef(router);
   useEffect(() => {
@@ -79,31 +157,192 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
     disconnect,
   } = useVideoCall({ session, onCallEnded });
 
-  // Khởi tạo session: (1) lấy từ sessionStorage nếu có, (2) không thì gọi joinCall API
+  // Expose các action điều khiển cho Mobile WebView (App native bấm nút là Web chạy ngay)
   useEffect(() => {
-    if (!isAuthenticated) {
-      setLoading(false);
-      return;
-    }
+    if (typeof window === 'undefined') return;
+
+    (window as any).lancareToggleMic = async () => {
+      try {
+        if (call) {
+          await call.microphone.toggle();
+        } else {
+          const btn = document.querySelector('[data-testid="mute-mic-button"]') as HTMLButtonElement;
+          if (btn) btn.click();
+        }
+      } catch (e: any) {
+        console.warn('lancareToggleMic error:', e);
+        try {
+          (window as any).ReactNativeWebView?.postMessage(
+            JSON.stringify({
+              type: 'TOGGLE_ERROR',
+              device: 'mic',
+              name: e?.name,
+              message: e?.message || String(e),
+            })
+          );
+        } catch {}
+      }
+    };
+
+    (window as any).lancareToggleCam = async () => {
+      try {
+        if (call) {
+          await call.camera.toggle();
+        } else {
+          const btn = document.querySelector('[data-testid="toggle-cam-button"]') as HTMLButtonElement;
+          if (btn) btn.click();
+        }
+      } catch (e: any) {
+        console.warn('lancareToggleCam error:', e);
+        try {
+          (window as any).ReactNativeWebView?.postMessage(
+            JSON.stringify({
+              type: 'TOGGLE_ERROR',
+              device: 'camera',
+              name: e?.name,
+              message: e?.message || String(e),
+            })
+          );
+        } catch {}
+      }
+    };
+
+    (window as any).lancareEnableMedia = async () => {
+      if (!call) return;
+      try {
+        await call.camera.enable();
+      } catch (e: any) {
+        console.warn('lancareEnableMedia camera error:', e);
+        try {
+          (window as any).ReactNativeWebView?.postMessage(
+            JSON.stringify({
+              type: 'INIT_MEDIA_ERROR',
+              device: 'camera',
+              name: e?.name,
+              message: e?.message || String(e),
+            })
+          );
+        } catch {}
+      }
+      try {
+        await call.microphone.enable();
+      } catch (e: any) {
+        console.warn('lancareEnableMedia mic error:', e);
+        try {
+          (window as any).ReactNativeWebView?.postMessage(
+            JSON.stringify({
+              type: 'INIT_MEDIA_ERROR',
+              device: 'mic',
+              name: e?.name,
+              message: e?.message || String(e),
+            })
+          );
+        } catch {}
+      }
+    };
+
+    (window as any).lancareEndCall = async () => {
+      try {
+        await handleLeave();
+      } catch (e) {
+        console.warn('lancareEndCall error:', e);
+      }
+    };
+  }, [call]);
+
+  // Khởi tạo session: (1) hash/storage nếu có, (2) window message từ Mobile, (3) token API
+  useEffect(() => {
     let cancelled = false;
 
+    // 1. Lắng nghe window message (dành cho Mobile WebView postMessage)
+    const handleWindowMessage = (e: any) => {
+      try {
+        let data = e.data;
+        if (typeof data === 'string') {
+          try { data = JSON.parse(data); } catch {}
+        }
+        if (data?.type === 'LANCARE_CALL_SESSION' && data?.session?.stream?.token) {
+          if (!cancelled) {
+            setSession((prev) => {
+              if (prev?.stream?.token === data.session.stream.token) return prev;
+              return data.session;
+            });
+            setLoading(false);
+          }
+          try {
+            sessionStorage.setItem(`lancare_call_session_${callId}`, JSON.stringify(data.session));
+          } catch {}
+        }
+      } catch {}
+    };
+
+    window.addEventListener('message', handleWindowMessage);
+    document.addEventListener('message', handleWindowMessage as any);
+
+    // 2. Nếu đã có session rồi (từ URL Hash hoặc sessionStorage)
+    if (session) {
+      setLoading(false);
+      return () => {
+        cancelled = true;
+        window.removeEventListener('message', handleWindowMessage);
+        document.removeEventListener('message', handleWindowMessage as any);
+      };
+    }
+
+    // 3. Kiểm tra xem có token đính kèm trong query (?token=...) không
+    const searchParams = new URLSearchParams(window.location.search);
+    const urlToken = searchParams.get('token');
+    if (urlToken && !isAuthenticated) {
+      useAuthStore.getState().setTokens({ accessToken: urlToken, refreshToken: '' });
+    }
+
+    // 4. Đọc lại session một lần nữa
+    const foundSession = resolveInitialSession(callId);
+    if (foundSession) {
+      if (!cancelled) {
+        setSession(foundSession);
+        setLoading(false);
+      }
+      return () => {
+        cancelled = true;
+        window.removeEventListener('message', handleWindowMessage);
+        document.removeEventListener('message', handleWindowMessage as any);
+      };
+    }
+
+    // 5. Nếu là Mobile app nhưng chưa thấy session, đợi một nhịp cho WebView nạp script thay vì văng ra login
+    if (isMobile && !isAuthenticated && !urlToken) {
+      const timer = setTimeout(() => {
+        if (!cancelled && !session) {
+          const reCheck = resolveInitialSession(callId);
+          if (reCheck) {
+            setSession(reCheck);
+          }
+          setLoading(false);
+        }
+      }, 1500);
+
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+        window.removeEventListener('message', handleWindowMessage);
+        document.removeEventListener('message', handleWindowMessage as any);
+      };
+    }
+
+    // 6. Không có session cache và cũng chưa đăng nhập web → dừng, báo cần đăng nhập
+    if (!isAuthenticated && !urlToken) {
+      setLoading(false);
+      return () => {
+        cancelled = true;
+        window.removeEventListener('message', handleWindowMessage);
+        document.removeEventListener('message', handleWindowMessage as any);
+      };
+    }
+
+    // 7. Đã có auth (hoặc urlToken) → gọi joinCall API lấy session
     (async () => {
       try {
-        // Thử đọc session đã được lưu (từ IncomingCallModal hoặc handleStartVideoCall)
-        if (typeof window !== 'undefined') {
-          const cached = sessionStorage.getItem(`lancare_call_session_${callId}`);
-          if (cached) {
-            const parsed = JSON.parse(cached) as VideoCallSessionResponseDto;
-            if (!cancelled) {
-              setSession(parsed);
-              setLoading(false);
-              return;
-            }
-          }
-        }
-
-        // Không có session cache → gọi joinCall API để lấy session mới
-        // (trường hợp mở lại trang / F5 / vào link trực tiếp)
         const joinSession = await videoCallApi.joinCall(callId);
         if (!cancelled) {
           setSession(joinSession);
@@ -122,15 +361,17 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
 
     return () => {
       cancelled = true;
+      window.removeEventListener('message', handleWindowMessage);
+      document.removeEventListener('message', handleWindowMessage as any);
     };
-  }, [callId, isAuthenticated]);
+  }, [callId, isAuthenticated, isMobile, session]);
 
   // Khi đã có session → tự động join vào phòng GetStream (chỉ 1 lần, lỗi thì dừng — không retry vô hạn)
   useEffect(() => {
-    if (session && isAuthenticated && !isJoined && !isJoining && !error && !movedAway) {
+    if (session && !isJoined && !isJoining && !error && !movedAway) {
       joinCall();
     }
-  }, [session, isAuthenticated, isJoined, isJoining, error, movedAway, joinCall]);
+  }, [session, isJoined, isJoining, error, movedAway, joinCall]);
 
   // Sự kiện socket của cuộc gọi hiện tại (được useIncomingCall phát lại qua window event)
   useEffect(() => {
@@ -173,8 +414,34 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
     }
   };
 
-  // ===== Not authenticated =====
-  if (!isAuthenticated) {
+  // ===== Loading state (Chỉ hiện khi chưa vào được phòng và đang tải/kết nối) =====
+  if (!isJoined && (loading || isJoining)) {
+    return (
+      <div className="h-screen w-screen bg-[#0f0e1a] flex items-center justify-center">
+        <div className="text-center">
+          <div className="relative w-20 h-20 mx-auto mb-6">
+            <div className="absolute inset-0 rounded-full border-4 border-[#6027D2]/20" />
+            <div className="absolute inset-0 rounded-full border-4 border-t-[#6027D2] animate-spin" />
+            <div className="absolute inset-3 rounded-full bg-gradient-to-br from-[#6027D2] to-[#8B5CF6] flex items-center justify-center">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
+                <polygon points="23 7 16 12 23 17 23 7" />
+                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+              </svg>
+            </div>
+          </div>
+          <h2 className="text-white text-lg font-semibold mb-2">Đang kết nối cuộc gọi...</h2>
+          <p className="text-white/50 text-sm">
+            {session?.call.caller.fullName
+              ? `Cuộc gọi với ${session.call.myRole === 'CALLER' ? session.call.callee.fullName : session.call.caller.fullName}`
+              : 'Vui lòng đợi trong giây lát'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ===== Not authenticated (chỉ hiện khi đã load xong và chắc chắn không có session) =====
+  if (!isAuthenticated && !session) {
     return (
       <div className="h-screen w-screen bg-[#0f0e1a] flex items-center justify-center">
         <div className="text-center max-w-md px-6">
@@ -232,32 +499,6 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
     );
   }
 
-  // ===== Loading state =====
-  if (loading || isJoining) {
-    return (
-      <div className="h-screen w-screen bg-[#0f0e1a] flex items-center justify-center">
-        <div className="text-center">
-          <div className="relative w-20 h-20 mx-auto mb-6">
-            <div className="absolute inset-0 rounded-full border-4 border-[#6027D2]/20" />
-            <div className="absolute inset-0 rounded-full border-4 border-t-[#6027D2] animate-spin" />
-            <div className="absolute inset-3 rounded-full bg-gradient-to-br from-[#6027D2] to-[#8B5CF6] flex items-center justify-center">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
-                <polygon points="23 7 16 12 23 17 23 7" />
-                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-              </svg>
-            </div>
-          </div>
-          <h2 className="text-white text-lg font-semibold mb-2">Đang kết nối cuộc gọi...</h2>
-          <p className="text-white/50 text-sm">
-            {session?.call.caller.fullName
-              ? `Cuộc gọi với ${session.call.myRole === 'CALLER' ? session.call.callee.fullName : session.call.caller.fullName}`
-              : 'Vui lòng đợi trong giây lát'}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   // ===== Error state =====
   const displayError = initError || error;
   if (displayError) {
@@ -268,7 +509,7 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2">
               <circle cx="12" cy="12" r="10" />
               <line x1="15" y1="9" x2="9" y2="15" />
-              <line x1="9" y1="9" x2="15" y2="15" />
+              <line x1="9" y1="15" x2="15" y2="15" />
             </svg>
           </div>
           <h2 className="text-white text-lg font-semibold mb-2">Không thể tham gia cuộc gọi</h2>
@@ -298,18 +539,31 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
     <StreamVideo client={client}>
       <StreamCall call={call}>
         <StreamTheme className="h-screen w-screen flex flex-col bg-[#0f0e1a] overflow-hidden">
-          {/* Header với đồng hồ đồng bộ chuẩn Google Meet */}
-          <CallTopBar session={session} callId={callId} />
+          {/* Tự động phát âm thanh của đối phương trên cả Web và Mobile WebView */}
+          <RemoteAudioHelper />
+
+          {/* Header với đồng hồ đồng bộ chuẩn Google Meet (ẩn trên Mobile WebView vì Mobile đã có header native) */}
+          {!isMobile && <CallTopBar session={session} callId={callId} />}
 
           {/* Participant grid */}
           <ParticipantGrid />
 
-          {/* Bottom controls */}
-          <CallControls onLeave={handleLeave} />
+          {/* Bottom controls (ẩn trên Mobile WebView vì Mobile đã có thanh control native) */}
+          {!isMobile && <CallControls onLeave={handleLeave} />}
         </StreamTheme>
       </StreamCall>
     </StreamVideo>
   );
+}
+
+function RemoteAudioHelper() {
+  const { useParticipants } = useCallStateHooks();
+  const participants = useParticipants();
+  const remoteParticipants = useMemo(
+    () => participants.filter((p) => !p.isLocalParticipant),
+    [participants]
+  );
+  return <ParticipantsAudio participants={remoteParticipants} />;
 }
 
 // ===== Call Header Component =====

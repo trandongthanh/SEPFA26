@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { apiClient } from '../config/api';
 import { storage } from '../utils/storage';
 import { GoogleSignInButton } from '../components/GoogleSignInButton';
+import { socketService } from '../services/socketService';
 
 interface LoginScreenProps {
   navigation?: any;
@@ -45,6 +46,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
       const { accessToken, refreshToken, account } = response.data;
       await storage.setToken(accessToken, refreshToken);
       await storage.setUser(account);
+      socketService.connect(accessToken);
 
       navigation?.reset({
         index: 0,

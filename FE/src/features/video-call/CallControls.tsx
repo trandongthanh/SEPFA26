@@ -74,6 +74,7 @@ export default function CallControls({ onLeave }: CallControlsProps) {
       <div className="flex items-center justify-center gap-3 px-6 py-4">
         {/* Mic toggle */}
         <ControlButton
+          testId="mute-mic-button"
           active={!isMicMuted}
           icon={isMicMuted ? <MicOffIcon /> : <MicOnIcon />}
           label={isMicMuted ? 'Bật mic' : 'Tắt mic'}
@@ -84,6 +85,7 @@ export default function CallControls({ onLeave }: CallControlsProps) {
 
         {/* Camera toggle */}
         <ControlButton
+          testId="toggle-cam-button"
           active={!isCamOff}
           icon={isCamOff ? <CamOffIcon /> : <CamOnIcon />}
           label={isCamOff ? 'Bật camera' : 'Tắt camera'}
@@ -94,6 +96,7 @@ export default function CallControls({ onLeave }: CallControlsProps) {
 
         {/* Screen share */}
         <ControlButton
+          testId="toggle-screenshare-button"
           active={!isScreenShareOff}
           icon={<ScreenShareIcon />}
           label={
@@ -114,6 +117,7 @@ export default function CallControls({ onLeave }: CallControlsProps) {
 
         {/* Leave button */}
         <button
+          data-testid="end-call-button"
           onClick={handleLeave}
           className={`group flex items-center gap-2 h-12 px-6 rounded-full
             bg-red-500 hover:bg-red-600 active:scale-95
@@ -139,6 +143,7 @@ function ControlButton({
   activeColor,
   inactiveColor,
   disabled = false,
+  testId,
 }: {
   active: boolean;
   icon: React.ReactNode;
@@ -147,9 +152,11 @@ function ControlButton({
   activeColor: string;
   inactiveColor: string;
   disabled?: boolean;
+  testId?: string;
 }) {
   return (
     <button
+      data-testid={testId}
       onClick={onClick}
       aria-disabled={disabled}
       className={`group relative w-12 h-12 rounded-full flex items-center justify-center

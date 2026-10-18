@@ -8,8 +8,10 @@ import {
   ClockCircleOutlined,
   CloseCircleOutlined,
   ContainerOutlined,
+  DollarOutlined,
   EnvironmentOutlined,
   EyeOutlined,
+  FileProtectOutlined,
   FileTextOutlined,
   PictureOutlined,
   UserOutlined,
@@ -98,7 +100,7 @@ function OrdersPageContent() {
       await providerApi.respondNegotiation(orderId, action);
       message.success(
         action === 'ACCEPT'
-          ? 'Đã chấp nhận đơn hàng thành công!'
+          ? 'Đã chấp nhận đơn đặt lịch thành công! Đơn chuyển sang giai đoạn ký hợp đồng.'
           : 'Đã từ chối đơn hàng.'
       );
       loadData(activeTab);
@@ -111,10 +113,30 @@ function OrdersPageContent() {
     }
   };
 
+  // Handle Provider Sign Service Agreement
+  const handleSignAgreement = async (orderId: string) => {
+    setActionLoading(orderId);
+    try {
+      await providerApi.signAgreement(orderId);
+      message.success('Đã ký hợp đồng dịch vụ trực tuyến thành công!');
+      loadData(activeTab);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || 'Không thể ký hợp đồng lúc này.';
+      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   // === Video Call ===
   const CALL_ELIGIBLE_STATUSES = new Set([
-    'AGREEMENT_PENDING', 'AWAITING_PAYMENT', 'PAID',
-    'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE',
+    'PENDING_PROVIDER',
+    'AGREEMENT_PENDING',
+    'AWAITING_PAYMENT',
+    'PAID',
+    'HANDOVER_IN_PROGRESS',
+    'HANDOVER_AWAITING_CONFIRM',
+    'IN_CARE',
   ]);
 
   const handleStartVideoCall = async (orderId: string) => {
@@ -140,8 +162,6 @@ function OrdersPageContent() {
 
       // 2. Tạo cuộc gọi mới qua BE API
       const session = await videoCallApi.createCall(orderId);
-      // URL phải dùng id cuộc gọi của BE (call.id) — VideoCallRoom dùng nó để gọi
-      // POST /video-calls/:id/join khi F5; stream.callId chỉ dùng để kết nối GetStream
       const callId = session.call.id;
       const callType = session.stream?.callType || 'default';
 
@@ -183,6 +203,30 @@ function OrdersPageContent() {
             Chờ duyệt đặt lịch
           </Tag>
         );
+      case 'AGREEMENT_PENDING':
+        return (
+          <Tag color="gold" icon={<FileProtectOutlined />}>
+            Chờ ký hợp đồng
+          </Tag>
+        );
+      case 'AWAITING_PAYMENT':
+        return (
+          <Tag color="cyan" icon={<DollarOutlined />}>
+            Chờ khách thanh toán
+          </Tag>
+        );
+      case 'PAID':
+        return (
+          <Tag color="blue" icon={<CheckCircleOutlined />}>
+            Đã thanh toán
+          </Tag>
+        );
+      case 'HANDOVER_IN_PROGRESS':
+        return (
+          <Tag color="geekblue" icon={<EnvironmentOutlined />}>
+            Đang bàn giao cây
+          </Tag>
+        );
       case 'IN_CARE':
         return (
           <Tag color="purple" icon={<SyncOutlinedSpin />}>
@@ -193,6 +237,12 @@ function OrdersPageContent() {
         return (
           <Tag color="green" icon={<CheckCircleOutlined />}>
             Hoàn thành
+          </Tag>
+        );
+      case 'REJECTED':
+        return (
+          <Tag color="default" icon={<CloseCircleOutlined />}>
+            Đã từ chối
           </Tag>
         );
       case 'CANCELLED':
@@ -233,6 +283,7 @@ function OrdersPageContent() {
               onChange={(val) => setActiveTab(val as string)}
               options={[
                 { label: 'Chờ duyệt đặt lịch', value: 'PENDING_PROVIDER' },
+                { label: 'Chờ ký hợp đồng', value: 'AGREEMENT_PENDING' },
                 { label: 'Đang chăm sóc', value: 'IN_CARE' },
                 { label: 'Hoàn thành', value: 'COMPLETED' },
                 { label: 'Tất cả đơn', value: 'ALL' },
@@ -343,6 +394,18 @@ function OrdersPageContent() {
                             Chấp nhận đơn
                           </Button>
                         </>
+                      )}
+
+                      {order.status === 'AGREEMENT_PENDING' && (
+                        <Button
+                          type="primary"
+                          icon={<FileProtectOutlined />}
+                          onClick={() => handleSignAgreement(order.id)}
+                          loading={actionLoading === order.id}
+                          className="!h-9 !px-4 !rounded-xl !bg-[#D97706] hover:!bg-[#B45309] !font-semibold text-xs shadow-sm flex items-center gap-1 text-white"
+                        >
+                          Ký hợp đồng online
+                        </Button>
                       )}
 
                       {order.status === 'IN_CARE' && (

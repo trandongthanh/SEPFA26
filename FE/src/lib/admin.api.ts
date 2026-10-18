@@ -106,6 +106,14 @@ export const adminApi = {
     return res.data;
   },
 
+  verifyPackage: async (
+    packageId: string,
+    payload: { isActive?: boolean; decision?: 'APPROVED' | 'REJECTED'; note?: string },
+  ) => {
+    const res = await api.post(`/api/v1/admin/providers/packages/${packageId}/verify`, payload);
+    return res.data;
+  },
+
   // --- Customer ---
   listCustomers: async () => {
     const res = await api.get<AdminCustomerItem[]>('/api/v1/customers/admin');

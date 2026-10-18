@@ -21,7 +21,7 @@ function getAutoDevApiUrl(): string {
   }
 
   // 3. IP LAN hiện tại của máy tính
-  const defaultHost = '192.168.0.132';
+  const defaultHost = '192.168.88.128';
   return `http://${defaultHost}:3001/api/v1`;
 }
 
@@ -29,6 +29,16 @@ const rawBaseUrl = getAutoDevApiUrl();
 export const API_BASE_URL = rawBaseUrl.endsWith('/api/v1')
   ? rawBaseUrl
   : `${rawBaseUrl.replace(/\/$/, '')}/api/v1`;
+
+// Backend WebSocket URL (namespace /ws cho Video Call & Notifications)
+export const BACKEND_WS_URL = API_BASE_URL.replace(/\/api\/v1\/?$/, '') + '/ws';
+
+// FE Web URL for Video Calls room
+// LƯU Ý: Android WebView CHỈ hỗ trợ navigator.mediaDevices.getUserMedia trên HTTPS hoặc localhost (Secure Context).
+// Kết nối qua HTTPS Cloudflare Tunnel giúp bật Camera & Micro 100% không bị lỗi undefined getUserMedia.
+export const FE_WEB_URL =
+  process.env.EXPO_PUBLIC_FE_URL ||
+  'https://discussed-gale-hiring-elizabeth.trycloudflare.com';
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -57,5 +67,33 @@ apiClient.interceptors.request.use(
     return config;
   },
   (error) => Promise.reject(error)
+);
+
+apiClient.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+    if (error.response?.status === 401 && !originalRequest?._retry) {
+      originalRequest._retry = true;
+      try {
+        const { storage } = await import('../utils/storage');
+        const refreshToken = await storage.getRefreshToken();
+        if (refreshToken) {
+          const res = await axios.post(`${API_BASE_URL}/auth/refresh`, {
+            refreshToken,
+          });
+          const { accessToken, refreshToken: newRefresh } = res.data;
+          await storage.setToken(accessToken, newRefresh || refreshToken);
+          if (originalRequest.headers) {
+            originalRequest.headers['Authorization'] = `Bearer ${accessToken}`;
+          }
+          return apiClient(originalRequest);
+        }
+      } catch (refreshErr) {
+        // Refresh token expired or invalid
+      }
+    }
+    return Promise.reject(error);
+  }
 );
 

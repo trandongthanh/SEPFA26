@@ -67,6 +67,11 @@ export default function ProviderSidebar({
       label: 'Báo cáo chăm sóc',
       icon: <HistoryOutlined className="text-base" />,
     },
+    {
+      key: '/provider/profile',
+      label: 'Hồ sơ nhà vườn',
+      icon: <ShopOutlined className="text-base" />,
+    },
   ];
 
   return (
@@ -123,14 +128,6 @@ export default function ProviderSidebar({
           })}
 
           <button
-            onClick={() => message.info('Hồ sơ nhà vườn liên kết')}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium text-sm text-[#4B4764] hover:bg-[#F8F6FE] transition-colors"
-          >
-            <ShopOutlined className="text-base text-[#8B86A4]" />
-            Hồ sơ nhà vườn
-          </button>
-
-          <button
             onClick={() => message.info('Kênh Hỗ trợ chuyên gia LanCare')}
             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl font-medium text-sm text-[#4B4764] hover:bg-[#F8F6FE] transition-colors"
           >
@@ -161,6 +158,12 @@ export default function ProviderSidebar({
         <Dropdown
           menu={{
             items: [
+              {
+                key: 'profile',
+                icon: <ShopOutlined />,
+                label: 'Hồ sơ nhà vườn',
+                onClick: () => router.push('/provider/profile'),
+              },
               {
                 key: 'settings',
                 icon: <SettingOutlined />,
