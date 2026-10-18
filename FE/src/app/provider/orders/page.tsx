@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   CalendarOutlined,
@@ -13,19 +13,22 @@ import {
   FileTextOutlined,
   PictureOutlined,
   UserOutlined,
+  VideoCameraOutlined,
 } from '@ant-design/icons';
 import { Avatar, Button, Image, Modal, Segmented, Spin, Tag, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
+import { videoCallApi } from '@/lib/video-call.api';
 import ProviderHeader from '../components/ProviderHeader';
 import ProviderSidebar from '../components/ProviderSidebar';
 
-export default function OrdersPage() {
+function OrdersPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [videoCallLoading, setVideoCallLoading] = useState<string | null>(null);
 
   const [profile, setProfile] = useState<ProviderProfileResponse | null>(null);
   const [orders, setOrders] = useState<OrderItem[]>([]);
@@ -105,6 +108,56 @@ export default function OrdersPage() {
       message.error(Array.isArray(msg) ? msg.join(', ') : msg);
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  // === Video Call ===
+  const CALL_ELIGIBLE_STATUSES = new Set([
+    'AGREEMENT_PENDING', 'AWAITING_PAYMENT', 'PAID',
+    'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE',
+  ]);
+
+  const handleStartVideoCall = async (orderId: string) => {
+    setVideoCallLoading(orderId);
+    try {
+      // 1. Kiểm tra xem đã có cuộc gọi đang diễn ra của đơn này không
+      try {
+        const active = await videoCallApi.getActive(orderId);
+        if (active?.call) {
+          const session = await videoCallApi.joinCall(active.call.id);
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem(
+              `lancare_call_session_${active.call.id}`,
+              JSON.stringify(session),
+            );
+          }
+          router.push(`/calls/${session.stream.callType}/${active.call.id}`);
+          return;
+        }
+      } catch {
+        // Bỏ qua lỗi getActive, tiếp tục tạo cuộc gọi mới
+      }
+
+      // 2. Tạo cuộc gọi mới qua BE API
+      const session = await videoCallApi.createCall(orderId);
+      // URL phải dùng id cuộc gọi của BE (call.id) — VideoCallRoom dùng nó để gọi
+      // POST /video-calls/:id/join khi F5; stream.callId chỉ dùng để kết nối GetStream
+      const callId = session.call.id;
+      const callType = session.stream?.callType || 'default';
+
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem(
+          `lancare_call_session_${callId}`,
+          JSON.stringify(session),
+        );
+      }
+
+      router.push(`/calls/${callType}/${callId}`);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || 'Không thể bắt đầu cuộc gọi.';
+      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+    } finally {
+      setVideoCallLoading(null);
     }
   };
 
@@ -302,6 +355,18 @@ export default function OrdersPage() {
                           Nộp báo cáo chăm sóc
                         </Button>
                       )}
+
+                      {/* Nút Gọi Video cho các trạng thái eligible */}
+                      {CALL_ELIGIBLE_STATUSES.has(order.status) && (
+                        <Button
+                          icon={<VideoCameraOutlined />}
+                          loading={videoCallLoading === order.id}
+                          onClick={() => handleStartVideoCall(order.id)}
+                          className="!h-9 !px-4 !rounded-xl !bg-emerald-50 !border-emerald-200 !text-emerald-700 hover:!bg-emerald-100 !font-semibold text-xs flex items-center gap-1"
+                        >
+                          Gọi Video
+                        </Button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -347,6 +412,19 @@ export default function OrdersPage() {
                   Chấp nhận đơn
                 </Button>
               </>
+            )}
+            {orderDetail && CALL_ELIGIBLE_STATUSES.has(orderDetail.status) && (
+              <Button
+                icon={<VideoCameraOutlined />}
+                loading={videoCallLoading === orderDetail?.id}
+                onClick={() => {
+                  handleStartVideoCall(orderDetail.id);
+                  setDetailModalOpen(false);
+                }}
+                className="!rounded-xl !bg-emerald-50 !border-emerald-200 !text-emerald-700 hover:!bg-emerald-100"
+              >
+                Gọi Video
+              </Button>
             )}
             <Button onClick={() => setDetailModalOpen(false)} className="!rounded-xl">
               Đóng
@@ -486,5 +564,19 @@ function SyncOutlinedSpin() {
     <span className="inline-block animate-spin mr-1">
       <ClockCircleOutlined />
     </span>
+  );
+}
+
+export default function OrdersPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-[#F8F9FA] flex items-center justify-center">
+          <Spin size="large" />
+        </div>
+      }
+    >
+      <OrdersPageContent />
+    </Suspense>
   );
 }
