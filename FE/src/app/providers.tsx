@@ -1,9 +1,18 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { ConfigProvider, App as AntdApp } from 'antd';
 import viVN from 'antd/locale/vi_VN';
 import { Colors } from '@/lib/colors';
+import { IncomingCallListener } from '@/features/video-call';
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', (event) => {
+    if (event.message?.includes("reading 'startTime'") || event.message?.includes('reportAllChanges')) {
+      event.preventDefault();
+    }
+  });
+}
 
 const theme = {
   token: {
@@ -44,7 +53,10 @@ const theme = {
 export default function AntdProvider({ children }: { children: ReactNode }) {
   return (
     <ConfigProvider locale={viVN} theme={theme}>
-      <AntdApp>{children}</AntdApp>
+      <AntdApp>
+        {children}
+        <IncomingCallListener />
+      </AntdApp>
     </ConfigProvider>
   );
 }

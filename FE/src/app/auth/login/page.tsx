@@ -17,14 +17,32 @@ import { useAuthStore } from '@/lib/auth.store';
 export default function LoginPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
+  const user = useAuthStore((state) => state.user);
   const setAuth = useAuthStore((state) => state.setAuth);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const { message } = App.useApp();
 
-  // Guard: đã đăng nhập → về coming-soon
+  // Guard: đã đăng nhập → chuyển đến trang tương ứng
   useEffect(() => {
-    if (isAuthenticated) router.replace('/coming-soon');
-  }, [isAuthenticated, router]);
+    if (isAuthenticated) {
+      const redirectParam = typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('redirect')
+        : null;
+
+      if (redirectParam && redirectParam.startsWith('/')) {
+        router.replace(redirectParam);
+        return;
+      }
+
+      if (user?.role === 'ADMIN') {
+        router.replace('/admin/verify/providers');
+      } else if (user?.role === 'PROVIDER') {
+        router.replace('/provider/dashboard');
+      } else {
+        router.replace('/');
+      }
+    }
+  }, [isAuthenticated, user, router]);
 
   const onFinish = async (values: LoginPayload) => {
     try {
@@ -34,19 +52,29 @@ export default function LoginPage() {
         password: values.password,
       });
 
-      // Chặn đăng nhập đối với tài khoản Customer (cổng này dành riêng cho Provider)
-      if (res.account?.role === 'CUSTOMER') {
-        message.error('Tài khoản Khách hàng (Customer) không có quyền truy cập cổng Provider. Vui lòng đăng nhập trên ứng dụng dành cho khách hàng.');
-        return;
-      }
-
       setAuth(res.account, {
         accessToken: res.accessToken,
         refreshToken: res.refreshToken,
       });
 
       message.success('Đăng nhập thành công!');
-      router.push('/coming-soon');
+
+      const redirectParam = typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('redirect')
+        : null;
+
+      if (redirectParam && redirectParam.startsWith('/')) {
+        router.push(redirectParam);
+        return;
+      }
+
+      if (res.account?.role === 'PROVIDER') {
+        router.push('/provider/dashboard');
+      } else if (res.account?.role === 'ADMIN') {
+        router.push('/admin/verify/providers');
+      } else {
+        router.push('/');
+      }
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { message?: string }; status?: number } };
       const rawMsg = axiosErr.response?.data?.message;

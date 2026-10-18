@@ -33,3 +33,65 @@ html, body {
 ::-webkit-scrollbar-thumb:hover {
   background: #94A3B8;
 }
+
+/* ===== Stream Video SDK — Dark Theme Overrides =====
+   Fixes: white text on dark menus, proper contrast in overlays
+   ===================================================== */
+
+/* Context menus & dropdowns */
+.str-video__generic-menu,
+.str-video__menu-toggle__popup {
+  background-color: #1e1b2e !important;
+  border: 1px solid rgba(255,255,255,0.1) !important;
+  color: #ffffff !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;
+}
+
+.str-video__generic-menu button,
+.str-video__generic-menu [role="menuitem"],
+.str-video__menu-toggle__popup button,
+.str-video__menu-toggle__popup [role="menuitem"] {
+  color: #ffffff !important;
+  background: transparent !important;
+}
+
+.str-video__generic-menu button:hover,
+.str-video__generic-menu [role="menuitem"]:hover,
+.str-video__menu-toggle__popup button:hover,
+.str-video__menu-toggle__popup [role="menuitem"]:hover {
+  background-color: rgba(255,255,255,0.08) !important;
+  color: #ffffff !important;
+}
+
+/* Notification / toast overlays */
+.str-video__notification,
+.str-video__call-controls__button-caption {
+  color: #ffffff !important;
+}
+
+/* Call stats & info panels */
+.str-video__call-stats {
+  color: #e2e8f0 !important;
+  background-color: rgba(15,14,26,0.95) !important;
+}
+
+/* Ẩn triệt để UI overlay mặc định của Stream Video SDK để không bị đè 2 lần tên */
+.str-video__participant-details,
+.str-video__participant-view__overlay,
+.str-video__participant-view__name,
+.str-video__menu-toggle,
+.str-video__participant-view [class*="participant-details"],
+.str-video__participant-view [class*="menu-toggle"] {
+  display: none !important;
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/* Device selector labels */
+.str-video__device-settings label,
+.str-video__device-settings select {
+  color: #ffffff !important;
+  background-color: #1e1b2e !important;
+}

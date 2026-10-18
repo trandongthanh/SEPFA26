@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   AppstoreOutlined,
@@ -37,7 +37,7 @@ import {
 import ProviderHeader from '../components/ProviderHeader';
 import ProviderSidebar from '../components/ProviderSidebar';
 
-export default function PackagesPage() {
+function PackagesPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [mounted, setMounted] = useState(false);
@@ -453,5 +453,19 @@ export default function PackagesPage() {
         </Modal>
       </div>
     </div>
+  );
+}
+
+export default function PackagesPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-[#F8F9FA] flex items-center justify-center">
+          <Spin size="large" />
+        </div>
+      }
+    >
+      <PackagesPageContent />
+    </Suspense>
   );
 }
