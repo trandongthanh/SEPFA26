@@ -1,0 +1,31 @@
+{
+  "cli": {
+    "version": ">= 12.0.0"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://192.168.88.128:3001/api/v1",
+        "EXPO_PUBLIC_FE_URL": "https://discussed-gale-hiring-elizabeth.trycloudflare.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "355803384691-v7qukd44lesps02dbpv7s4tostiidhdv.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "355803384691-fa2oamlaggjv9jmumqh0850hn5r7sptd.apps.googleusercontent.com"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

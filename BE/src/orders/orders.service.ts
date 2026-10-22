@@ -9,13 +9,14 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, In, Repository } from 'typeorm';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { PaymentComponent } from '../payments/entities/payment-component.entity';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { ServicePackage } from '../providers/entities/service-package.entity';
 import { DistanceService } from './distance.service';
 import { PlantRecognitionService } from './plant-recognition.service';
+import { ContractTemplateService } from './contract-template.service';
 import { AddInitialPhotoDto } from './dto/add-initial-photo.dto';
 import { CreateOrderDto, CreateOrderPlantDto } from './dto/create-order.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
@@ -58,6 +59,7 @@ export class OrdersService {
     private readonly packageRepo: Repository<ServicePackage>,
     private readonly distanceService: DistanceService,
     private readonly plantRecognition: PlantRecognitionService,
+    private readonly contractTemplate: ContractTemplateService,
     private readonly dataSource: DataSource,
   ) {}
 
@@ -365,13 +367,34 @@ export class OrdersService {
       relations: {
         servicePackage: true,
         customer: { account: true },
+        provider: true,
       },
     });
     return {
-      data: data.map((order) => ({
+      // KHÔNG spread `customer`/`provider` nguyên entity sang bên kia của đơn:
+      // customer kèm Account (passwordHash, SĐT mã hoá...), provider kèm STK ngân hàng,
+      // ảnh CCCD, GPKD, ghi chú admin. Chỉ giữ field hiển thị:
+      // - FE provider đọc `customer.account.fullName`;
+      // - Mobile customer đọc `provider.gardenName` (= displayName của vườn).
+      data: data.map(({ customer, provider, ...order }) => ({
         ...order,
+        customer: customer
+          ? {
+              id: customer.id,
+              account: { fullName: customer.account?.fullName ?? null },
+            }
+          : null,
+        provider: provider
+          ? {
+              id: provider.id,
+              displayName: provider.displayName,
+              gardenName: provider.displayName,
+              address: provider.address,
+            }
+          : null,
         servicePackageName: order.servicePackage?.name ?? null,
-        customerName: order.customer?.account?.fullName ?? null,
+        customerName: customer?.account?.fullName ?? null,
+        gardenName: provider?.displayName ?? null,
       })),
       total,
       page,
@@ -448,10 +471,14 @@ export class OrdersService {
 
     return {
       ...order,
-      plants: order.plants.map((plant) => ({
-        ...plant,
-        initialPhotos: photos.filter((photo) => photo.plantId === plant.id),
-      })),
+      plants: order.plants.map((plant) => {
+        const plantPhotos = photos.filter((photo) => photo.plantId === plant.id);
+        return {
+          ...plant,
+          initialPhotos: plantPhotos,
+          photos: plantPhotos,
+        };
+      }),
       negotiation,
       agreement: agreement
         ? {
@@ -480,6 +507,123 @@ export class OrdersService {
           }
         : null,
     };
+  }
+
+  /**
+   * GET /orders/:id/agreement/contract — hợp đồng điện tử đầy đủ.
+   * Trả về JSON gồm: thông tin hai bên, danh sách cây, mức bồi thường 120%,
+   * 9 điều khoản, chính sách bồi thường, chữ ký điện tử, và HTML hợp đồng.
+   */
+  async getContractDetail(accountId: string, role: string, orderId: string) {
+    // 1. Kiểm tra quyền truy cập (chỉ 2 bên trong đơn)
+    const order = await this.getOrderAsParty(accountId, role, orderId);
+
+    // 2. Load agreement
+    const agreement = await this.dataSource
+      .getRepository(ServiceAgreement)
+      .findOne({ where: { serviceOrderId: order.id } });
+    if (!agreement) {
+      throw new NotFoundException('AGREEMENT_NOT_FOUND');
+    }
+
+    // 3. Load plants, initial photos, customer, provider, signatures song song
+    const plants = await this.plantRepo.find({
+      where: { serviceOrderId: order.id },
+      order: { createdAt: 'ASC' },
+    });
+
+    const plantIds = plants.map((p) => p.id);
+    const photos =
+      plantIds.length > 0
+        ? await this.photoRepo.find({ where: { plantId: In(plantIds) } })
+        : [];
+
+    const photosByPlantId = new Map<string, string[]>();
+    for (const ph of photos) {
+      const list = photosByPlantId.get(ph.plantId) ?? [];
+      list.push(ph.photoUrl);
+      photosByPlantId.set(ph.plantId, list);
+    }
+
+    const [customer, provider, allSignatures, servicePackage] = await Promise.all([
+      this.customerRepo.findOne({
+        where: { id: order.customerId },
+        relations: { account: true },
+      }),
+      this.providerRepo.findOne({
+        where: { id: order.providerId },
+        relations: { account: true },
+      }),
+      this.agreementSignatureRepo.find({
+        where: { agreementId: agreement.id },
+        order: { signedAt: 'ASC' },
+      }),
+      this.packageRepo.findOne({ where: { id: order.servicePackageId } }),
+    ]);
+
+    if (!customer || !provider) {
+      throw new InternalServerErrorException('PARTY_PROFILE_NOT_FOUND');
+    }
+
+    // Ưu tiên chữ ký giai đoạn bàn giao thực tế (HANDOVER) nếu có
+    const handoverSigs = allSignatures.filter((s) => s.signPhase === 'HANDOVER');
+    const effectiveSignatures =
+      handoverSigs.length > 0
+        ? handoverSigs
+        : allSignatures.filter((s) => s.signPhase === 'ONLINE');
+
+    // 4. Delegate cho ContractTemplateService build toàn bộ
+    return this.contractTemplate.buildContractData({
+      agreement: {
+        agreementNo: agreement.agreementNo,
+        status: agreement.status,
+        termsSnapshot: agreement.termsSnapshot,
+        createdAt: agreement.createdAt,
+      },
+      order: {
+        orderCode: order.orderCode,
+        basePriceSnapshot: order.basePriceSnapshot,
+        pickupFeeSnapshot: order.pickupFeeSnapshot,
+        plantCount: order.plantCount,
+        provisionalTotal: order.provisionalTotal,
+        durationDaysSnapshot: order.durationDaysSnapshot,
+        reportFrequencySnapshot: order.reportFrequencySnapshot,
+        scheduledPickupAt: order.scheduledPickupAt,
+        pickupAddress: order.pickupAddress,
+      },
+      plants: plants.map((p) => ({
+        name: p.name,
+        speciesName: p.speciesName,
+        declaredValue: p.declaredValue,
+        isValueDeclared: p.isValueDeclared,
+        initialPhotos: photosByPlantId.get(p.id) ?? [],
+      })),
+      servicePackageName: servicePackage?.name ?? 'N/A',
+      customerParty: {
+        fullName: customer.account?.fullName ?? 'Chưa cung cấp',
+        address: customer.address ?? customer.defaultPickupAddress ?? 'Chưa cung cấp',
+        phone: customer.account?.phone ?? 'Chưa cung cấp',
+        identityNumber: 'Chưa cung cấp',
+        identityDocuments: [customer.cccdFrontUrl, customer.cccdBackUrl, customer.selfieWithIdUrl].filter(
+          (url): url is string => Boolean(url),
+        ),
+      },
+      providerParty: {
+        fullName: provider.account?.fullName ?? provider.displayName ?? 'Chưa cung cấp',
+        address: provider.address ?? 'Chưa cung cấp',
+        phone: provider.account?.phone ?? 'Chưa cung cấp',
+        identityNumber: 'Chưa cung cấp',
+        identityDocuments: [provider.cccdFrontUrl, provider.cccdBackUrl].filter(
+          (url): url is string => Boolean(url),
+        ),
+      },
+      signatures: effectiveSignatures.map((s) => ({
+        signerRole: s.signerRole,
+        signedAt: s.signedAt,
+        signatureHash: s.signatureHash,
+        ipAddress: s.ipAddress,
+      })),
+    });
   }
 
   /**
@@ -749,14 +893,7 @@ export class OrdersService {
   }
 
   private contractClauses() {
-    return [
-      'Nhà vườn thực hiện chăm sóc theo thông tin đơn và tình trạng cây được hai bên xác nhận tại thời điểm ký.',
-      'Khách cam kết cây, chủng loại, số lượng, giá trị khai báo, ảnh ban đầu và tình trạng thực tế khi bàn giao là trung thực.',
-      'Nếu cây hoặc tình trạng thực tế khác đáng kể với ảnh ban đầu, thông tin mô tả hoặc nội dung đã cung cấp cho Nhà vườn, Nhà vườn có quyền từ chối nhận cây và hủy đơn.',
-      'Khi Nhà vườn từ chối nhận vì thông tin hoặc tình trạng cây không đúng như đã cung cấp, phí dịch vụ đã thanh toán sẽ được hoàn lại cho Khách; phí vận chuyển/lấy cây theo đơn do Khách chịu.',
-      'Mọi thay đổi về giá, địa điểm nhận cây hoặc ghi chú chỉ có hiệu lực khi được ghi nhận trong đơn và snapshot hợp đồng trước khi hai bên ký.',
-      'Hai bên ưu tiên trao đổi và cung cấp bằng chứng qua hệ thống; tranh chấp được xử lý theo quy trình tranh chấp của LanCare.',
-    ];
+    return this.contractTemplate.generateClauses();
   }
 
   private waitingFor(signedRoles: string[]) {
