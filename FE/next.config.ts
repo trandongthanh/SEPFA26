@@ -1,5 +1,4 @@
 import type { NextConfig } from 'next';
-import path from 'path';
 
 // Security headers áp dụng cho mọi route
 const securityHeaders = [
@@ -32,8 +31,6 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   devIndicators: false,
-  // Fix: monorepo có nhiều lockfile → chỉ rõ root để Next.js không nhầm
-  outputFileTracingRoot: path.join(__dirname, '../../'),
   images: {
     remotePatterns: [
       {
