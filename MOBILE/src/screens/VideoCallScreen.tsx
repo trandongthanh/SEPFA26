@@ -338,15 +338,21 @@ export const VideoCallScreen: React.FC<VideoCallScreenProps> = ({
       <View style={styles.bottomBar}>
         {/* Toggle Mic */}
         <TouchableOpacity
+          activeOpacity={0.7}
           style={[styles.controlBtn, isMuted && styles.controlBtnInactive]}
           onPress={() => {
             webViewRef.current?.injectJavaScript(`
               (function() {
-                if (window.lancareToggleMic) {
-                  window.lancareToggleMic();
-                } else if (window.lancareEnableMedia) {
-                  window.lancareEnableMedia();
-                }
+                try {
+                  if (window.lancareToggleMic) {
+                    window.lancareToggleMic();
+                  } else if (window.lancareEnableMedia) {
+                    window.lancareEnableMedia();
+                  } else {
+                    var btn = document.querySelector('[data-testid="mute-mic-button"]');
+                    if (btn) btn.click();
+                  }
+                } catch(e) {}
               })();
               true;
             `);
@@ -360,21 +366,27 @@ export const VideoCallScreen: React.FC<VideoCallScreenProps> = ({
         </TouchableOpacity>
 
         {/* End Call Button */}
-        <TouchableOpacity style={styles.endCallBtn} onPress={handleEndCall}>
+        <TouchableOpacity activeOpacity={0.7} style={styles.endCallBtn} onPress={handleEndCall}>
           <Ionicons name="call" size={28} color="#FFFFFF" style={{ transform: [{ rotate: '135deg' }] }} />
         </TouchableOpacity>
 
         {/* Toggle Camera */}
         <TouchableOpacity
+          activeOpacity={0.7}
           style={[styles.controlBtn, isVideoOff && styles.controlBtnInactive]}
           onPress={() => {
             webViewRef.current?.injectJavaScript(`
               (function() {
-                if (window.lancareToggleCam) {
-                  window.lancareToggleCam();
-                } else if (window.lancareEnableMedia) {
-                  window.lancareEnableMedia();
-                }
+                try {
+                  if (window.lancareToggleCam) {
+                    window.lancareToggleCam();
+                  } else if (window.lancareEnableMedia) {
+                    window.lancareEnableMedia();
+                  } else {
+                    var btn = document.querySelector('[data-testid="toggle-cam-button"]');
+                    if (btn) btn.click();
+                  }
+                } catch(e) {}
               })();
               true;
             `);
@@ -512,6 +524,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#120F20',
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.08)',
+    zIndex: 9999,
+    elevation: 20,
   },
   controlBtn: {
     width: 52,
@@ -520,6 +534,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 10000,
+    elevation: 25,
   },
   controlBtnInactive: {
     backgroundColor: 'rgba(239, 68, 68, 0.2)',

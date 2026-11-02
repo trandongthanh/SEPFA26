@@ -290,13 +290,31 @@ const NoVideoFallback = React.forwardRef<
           {participant.name || participant.userId}
         </span>
         {isCamOff ? (
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/40 border border-white/10">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="1" y1="1" x2="23" y2="23" />
-              <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34m-7.72-2.06a4 4 0 1 1-5.56-5.56" />
-            </svg>
-            <span className="text-white/50 text-[10px]">Camera tắt</span>
-          </div>
+          participant.isLocalParticipant ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (typeof window !== 'undefined' && (window as any).lancareToggleCam) {
+                  (window as any).lancareToggleCam();
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#6027D2] hover:bg-[#7C3AED] active:scale-95 text-white text-xs font-semibold shadow-lg shadow-[#6027D2]/40 pointer-events-auto cursor-pointer transition-all border border-white/20"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="23 7 16 12 23 17 23 7" />
+                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+              </svg>
+              <span>Chạm để Bật Camera</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/40 border border-white/10">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="1" y1="1" x2="23" y2="23" />
+                <path d="M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34m-7.72-2.06a4 4 0 1 1-5.56-5.56" />
+              </svg>
+              <span className="text-white/50 text-[10px]">Camera tắt</span>
+            </div>
+          )
         ) : (
           <span className="text-white/40 text-[10px]">Đang tải video...</span>
         )}
