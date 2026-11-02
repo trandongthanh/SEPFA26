@@ -164,7 +164,11 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
     (window as any).lancareToggleMic = async () => {
       try {
         if (call) {
-          await call.microphone.toggle();
+          if (call.microphone.state.status === 'enabled') {
+            await call.microphone.disable();
+          } else {
+            await call.microphone.enable();
+          }
         } else {
           const btn = document.querySelector('[data-testid="mute-mic-button"]') as HTMLButtonElement;
           if (btn) btn.click();
@@ -187,7 +191,11 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
     (window as any).lancareToggleCam = async () => {
       try {
         if (call) {
-          await call.camera.toggle();
+          if (call.camera.state.status === 'enabled') {
+            await call.camera.disable();
+          } else {
+            await call.camera.enable();
+          }
         } else {
           const btn = document.querySelector('[data-testid="toggle-cam-button"]') as HTMLButtonElement;
           if (btn) btn.click();
