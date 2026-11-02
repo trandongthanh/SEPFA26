@@ -12,7 +12,7 @@ import {
   type VideoCallMovedPayload,
 } from '@/lib/video-call.api';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || 'https://lancare-hub-api.onrender.com';
 
 /**
  * Hook kết nối WebSocket tới namespace /ws để lắng nghe sự kiện cuộc gọi video (§5.3 bản chốt).

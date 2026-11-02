@@ -73,6 +73,16 @@ export interface OrderItem {
   servicePackage?: ServicePackageInfo;
   provider?: ProviderProfileInfo;
   plants?: OrderPlantItem[];
+  agreement?: {
+    id: string;
+    agreementNo: string;
+    status: string;
+    signatures?: { id?: string; signerRole: string; signedAt: string }[];
+  } | null;
+  handover?: {
+    status: string;
+    customerConfirmDueAt?: string;
+  } | null;
 }
 
 export interface PaginatedOrdersResponse {
@@ -154,4 +164,44 @@ export const orderService = {
     const response = await apiClient.get<OrderItem>(`/orders/${orderId}`);
     return response.data;
   },
+
+  /**
+   * Ký hợp đồng điện tử online (POST /orders/:orderId/agreement/sign)
+   */
+  async signAgreement(orderId: string): Promise<any> {
+    const response = await apiClient.post(`/orders/${orderId}/agreement/sign`, {});
+    return response.data;
+  },
+
+  /**
+   * Xem hợp đồng điện tử đầy đủ (GET /orders/:orderId/agreement/contract)
+   */
+  async getContract(orderId: string): Promise<any> {
+    const response = await apiClient.get(`/orders/${orderId}/agreement/contract`);
+    return response.data;
+  },
+
+  /**
+   * Lấy mã VietQR thanh toán (POST /orders/:orderId/payment/qr)
+   */
+  async getPaymentQr(orderId: string): Promise<{
+    qrImageUrl: string;
+    bankBin: string;
+    bankAccountNumber: string;
+    bankAccountName: string;
+    amount: string | number;
+    transferContent: string;
+  }> {
+    const response = await apiClient.post(`/orders/${orderId}/payment/qr`);
+    return response.data;
+  },
+
+  /**
+   * Khách xác nhận bàn giao cây (POST /orders/:orderId/handover/confirm)
+   */
+  async confirmHandover(orderId: string): Promise<any> {
+    const response = await apiClient.post(`/orders/${orderId}/handover/confirm`, {});
+    return response.data;
+  },
 };
+
