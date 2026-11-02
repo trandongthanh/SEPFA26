@@ -58,17 +58,15 @@ class SocketService {
     });
 
     s.on('connect_error', async (err: any) => {
-      console.warn('[SocketService] Connect error:', err?.message || err);
-      // Nếu lỗi UNAUTHORIZED do token hết hạn, chỉ refresh 1 lần duy nhất để tránh 429
+      // Nếu lỗi UNAUTHORIZED (token hỏng hoặc không khớp server):
       if (err?.message === 'UNAUTHORIZED' || err?.message?.includes('unauthorized')) {
+        s.disconnect(); // Ngắt kết nối ngay lập tức, tránh reconnect lặp đi lặp lại
+        this.socket = null;
+
         if (this.isRefreshing) return;
         this.isRefreshing = true;
 
         try {
-          if (this.socket) {
-            this.socket.disconnect();
-            this.socket = null;
-          }
           const refreshToken = await storage.getRefreshToken();
           if (refreshToken) {
             const res = await axios.post(`${API_BASE_URL}/auth/refresh`, { refreshToken });
@@ -77,11 +75,15 @@ class SocketService {
             this.connect(accessToken);
           }
         } catch (refreshErr) {
-          console.warn('[SocketService] Auto-refresh token failed:', refreshErr);
+          console.warn('[SocketService] Auto-refresh token failed, clearing dead token.');
+          await storage.clearAll();
         } finally {
           this.isRefreshing = false;
         }
+        return;
       }
+
+      console.warn('[SocketService] Connect error:', err?.message || err);
     });
 
     // 1. Cuộc gọi đến (bắt đầu đổ chuông)

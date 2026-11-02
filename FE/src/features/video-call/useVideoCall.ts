@@ -96,7 +96,16 @@ export function useVideoCall({
       streamCall.on('call.ended', handleCallEnded);
 
       // 4) Tham gia phòng — create: false vì BE đã tạo cuộc gọi trên GetStream
-      await streamCall.join({ create: false });
+      // Cho phép timeout 4s: nếu join() bị nghẽn (do WebView xin quyền media ngầm), vẫn chuyển UI vào phòng gọi!
+      try {
+        await Promise.race([
+          streamCall.join({ create: false }),
+          new Promise((resolve) => setTimeout(resolve, 4000)),
+        ]);
+      } catch (joinErr) {
+        console.warn('[useVideoCall] join call warning:', joinErr);
+      }
+
       setIsJoined(true);
       setIsJoining(false);
 

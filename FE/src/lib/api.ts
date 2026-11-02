@@ -51,7 +51,7 @@ export interface GoogleAuthResponse extends AuthTokensResponse {
 // ===== Axios instance duy nhất =====
 
 export const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001',
+  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? 'https://lancare-hub-api.onrender.com',
   timeout: 15_000,
   headers: { 'Content-Type': 'application/json' },
 });
@@ -84,7 +84,7 @@ api.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
     if (!isRefreshing) {
       isRefreshing = true;
       try {
-        const baseURL = config.baseURL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3001';
+        const baseURL = config.baseURL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? 'https://lancare-hub-api.onrender.com';
         const res = await axios.post<AuthTokensResponse>(`${baseURL}/api/v1/auth/refresh`, { refreshToken });
         accessToken = res.data.accessToken;
         setTokens({ accessToken: res.data.accessToken, refreshToken: res.data.refreshToken });

@@ -219,6 +219,7 @@ export const VideoCallScreen: React.FC<VideoCallScreenProps> = ({
   const sessionHash = session ? encodeURIComponent(JSON.stringify(session)) : '';
   const tokenQuery = authToken ? `&token=${encodeURIComponent(authToken)}` : '';
   const webCallUrl = `${FE_WEB_URL}/calls/${callType}/${callId}?isMobile=true${tokenQuery}${sessionHash ? `#session=${sessionHash}` : ''}`;
+  console.log('[VideoCallScreen] webCallUrl =', webCallUrl);
 
   if (loading) {
     return (
@@ -296,6 +297,8 @@ export const VideoCallScreen: React.FC<VideoCallScreenProps> = ({
           allowsInlineMediaPlayback={true}
           mediaPlaybackRequiresUserAction={false}
           mediaCapturePermissionGrantType="grant"
+          androidLayerType="hardware"
+          userAgent="Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
           originWhitelist={['*']}
           onMessage={(event) => {
             try {

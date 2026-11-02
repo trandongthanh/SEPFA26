@@ -6,7 +6,12 @@ import Constants from 'expo-constants';
 
 // Tự động lấy IP máy tính từ Expo Host URI để điện thoại thật kết nối Backend chuẩn xác
 function getAutoDevApiUrl(): string {
-  // 1. Nếu đang chạy trên Expo Go / Dev Client: Lấy IP động từ Metro Bundler
+  // 1. Ưu tiên biến môi trường EXPO_PUBLIC_API_URL nếu có (ví dụ trỏ tới Backend Render)
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL;
+  }
+
+  // 2. Nếu đang chạy trên Expo Go / Dev Client: Lấy IP động từ Metro Bundler
   const hostUri = Constants.expoConfig?.hostUri || (Constants as any).manifest?.debuggerHost;
   if (hostUri) {
     const hostIp = hostUri.split(':')[0];
@@ -15,14 +20,8 @@ function getAutoDevApiUrl(): string {
     }
   }
 
-  // 2. Nếu là bản build độc lập (APK), đọc từ biến môi trường
-  if (process.env.EXPO_PUBLIC_API_URL) {
-    return process.env.EXPO_PUBLIC_API_URL;
-  }
-
-  // 3. IP LAN hiện tại của máy tính
-  const defaultHost = '192.168.88.128';
-  return `http://${defaultHost}:3001/api/v1`;
+  // 3. Backend Render đã deploy chính thức
+  return 'https://lancare-hub-api.onrender.com/api/v1';
 }
 
 const rawBaseUrl = getAutoDevApiUrl();
@@ -34,11 +33,9 @@ export const API_BASE_URL = rawBaseUrl.endsWith('/api/v1')
 export const BACKEND_WS_URL = API_BASE_URL.replace(/\/api\/v1\/?$/, '') + '/ws';
 
 // FE Web URL for Video Calls room
-// LƯU Ý: Android WebView CHỈ hỗ trợ navigator.mediaDevices.getUserMedia trên HTTPS hoặc localhost (Secure Context).
-// Kết nối qua HTTPS Cloudflare Tunnel giúp bật Camera & Micro 100% không bị lỗi undefined getUserMedia.
 export const FE_WEB_URL =
   process.env.EXPO_PUBLIC_FE_URL ||
-  'https://discussed-gale-hiring-elizabeth.trycloudflare.com';
+  'https://lancare-hub-xi.vercel.app';
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -90,7 +87,18 @@ apiClient.interceptors.response.use(
           return apiClient(originalRequest);
         }
       } catch (refreshErr) {
-        // Refresh token expired or invalid
+        // Refresh token expired or invalid -> clear tokens and redirect to Login
+        try {
+          const { storage } = await import('../utils/storage');
+          await storage.clearAll();
+          const { navigationRef } = await import('../navigation/AppNavigator');
+          if (navigationRef.isReady()) {
+            navigationRef.reset({
+              index: 0,
+              routes: [{ name: 'Login' }],
+            });
+          }
+        } catch (e) {}
       }
     }
     return Promise.reject(error);

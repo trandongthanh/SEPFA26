@@ -239,6 +239,40 @@ export const providerApi = {
     });
     return res.data;
   },
+
+  // Bắt đầu phiên bàn giao cây (POST /api/v1/orders/:orderId/handover/start)
+  startHandover: async (orderId: string) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/handover/start`);
+    return res.data;
+  },
+
+  // Thẩm định cây tại vườn (POST /api/v1/orders/:orderId/handover/plants/:plantId/assess)
+  assessPlant: async (
+    orderId: string,
+    plantId: string,
+    payload: {
+      checklist: Record<string, unknown>;
+      decision: 'ACCEPT' | 'ACCEPT_HIGH_RISK' | 'ADJUST' | 'REJECT';
+      isHighRisk: boolean;
+      photos: { photoUrl: string; caption?: string; gpsLat?: number; gpsLng?: number }[];
+      note?: string;
+    }
+  ) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/handover/plants/${plantId}/assess`, payload);
+    return res.data;
+  },
+
+  // Hoàn tất thẩm định bàn giao (POST /api/v1/orders/:orderId/handover/complete)
+  completeHandover: async (orderId: string, payload?: { proposedFinalTotal?: string }) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/handover/complete`, payload || {});
+    return res.data;
+  },
+
+  // Xem hợp đồng điện tử đầy đủ (GET /api/v1/orders/:orderId/agreement/contract)
+  getContract: async (orderId: string) => {
+    const res = await api.get(`/api/v1/orders/${orderId}/agreement/contract`);
+    return res.data;
+  },
 };
 
 

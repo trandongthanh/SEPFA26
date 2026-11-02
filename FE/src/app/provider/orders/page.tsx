@@ -3,6 +3,7 @@
 import React, { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
+  AuditOutlined,
   CalendarOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
@@ -14,10 +15,11 @@ import {
   FileProtectOutlined,
   FileTextOutlined,
   PictureOutlined,
+  SafetyCertificateOutlined,
   UserOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Image, Modal, Segmented, Spin, Tag, message } from 'antd';
+import { Avatar, Button, Image, Input, Modal, Radio, Segmented, Select, Spin, Tag, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
 import { videoCallApi } from '@/lib/video-call.api';
@@ -40,6 +42,31 @@ function OrdersPageContent() {
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [orderDetail, setOrderDetail] = useState<any | null>(null);
+
+  // State for Handover Assessment Modal
+  const [handoverModalOpen, setHandoverModalOpen] = useState(false);
+  const [handoverLoading, setHandoverLoading] = useState(false);
+  const [handoverOrder, setHandoverOrder] = useState<any | null>(null);
+  const [plantForms, setPlantForms] = useState<
+    Record<
+      string,
+      {
+        decision: 'ACCEPT' | 'ACCEPT_HIGH_RISK' | 'ADJUST' | 'REJECT';
+        isHighRisk: boolean;
+        note: string;
+        photoUrl: string;
+        caption: string;
+        saved?: boolean;
+      }
+    >
+  >({});
+  const [savingPlantId, setSavingPlantId] = useState<string | null>(null);
+  const [completingHandover, setCompletingHandover] = useState(false);
+
+  // State for Contract Modal
+  const [contractModalOpen, setContractModalOpen] = useState(false);
+  const [contractLoading, setContractLoading] = useState(false);
+  const [contractData, setContractData] = useState<any | null>(null);
 
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
 
@@ -125,6 +152,118 @@ function OrdersPageContent() {
       message.error(Array.isArray(msg) ? msg.join(', ') : msg);
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  // Bắt đầu phiên bàn giao cây (PAID -> HANDOVER_IN_PROGRESS)
+  const handleStartHandover = async (orderId: string) => {
+    setActionLoading(orderId);
+    try {
+      await providerApi.startHandover(orderId);
+      message.success('Đã mở phiên tiếp nhận bàn giao cây! Vui lòng tiến hành thẩm định từng cây.');
+      loadData(activeTab);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || 'Không thể bắt đầu bàn giao.';
+      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Mở modal thẩm định bàn giao
+  const handleOpenHandoverModal = async (orderId: string) => {
+    setHandoverModalOpen(true);
+    setHandoverLoading(true);
+    try {
+      const detail = await providerApi.getOrderDetail(orderId);
+      setHandoverOrder(detail);
+      const forms: Record<string, any> = {};
+      detail.plants?.forEach((p: any) => {
+        forms[p.id] = {
+          decision: p.handoverDecision || 'ACCEPT',
+          isHighRisk: p.isHighRisk || false,
+          note: p.handoverNote || '',
+          photoUrl: p.initialPhotos?.[0]?.photoUrl || '',
+          caption: 'Ảnh thẩm định hiện trạng tại vườn',
+          saved: !!p.handoverDecision,
+        };
+      });
+      setPlantForms(forms);
+    } catch (err: any) {
+      message.error('Không thể tải chi tiết đơn hàng để thẩm định.');
+    } finally {
+      setHandoverLoading(false);
+    }
+  };
+
+  // Lưu thẩm định cho 1 cây
+  const handleSavePlantAssessment = async (plantId: string) => {
+    if (!handoverOrder) return;
+    const form = plantForms[plantId];
+    if (!form) return;
+    if (!form.photoUrl || !form.photoUrl.trim()) {
+      message.warning('Vui lòng cung cấp link ảnh hiện trạng thẩm định.');
+      return;
+    }
+
+    setSavingPlantId(plantId);
+    try {
+      await providerApi.assessPlant(handoverOrder.id, plantId, {
+        checklist: {
+          visualCheck: 'PASSED',
+          rootCondition: 'CHECKED',
+        },
+        decision: form.decision,
+        isHighRisk: form.decision === 'ACCEPT_HIGH_RISK',
+        note: form.note || undefined,
+        photos: [
+          {
+            photoUrl: form.photoUrl.trim(),
+            caption: form.caption || 'Ảnh thẩm định hiện trạng tại vườn',
+          },
+        ],
+      });
+      message.success('Đã lưu kết quả thẩm định chậu cây này!');
+      setPlantForms((prev) => ({
+        ...prev,
+        [plantId]: { ...prev[plantId], saved: true },
+      }));
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || 'Không thể lưu thẩm định cây.';
+      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+    } finally {
+      setSavingPlantId(null);
+    }
+  };
+
+  // Hoàn tất thẩm định và bàn giao (HANDOVER_IN_PROGRESS -> HANDOVER_AWAITING_CONFIRM)
+  const handleCompleteHandover = async () => {
+    if (!handoverOrder) return;
+    setCompletingHandover(true);
+    try {
+      await providerApi.completeHandover(handoverOrder.id);
+      message.success('Đã hoàn tất thẩm định! Đơn hàng đang chờ khách hàng xác nhận bàn giao.');
+      setHandoverModalOpen(false);
+      loadData(activeTab);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || 'Không thể hoàn tất thẩm định bàn giao.';
+      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+    } finally {
+      setCompletingHandover(false);
+    }
+  };
+
+  // Mở modal xem chi tiết hợp đồng điện tử
+  const handleOpenContractModal = async (orderId: string) => {
+    setContractModalOpen(true);
+    setContractLoading(true);
+    try {
+      const data = await providerApi.getContract(orderId);
+      setContractData(data);
+    } catch (err: any) {
+      message.error('Không thể tải chi tiết hợp đồng.');
+    } finally {
+      setContractLoading(false);
     }
   };
 
@@ -227,6 +366,12 @@ function OrdersPageContent() {
             Đang bàn giao cây
           </Tag>
         );
+      case 'HANDOVER_AWAITING_CONFIRM':
+        return (
+          <Tag color="volcano" icon={<ClockCircleOutlined />}>
+            Chờ khách xác nhận bàn giao
+          </Tag>
+        );
       case 'IN_CARE':
         return (
           <Tag color="purple" icon={<SyncOutlinedSpin />}>
@@ -284,6 +429,9 @@ function OrdersPageContent() {
               options={[
                 { label: 'Chờ duyệt đặt lịch', value: 'PENDING_PROVIDER' },
                 { label: 'Chờ ký hợp đồng', value: 'AGREEMENT_PENDING' },
+                { label: 'Đã thanh toán', value: 'PAID' },
+                { label: 'Đang bàn giao cây', value: 'HANDOVER_IN_PROGRESS' },
+                { label: 'Chờ khách xác nhận', value: 'HANDOVER_AWAITING_CONFIRM' },
                 { label: 'Đang chăm sóc', value: 'IN_CARE' },
                 { label: 'Hoàn thành', value: 'COMPLETED' },
                 { label: 'Tất cả đơn', value: 'ALL' },
@@ -405,6 +553,45 @@ function OrdersPageContent() {
                           className="!h-9 !px-4 !rounded-xl !bg-[#D97706] hover:!bg-[#B45309] !font-semibold text-xs shadow-sm flex items-center gap-1 text-white"
                         >
                           Ký hợp đồng online
+                        </Button>
+                      )}
+
+                      {order.status === 'PAID' && (
+                        <Button
+                          type="primary"
+                          icon={<EnvironmentOutlined />}
+                          onClick={() => handleStartHandover(order.id)}
+                          loading={actionLoading === order.id}
+                          className="!h-9 !px-4 !rounded-xl !bg-[#805AD5] hover:!bg-[#6B46C1] !font-semibold text-xs shadow-sm flex items-center gap-1 text-white"
+                        >
+                          Bắt đầu bàn giao cây
+                        </Button>
+                      )}
+
+                      {order.status === 'HANDOVER_IN_PROGRESS' && (
+                        <Button
+                          type="primary"
+                          icon={<AuditOutlined />}
+                          onClick={() => handleOpenHandoverModal(order.id)}
+                          className="!h-9 !px-4 !rounded-xl !bg-[#2563EB] hover:!bg-[#1D4ED8] !font-semibold text-xs shadow-sm flex items-center gap-1 text-white"
+                        >
+                          Thẩm định & Bàn giao cây
+                        </Button>
+                      )}
+
+                      {order.status === 'HANDOVER_AWAITING_CONFIRM' && (
+                        <Tag color="volcano" className="!h-9 !px-3 !rounded-xl flex items-center font-semibold text-xs">
+                          Chờ khách xác nhận bàn giao
+                        </Tag>
+                      )}
+
+                      {['AGREEMENT_PENDING', 'AWAITING_PAYMENT', 'PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE'].includes(order.status) && (
+                        <Button
+                          icon={<FileProtectOutlined />}
+                          onClick={() => handleOpenContractModal(order.id)}
+                          className="!h-9 !px-3 !rounded-xl text-xs flex items-center gap-1 !border-[#ECE7FA] text-[#6E6A8A] hover:!text-[#6027D2]"
+                        >
+                          Xem Hợp đồng
                         </Button>
                       )}
 
@@ -618,7 +805,394 @@ function OrdersPageContent() {
           </div>
         ) : null}
       </Modal>
+
+      {/* Handover Assessment Modal */}
+      <Modal
+        title={
+          <div className="flex items-center gap-2 text-base font-bold text-[#1E1B2E]">
+            <AuditOutlined className="text-[#2563EB]" />
+            <span>
+              Thẩm định hiện trạng & Bàn giao nhận cây{' '}
+              {handoverOrder?.orderCode ? `- ${handoverOrder.orderCode}` : ''}
+            </span>
+          </div>
+        }
+        open={handoverModalOpen}
+        onCancel={() => setHandoverModalOpen(false)}
+        width={820}
+        centered
+        footer={
+          <div className="flex items-center justify-between pt-3 border-t border-[#ECE7FA]">
+            <span className="text-xs text-[#6E6A8A]">
+              * Bấm <strong>"Lưu thẩm định chậu này"</strong> cho từng cây trước khi hoàn tất.
+            </span>
+            <div className="flex items-center gap-2">
+              <Button onClick={() => setHandoverModalOpen(false)} className="!rounded-xl">
+                Đóng
+              </Button>
+              <Button
+                type="primary"
+                onClick={handleCompleteHandover}
+                loading={completingHandover}
+                className="!rounded-xl !bg-[#2563EB] hover:!bg-[#1D4ED8] !font-bold"
+              >
+                Hoàn tất thẩm định & Chốt bàn giao
+              </Button>
+            </div>
+          </div>
+        }
+      >
+        {handoverLoading ? (
+          <div className="py-16 text-center">
+            <Spin size="large" />
+            <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải danh sách cây cần bàn giao...</p>
+          </div>
+        ) : handoverOrder ? (
+          <div className="space-y-5 max-h-[72vh] overflow-y-auto pr-1">
+            {/* Guide Banner */}
+            <div className="bg-[#EFF6FF] border border-[#BFDBFE] rounded-2xl p-4">
+              <div className="flex items-start gap-3">
+                <SafetyCertificateOutlined className="text-[#2563EB] text-lg mt-0.5" />
+                <div>
+                  <h4 className="font-bold text-[#1E3A8A] text-sm">Quy trình thẩm định tiếp nhận tại vườn</h4>
+                  <p className="text-xs text-[#3B82F6] mt-0.5 leading-relaxed">
+                    Nhà vườn đối chiếu hiện trạng thực tế của từng chậu cây lúc nhận từ shipper/khách hàng. 
+                    Mỗi chậu cây <strong>bắt buộc có ít nhất 1 ảnh chụp thẩm định</strong> làm bằng chứng pháp lý khi trách nhiệm chuyển giao sang nhà vườn.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Plants Assessment List */}
+            <div className="space-y-4">
+              {handoverOrder.plants?.map((plant: any, idx: number) => {
+                const form = plantForms[plant.id] || {
+                  decision: 'ACCEPT',
+                  isHighRisk: false,
+                  note: '',
+                  photoUrl: '',
+                  caption: '',
+                };
+
+                return (
+                  <div
+                    key={plant.id}
+                    className={`p-4 rounded-2xl border transition-all ${
+                      form.saved
+                        ? 'bg-[#F0FDF4] border-[#BBF7D0]'
+                        : 'bg-white border-[#ECE7FA]'
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-3 border-b border-[#F1F5F9]">
+                      <div className="flex items-center gap-2">
+                        <span className="w-6 h-6 rounded-full bg-[#2563EB] text-white flex items-center justify-center text-xs font-bold">
+                          {idx + 1}
+                        </span>
+                        <h5 className="font-bold text-sm text-[#1E1B2E]">
+                          {plant.name} {plant.speciesName ? `(${plant.speciesName})` : ''}
+                        </h5>
+                        {plant.isValueDeclared && plant.declaredValue && (
+                          <Tag color="gold" className="!rounded-md text-[11px]">
+                            Giá trị khai báo: {Number(plant.declaredValue).toLocaleString('vi-VN')} VNĐ
+                          </Tag>
+                        )}
+                      </div>
+
+                      {form.saved ? (
+                        <Tag color="success" icon={<CheckCircleOutlined />} className="!rounded-md">
+                          Đã lưu thẩm định
+                        </Tag>
+                      ) : (
+                        <Tag color="warning" icon={<ClockCircleOutlined />} className="!rounded-md">
+                          Chưa lưu thẩm định
+                        </Tag>
+                      )}
+                    </div>
+
+                    <div className="space-y-3">
+                      {/* Decision Radio Group */}
+                      <div>
+                        <label className="block text-xs font-bold text-[#4B4764] mb-1.5">
+                          Quyết định thẩm định tiếp nhận:
+                        </label>
+                        <Radio.Group
+                          value={form.decision}
+                          onChange={(e) =>
+                            setPlantForms((prev) => ({
+                              ...prev,
+                              [plant.id]: {
+                                ...prev[plant.id],
+                                decision: e.target.value,
+                                saved: false,
+                              },
+                            }))
+                          }
+                          size="small"
+                          className="flex flex-wrap gap-2"
+                        >
+                          <Radio.Button value="ACCEPT" className="!rounded-lg">
+                            ✅ Đồng ý nhận (Bình thường)
+                          </Radio.Button>
+                          <Radio.Button value="ACCEPT_HIGH_RISK" className="!rounded-lg">
+                            ⚠️ Nhận (Rủi ro cao)
+                          </Radio.Button>
+                          <Radio.Button value="ADJUST" className="!rounded-lg">
+                            🔄 Điều chỉnh yêu cầu
+                          </Radio.Button>
+                          <Radio.Button value="REJECT" className="!rounded-lg">
+                            ❌ Từ chối chậu này
+                          </Radio.Button>
+                        </Radio.Group>
+                      </div>
+
+                      {/* Photo URL */}
+                      <div>
+                        <label className="block text-xs font-bold text-[#4B4764] mb-1">
+                          Link ảnh chụp thẩm định hiện trạng (bắt buộc):
+                        </label>
+                        <Input
+                          value={form.photoUrl}
+                          onChange={(e) =>
+                            setPlantForms((prev) => ({
+                              ...prev,
+                              [plant.id]: {
+                                ...prev[plant.id],
+                                photoUrl: e.target.value,
+                                saved: false,
+                              },
+                            }))
+                          }
+                          placeholder="https://res.cloudinary.com/... hoặc link ảnh hiện trạng tiếp nhận"
+                          className="!rounded-xl text-xs"
+                        />
+                        {form.photoUrl ? (
+                          <div className="mt-2 flex items-center gap-3">
+                            <Image
+                              src={form.photoUrl}
+                              alt="Ảnh thẩm định"
+                              width={70}
+                              height={70}
+                              className="rounded-lg object-cover border border-[#ECE7FA]"
+                              fallback="https://placehold.co/70x70?text=Ảnh+lỗi"
+                            />
+                            <span className="text-[11px] text-[#6E6A8A]">Xem trước ảnh hiện trạng bàn giao</span>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {/* Note */}
+                      <div>
+                        <label className="block text-xs font-bold text-[#4B4764] mb-1">
+                          Ghi chú thẩm định hiện trạng cây (lá, ngọn, rễ, giá thể):
+                        </label>
+                        <Input.TextArea
+                          rows={2}
+                          value={form.note}
+                          onChange={(e) =>
+                            setPlantForms((prev) => ({
+                              ...prev,
+                              [plant.id]: {
+                                ...prev[plant.id],
+                                note: e.target.value,
+                                saved: false,
+                              },
+                            }))
+                          }
+                          placeholder="Ví dụ: Rễ khỏe, lá dưới hơi vàng đã xử lý, giá thể ẩm tốt..."
+                          className="!rounded-xl text-xs"
+                        />
+                      </div>
+
+                      <div className="flex justify-end pt-1">
+                        <Button
+                          type="primary"
+                          size="small"
+                          onClick={() => handleSavePlantAssessment(plant.id)}
+                          loading={savingPlantId === plant.id}
+                          className="!rounded-xl !bg-[#6027D2] !font-semibold text-xs"
+                        >
+                          Lưu thẩm định chậu #{idx + 1}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      {/* Contract Detail Modal */}
+      <Modal
+        title={
+          <div className="flex items-center gap-2 text-base font-bold text-[#1E1B2E]">
+            <FileProtectOutlined className="text-[#D97706]" />
+            <span>Chi tiết Hợp đồng dịch vụ chăm sóc hoa lan</span>
+          </div>
+        }
+        open={contractModalOpen}
+        onCancel={() => setContractModalOpen(false)}
+        width={750}
+        centered
+        footer={
+          <Button onClick={() => setContractModalOpen(false)} className="!rounded-xl">
+            Đóng
+          </Button>
+        }
+      >
+        {contractLoading ? (
+          <div className="py-16 text-center">
+            <Spin size="large" />
+            <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải nội dung hợp đồng điện tử...</p>
+          </div>
+        ) : contractData ? (
+          (() => {
+            const customerParty =
+              contractData.parties?.customer || contractData.customerParty || {};
+            const providerParty =
+              contractData.parties?.provider || contractData.providerParty || {};
+
+            const customerName =
+              customerParty.fullName && customerParty.fullName !== 'Chưa cung cấp'
+                ? customerParty.fullName
+                : 'Khách hàng';
+            const customerPhone =
+              customerParty.phone && customerParty.phone !== 'Chưa cung cấp'
+                ? customerParty.phone
+                : 'Chưa cập nhật SĐT';
+            const customerAddress =
+              customerParty.address && customerParty.address !== 'Chưa cung cấp'
+                ? customerParty.address
+                : 'Chưa cập nhật địa chỉ';
+
+            const providerName =
+              providerParty.fullName && providerParty.fullName !== 'Chưa cung cấp'
+                ? providerParty.fullName
+                : providerParty.displayName || providerParty.gardenName || 'Nhà vườn';
+            const providerPhone =
+              providerParty.phone && providerParty.phone !== 'Chưa cung cấp'
+                ? providerParty.phone
+                : 'Chưa cập nhật SĐT';
+            const providerAddress =
+              providerParty.address && providerParty.address !== 'Chưa cung cấp'
+                ? providerParty.address
+                : 'Chưa cập nhật địa chỉ';
+
+            const agreementNumber =
+              contractData.agreementNo ||
+              contractData.agreement?.agreementNo ||
+              'N/A';
+
+            const isCustomerSigned = contractData.signatures?.some(
+              (s: any) =>
+                (s.role === 'CUSTOMER' || s.signerRole === 'CUSTOMER') &&
+                (s.signedAt || s.signatureHash)
+            );
+            const isProviderSigned = contractData.signatures?.some(
+              (s: any) =>
+                (s.role === 'PROVIDER' || s.signerRole === 'PROVIDER') &&
+                (s.signedAt || s.signatureHash)
+            );
+
+            return (
+              <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+                <div className="text-center p-3 bg-[#F8F6FC] rounded-xl border border-[#ECE7FA]">
+                  <h3 className="font-extrabold text-base text-[#1E1B2E]">HỢP ĐỒNG DỊCH VỤ CHĂM SÓC HOA LAN</h3>
+                  <p className="text-xs text-[#6027D2] font-semibold mt-1">
+                    Số HĐ: {agreementNumber}
+                  </p>
+                </div>
+
+                {/* Parties */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="p-3 bg-white rounded-xl border border-[#ECE7FA]">
+                    <span className="text-[10px] font-bold text-[#6027D2] uppercase tracking-wider">
+                      BÊN A (Khách hàng)
+                    </span>
+                    <h5 className="font-bold text-sm text-[#1E1B2E] mt-1">{customerName}</h5>
+                    <p className="text-xs text-[#6E6A8A] mt-0.5">SĐT: {customerPhone}</p>
+                    <p className="text-xs text-[#6E6A8A]">Địa chỉ: {customerAddress}</p>
+                  </div>
+
+                  <div className="p-3 bg-white rounded-xl border border-[#ECE7FA]">
+                    <span className="text-[10px] font-bold text-[#6027D2] uppercase tracking-wider">
+                      BÊN B (Nhà vườn)
+                    </span>
+                    <h5 className="font-bold text-sm text-[#1E1B2E] mt-1">{providerName}</h5>
+                    <p className="text-xs text-[#6E6A8A] mt-0.5">SĐT: {providerPhone}</p>
+                    <p className="text-xs text-[#6E6A8A]">Địa chỉ: {providerAddress}</p>
+                  </div>
+                </div>
+
+                {/* Compensation Policy */}
+                <div className="p-3 bg-[#ECFDF5] border border-[#A7F3D0] rounded-xl">
+                  <h5 className="font-bold text-xs text-[#065F46] flex items-center gap-1.5 mb-1">
+                    <SafetyCertificateOutlined /> Điều khoản bồi thường thiệt hại (Tối đa 120%)
+                  </h5>
+                  <p className="text-xs text-[#047857] leading-relaxed">
+                    Nhà vườn cam kết bồi thường lên đến <strong>120% giá trị khai báo hợp lệ</strong> trong trường hợp chậu lan bị chết, thất lạc hoặc hư hỏng nặng do lỗi chăm sóc của nhà vườn trong suốt thời gian nhận chăm sóc.
+                  </p>
+                </div>
+
+                {/* Plants list */}
+                <div>
+                  <h5 className="font-bold text-xs text-[#4B4764] mb-2">
+                    Danh sách cây trong hợp đồng ({contractData.plants?.length || 0}):
+                  </h5>
+                  <div className="space-y-2">
+                    {contractData.plants?.map((p: any, i: number) => (
+                      <div key={i} className="flex items-center justify-between p-2.5 bg-[#F8F9FA] rounded-lg text-xs">
+                        <span className="font-medium text-[#1E1B2E]">
+                          {i + 1}. {p.name} {p.speciesName ? `(${p.speciesName})` : ''}
+                        </span>
+                        <span className="font-bold text-[#6027D2]">
+                          {p.isValueDeclared && p.declaredValue
+                            ? `Giá trị khai báo: ${Number(p.declaredValue).toLocaleString('vi-VN')} VNĐ`
+                            : 'Không khai báo giá trị'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Signatures status */}
+                <div className="p-3 bg-[#F8F6FC] rounded-xl border border-[#ECE7FA]">
+                  <h5 className="font-bold text-xs text-[#4B4764] mb-2">Tình trạng chữ ký điện tử:</h5>
+                  <div className="grid grid-cols-2 gap-3 text-center">
+                    <div className="p-2 bg-white rounded-lg border border-[#ECE7FA]">
+                      <p className="text-[11px] text-[#6E6A8A]">Đại diện Bên A (Khách hàng)</p>
+                      {isCustomerSigned ? (
+                        <Tag color="green" className="mt-1 font-bold">
+                          ĐÃ KÝ ĐIỆN TỬ
+                        </Tag>
+                      ) : (
+                        <Tag color="default" className="mt-1 font-medium italic">
+                          Chưa ký
+                        </Tag>
+                      )}
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-[#ECE7FA]">
+                      <p className="text-[11px] text-[#6E6A8A]">Đại diện Bên B (Nhà vườn)</p>
+                      {isProviderSigned ? (
+                        <Tag color="green" className="mt-1 font-bold">
+                          ĐÃ KÝ ĐIỆN TỬ
+                        </Tag>
+                      ) : (
+                        <Tag color="default" className="mt-1 font-medium italic">
+                          Chưa ký
+                        </Tag>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()
+        ) : null}
+      </Modal>
     </div>
+
   );
 }
 
