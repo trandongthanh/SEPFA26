@@ -344,15 +344,21 @@ export const VideoCallScreen: React.FC<VideoCallScreenProps> = ({
             webViewRef.current?.injectJavaScript(`
               (function() {
                 try {
-                  if (window.lancareToggleMic) {
+                  if (window.__lancareCall?.microphone) {
+                    if (window.__lancareCall.microphone.state.status === 'enabled') {
+                      window.__lancareCall.microphone.disable();
+                    } else {
+                      window.__lancareCall.microphone.enable();
+                    }
+                  } else if (window.lancareToggleMic) {
                     window.lancareToggleMic();
-                  } else if (window.lancareEnableMedia) {
-                    window.lancareEnableMedia();
                   } else {
                     var btn = document.querySelector('[data-testid="mute-mic-button"]');
                     if (btn) btn.click();
                   }
-                } catch(e) {}
+                } catch(e) {
+                  alert('Lỗi mic: ' + e.message);
+                }
               })();
               true;
             `);
@@ -378,15 +384,21 @@ export const VideoCallScreen: React.FC<VideoCallScreenProps> = ({
             webViewRef.current?.injectJavaScript(`
               (function() {
                 try {
-                  if (window.lancareToggleCam) {
+                  if (window.__lancareCall?.camera) {
+                    if (window.__lancareCall.camera.state.status === 'enabled') {
+                      window.__lancareCall.camera.disable();
+                    } else {
+                      window.__lancareCall.camera.enable();
+                    }
+                  } else if (window.lancareToggleCam) {
                     window.lancareToggleCam();
-                  } else if (window.lancareEnableMedia) {
-                    window.lancareEnableMedia();
                   } else {
                     var btn = document.querySelector('[data-testid="toggle-cam-button"]');
                     if (btn) btn.click();
                   }
-                } catch(e) {}
+                } catch(e) {
+                  alert('Lỗi cam: ' + e.message);
+                }
               })();
               true;
             `);
