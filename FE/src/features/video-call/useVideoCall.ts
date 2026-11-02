@@ -85,6 +85,9 @@ export function useVideoCall({
       const streamCall = streamClient.call(stream.callType, stream.callId);
       callRef.current = streamCall;
       setCall(streamCall);
+      if (typeof window !== 'undefined') {
+        (window as any).__lancareCall = streamCall;
+      }
 
       // 3) Lắng nghe sự kiện call.ended từ GetStream (bên kia cúp hoặc hệ thống đóng)
       const handleCallEnded = () => {

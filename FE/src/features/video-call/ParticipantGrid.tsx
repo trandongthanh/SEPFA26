@@ -179,7 +179,13 @@ export default function ParticipantGrid() {
               participant={participant}
               className="h-full w-full [&_video]:w-full [&_video]:h-full [&_video]:object-cover"
               ParticipantViewUI={EmptyUI}
-              VideoPlaceholder={NoVideoFallback}
+              VideoPlaceholder={useMemo(
+                () =>
+                  function Placeholder(props: any) {
+                    return <NoVideoFallback {...props} camera={cameraState.camera} />;
+                  },
+                [cameraState.camera]
+              )}
             />
             {/* Duy nhất custom label của chúng ta hiển thị */}
             <ParticipantLabel
@@ -271,8 +277,8 @@ function ParticipantLabel({
  */
 const NoVideoFallback = React.forwardRef<
   HTMLDivElement,
-  { participant: StreamVideoParticipant; style?: React.CSSProperties }
->(function NoVideoFallback({ participant, style }, ref) {
+  { participant: StreamVideoParticipant; style?: React.CSSProperties; camera?: any }
+>(function NoVideoFallback({ participant, style, camera }, ref) {
   const initials = getInitials(participant.name || participant.userId || '?');
   const isCamOff = !hasVideo(participant);
 
@@ -293,12 +299,21 @@ const NoVideoFallback = React.forwardRef<
           participant.isLocalParticipant ? (
             <button
               type="button"
-              onClick={() => {
-                if (typeof window !== 'undefined' && (window as any).lancareToggleCam) {
-                  (window as any).lancareToggleCam();
+              onClick={async (e) => {
+                e.stopPropagation();
+                try {
+                  if (camera) {
+                    await camera.enable();
+                  } else if (typeof window !== 'undefined' && (window as any).__lancareCall?.camera) {
+                    await (window as any).__lancareCall.camera.enable();
+                  } else if (typeof window !== 'undefined' && (window as any).lancareToggleCam) {
+                    await (window as any).lancareToggleCam();
+                  }
+                } catch (err: any) {
+                  alert('Lỗi camera: ' + (err?.message || err));
                 }
               }}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#6027D2] hover:bg-[#7C3AED] active:scale-95 text-white text-xs font-semibold shadow-lg shadow-[#6027D2]/40 pointer-events-auto cursor-pointer transition-all border border-white/20"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#6027D2] hover:bg-[#7C3AED] active:scale-95 text-white text-xs font-semibold shadow-xl shadow-[#6027D2]/50 pointer-events-auto cursor-pointer transition-all border border-white/20"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <polygon points="23 7 16 12 23 17 23 7" />
