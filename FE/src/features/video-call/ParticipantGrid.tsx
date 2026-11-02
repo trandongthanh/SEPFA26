@@ -297,30 +297,56 @@ const NoVideoFallback = React.forwardRef<
         </span>
         {isCamOff ? (
           participant.isLocalParticipant ? (
-            <button
-              type="button"
-              onClick={async (e) => {
-                e.stopPropagation();
-                try {
-                  if (camera) {
-                    await camera.enable();
-                  } else if (typeof window !== 'undefined' && (window as any).__lancareCall?.camera) {
-                    await (window as any).__lancareCall.camera.enable();
-                  } else if (typeof window !== 'undefined' && (window as any).lancareToggleCam) {
-                    await (window as any).lancareToggleCam();
+            <div className="flex flex-col items-center gap-2">
+              <button
+                type="button"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  try {
+                    // 1. Thử xin quyền trực tiếp qua WebRTC API của trình duyệt
+                    if (navigator?.mediaDevices?.getUserMedia) {
+                      const testStream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'user' },
+                      });
+                      testStream.getTracks().forEach((t) => t.stop());
+                    }
+
+                    // 2. Kích hoạt camera của Stream Video SDK
+                    if (camera) {
+                      await camera.enable();
+                    } else if (typeof window !== 'undefined' && (window as any).__lancareCall?.camera) {
+                      await (window as any).__lancareCall.camera.enable();
+                    } else if (typeof window !== 'undefined' && (window as any).lancareToggleCam) {
+                      await (window as any).lancareToggleCam();
+                    }
+                  } catch (err: any) {
+                    const errorMsg = 'Lỗi camera: ' + (err?.name || '') + ' - ' + (err?.message || String(err));
+                    console.error(errorMsg);
+                    try {
+                      (window as any).ReactNativeWebView?.postMessage(
+                        JSON.stringify({
+                          type: 'DEBUG_ALERT',
+                          message: errorMsg,
+                        })
+                      );
+                    } catch {}
+                    const banner = document.getElementById('cam-error-text');
+                    if (banner) {
+                      banner.textContent = errorMsg;
+                      banner.style.display = 'block';
+                    }
                   }
-                } catch (err: any) {
-                  alert('Lỗi camera: ' + (err?.message || err));
-                }
-              }}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#6027D2] hover:bg-[#7C3AED] active:scale-95 text-white text-xs font-semibold shadow-xl shadow-[#6027D2]/50 pointer-events-auto cursor-pointer transition-all border border-white/20"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="23 7 16 12 23 17 23 7" />
-                <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
-              </svg>
-              <span>Chạm để Bật Camera</span>
-            </button>
+                }}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#6027D2] hover:bg-[#7C3AED] active:scale-95 text-white text-xs font-semibold shadow-xl shadow-[#6027D2]/50 pointer-events-auto cursor-pointer transition-all border border-white/20"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="23 7 16 12 23 17 23 7" />
+                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2" />
+                </svg>
+                <span>Chạm để Bật Camera</span>
+              </button>
+              <span id="cam-error-text" className="text-red-400 text-[11px] font-medium hidden max-w-[200px] text-center" />
+            </div>
           ) : (
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/40 border border-white/10">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
