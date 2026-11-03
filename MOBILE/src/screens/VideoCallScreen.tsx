@@ -298,14 +298,13 @@ export const VideoCallScreen: React.FC<VideoCallScreenProps> = ({
           mediaPlaybackRequiresUserAction={false}
           mediaCapturePermissionGrantType="grant"
           androidLayerType="hardware"
+          userAgent="Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
           originWhitelist={['*']}
           onMessage={(event) => {
             try {
               const data = JSON.parse(event.nativeEvent.data);
               console.log('[WebView Msg]', data);
-              if (data.type === 'DEBUG_ALERT') {
-                Alert.alert('Thông báo từ phòng gọi', data.message);
-              } else if (data.type === 'LOCAL_MEDIA_STATE') {
+              if (data.type === 'LOCAL_MEDIA_STATE') {
                 setIsVideoOff(!data.isCamOn);
                 setIsMuted(!data.isMicOn);
               } else if (data.type === 'NO_MEDIA_DEVICES') {
