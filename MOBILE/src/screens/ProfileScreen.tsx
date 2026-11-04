@@ -6,6 +6,7 @@ import {
   Image,
   Modal,
   ScrollView,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
@@ -52,6 +53,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const [cccdBackUrl, setCccdBackUrl] = useState<string>('');
   const [selfieWithIdUrl, setSelfieWithIdUrl] = useState<string>('');
   const [uploadingType, setUploadingType] = useState<'front' | 'back' | 'selfie' | null>(null);
+  const [sessionExpired, setSessionExpired] = useState<boolean>(false);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadProfile();
+    setRefreshing(false);
+  }, []);
 
   const loadProfile = async () => {
     setLoading(true);
@@ -64,12 +73,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
 
       const token = await storage.getToken();
       if (!token) {
+        setSessionExpired(true);
         setLoading(false);
         return;
       }
 
       const res = await customerService.getMyProfile();
       setProfile(res);
+      setSessionExpired(false);
       if (res.fullName) setUserName(res.fullName);
       if (res.email) setUserEmail(res.email);
 
@@ -84,8 +95,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       setCccdBackUrl(res.cccdBackUrl || '');
       setSelfieWithIdUrl(res.selfieWithIdUrl || '');
     } catch (err: any) {
-      if (err?.response?.status !== 401) {
-        console.log('Customer profile info:', err?.message || err);
+      console.error('[ProfileScreen] loadProfile error:', err?.response?.status, err?.response?.data || err?.message || err);
+      if (err?.response?.status === 401) {
+        setSessionExpired(true);
+        Alert.alert(
+          'Phiên làm việc hết hạn',
+          'Token đăng nhập đã hết hạn (401). Vui lòng bấm Đăng xuất ở góc trên bên phải màn hình để đăng nhập lại.'
+        );
+      } else {
+        Alert.alert(
+          'Lỗi tải hồ sơ',
+          `Không thể tải thông tin hồ sơ: ${err?.response?.status || 'Lỗi mạng'}\n${JSON.stringify(err?.response?.data || err?.message || err)}`
+        );
       }
     } finally {
       setLoading(false);
@@ -301,13 +322,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
           }
           socketService.disconnect();
           await storage.clearAll();
-          navigation.getParent()?.reset({
-            index: 0,
-            routes: [{ name: 'Login' }],
-          }) || navigation.reset({
-            index: 0,
-            routes: [{ name: 'Login' }],
-          });
+          setProfile(null);
+          setUserName('Khách hàng');
+          setUserEmail('');
+          const { navigationRef } = await import('../navigation/AppNavigator');
+          if (navigationRef.isReady()) {
+            navigationRef.reset({
+              index: 0,
+              routes: [{ name: 'Login' }],
+            });
+          }
         },
       },
     ]);
@@ -333,7 +357,50 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
           <Text style={styles.loadingText}>Đang tải thông tin hồ sơ...</Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#6027D2']} tintColor="#6027D2" />
+          }
+        >
+          {/* Cảnh báo phiên đăng nhập hết hạn */}
+          {sessionExpired && (
+            <View
+              style={{
+                backgroundColor: '#FEF2F2',
+                borderColor: '#F87171',
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+                marginBottom: 14,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: '#991B1B' }}>
+                  ⚠️ Phiên đăng nhập đã hết hạn
+                </Text>
+                <Text style={{ fontSize: 11, color: '#B91C1C', marginTop: 2 }}>
+                  Vui lòng đăng xuất và đăng nhập lại để làm mới dữ liệu hồ sơ đã xác thực của bạn.
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={handleLogout}
+                style={{
+                  backgroundColor: '#DC2626',
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderRadius: 8,
+                }}
+              >
+                <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>Đăng xuất</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           {/* Top Banner User Profile */}
           <View style={styles.topProfileBar}>
             <View style={styles.avatarCircle}>

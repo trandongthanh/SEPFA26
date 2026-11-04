@@ -161,6 +161,10 @@ export default function VideoCallRoom({ callType, callId }: VideoCallRoomProps) 
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
+    if (call) {
+      (window as any).__lancareCall = call;
+    }
+
     (window as any).lancareToggleMic = async () => {
       try {
         if (call) {
