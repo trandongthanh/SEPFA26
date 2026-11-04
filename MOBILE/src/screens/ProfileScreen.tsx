@@ -6,6 +6,7 @@ import {
   Image,
   Modal,
   ScrollView,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
@@ -53,6 +54,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const [selfieWithIdUrl, setSelfieWithIdUrl] = useState<string>('');
   const [uploadingType, setUploadingType] = useState<'front' | 'back' | 'selfie' | null>(null);
   const [sessionExpired, setSessionExpired] = useState<boolean>(false);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await loadProfile();
+    setRefreshing(false);
+  }, []);
 
   const loadProfile = async () => {
     setLoading(true);
@@ -349,7 +357,13 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
           <Text style={styles.loadingText}>Đang tải thông tin hồ sơ...</Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#6027D2']} tintColor="#6027D2" />
+          }
+        >
           {/* Cảnh báo phiên đăng nhập hết hạn */}
           {sessionExpired && (
             <View
