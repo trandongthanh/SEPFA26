@@ -13,6 +13,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { OrderItem, orderService } from '../services/orderService';
+import { providerService } from '../services/providerService';
+import { calculateRoadDistanceKm } from '../utils/distance';
 import {
   videoCallService,
   VideoCallResponseDto,
@@ -84,6 +86,9 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
   // Handover confirmation state
   const [confirmingHandover, setConfirmingHandover] = useState<boolean>(false);
 
+  // Provider coordinates for transparent distance calculation
+  const [providerCoords, setProviderCoords] = useState<{ lat: number; lng: number } | null>(null);
+
   const fetchDetail = async () => {
     setLoading(true);
     setErrorMsg(null);
@@ -108,6 +113,29 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
   useEffect(() => {
     fetchDetail();
   }, [orderId]);
+
+  // Fetch provider GPS if not on order object
+  useEffect(() => {
+    const pId = (order as any)?.providerId || order?.provider?.id;
+    if (pId && !order?.provider?.gpsLat && !providerCoords) {
+      providerService
+        .getProviderById(pId)
+        .then((p) => {
+          if (p?.gpsLat != null && p?.gpsLng != null) {
+            setProviderCoords({ lat: Number(p.gpsLat), lng: Number(p.gpsLng) });
+          }
+        })
+        .catch(() => {});
+    }
+  }, [order?.id, (order as any)?.providerId]);
+
+  // Compute road distance
+  const pLat = (order?.provider as any)?.gpsLat ?? providerCoords?.lat;
+  const pLng = (order?.provider as any)?.gpsLng ?? providerCoords?.lng;
+  const cLat = (order as any)?.pickupGpsLat ?? (order as any)?.pickupLat;
+  const cLng = (order as any)?.pickupGpsLng ?? (order as any)?.pickupLng;
+
+  const orderDistanceKm = calculateRoadDistanceKm(cLat, cLng, pLat, pLng);
 
   const handleStartVideoCall = async () => {
     setCallLoading(true);
@@ -596,7 +624,14 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
             </Text>
           </View>
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Phí vận chuyển:</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.infoLabel}>Phí vận chuyển lấy cây:</Text>
+              {orderDistanceKm !== null ? (
+                <Text style={{ fontSize: 11, color: '#6027D2', marginTop: 2, fontWeight: '600' }}>
+                  📍 Quãng đường định vị: ~{orderDistanceKm} km
+                </Text>
+              ) : null}
+            </View>
             <Text style={styles.infoValue}>
               {Number(order.pickupFeeSnapshot || 0).toLocaleString('vi-VN')} VNĐ
             </Text>
@@ -605,7 +640,10 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
           <View style={styles.infoRow}>
             <Text style={styles.totalLabel}>Tổng cộng:</Text>
             <Text style={styles.totalValue}>
-              {Number(order.provisionalTotal || 0).toLocaleString('vi-VN')} VNĐ
+              {(
+                Number(order.provisionalTotal || 0) +
+                Number(order.pickupFeeSnapshot || 0)
+              ).toLocaleString('vi-VN')} VNĐ
             </Text>
           </View>
         </View>
@@ -846,7 +884,14 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                         </Text>
                       </View>
                       <View style={styles.pricingRow}>
-                        <Text style={styles.pricingLabel}>Phí vận chuyển giao nhận:</Text>
+                        <View style={{ flex: 1, marginRight: 8 }}>
+                          <Text style={styles.pricingLabel}>Phí vận chuyển giao nhận:</Text>
+                          {orderDistanceKm !== null ? (
+                            <Text style={{ fontSize: 11, color: '#6027D2', marginTop: 1, fontWeight: '500' }}>
+                              (Khoảng cách định vị: ~{orderDistanceKm} km)
+                            </Text>
+                          ) : null}
+                        </View>
                         <Text style={styles.pricingValue}>
                           {Number(pricing.pickupFee || order.pickupFeeSnapshot || 0).toLocaleString('vi-VN')} VNĐ
                         </Text>
@@ -1000,10 +1045,22 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                   {contractData?.parties?.provider?.fullName || order?.provider?.gardenName || 'Nhà vườn'}
                 </Text>
               </View>
+              {Number(order?.pickupFeeSnapshot || 0) > 0 ? (
+                <View style={styles.confirmSummaryRow}>
+                  <Text style={styles.confirmSummaryLabel}>Phí vận chuyển:</Text>
+                  <Text style={styles.confirmSummaryVal}>
+                    {Number(order?.pickupFeeSnapshot || 0).toLocaleString('vi-VN')} VNĐ
+                    {orderDistanceKm !== null ? ` (~${orderDistanceKm} km)` : ''}
+                  </Text>
+                </View>
+              ) : null}
               <View style={[styles.confirmSummaryRow, { borderBottomWidth: 0, paddingBottom: 0 }]}>
                 <Text style={styles.confirmSummaryLabel}>Tổng chi phí:</Text>
                 <Text style={[styles.confirmSummaryVal, { color: '#6027D2', fontWeight: '800' }]}>
-                  {Number(order?.provisionalTotal || 0).toLocaleString('vi-VN')} VNĐ
+                  {(
+                    Number(order?.provisionalTotal || 0) +
+                    Number(order?.pickupFeeSnapshot || 0)
+                  ).toLocaleString('vi-VN')} VNĐ
                 </Text>
               </View>
             </View>
@@ -1123,6 +1180,15 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                     {Number(paymentQrData.amount || 0).toLocaleString('vi-VN')} VNĐ
                   </Text>
                 </View>
+
+                {Number(order?.pickupFeeSnapshot || 0) > 0 ? (
+                  <View style={styles.payBreakdownBox}>
+                    <Ionicons name="information-circle" size={16} color="#6027D2" />
+                    <Text style={styles.payBreakdownText}>
+                      Gồm: Gói chăm sóc ({Number(order?.provisionalTotal || 0).toLocaleString('vi-VN')}đ) + Phí lấy cây ({Number(order?.pickupFeeSnapshot || 0).toLocaleString('vi-VN')}đ{orderDistanceKm !== null ? ` cho ~${orderDistanceKm} km` : ''})
+                    </Text>
+                  </View>
+                ) : null}
 
                 <View style={[styles.payInfoRow, styles.memoBox]}>
                   <View style={{ flex: 1 }}>
@@ -1998,6 +2064,22 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
+  },
+  payBreakdownBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#F3E8FF',
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  payBreakdownText: {
+    fontSize: 11,
+    color: '#6027D2',
+    fontWeight: '600',
+    flex: 1,
   },
 });
 

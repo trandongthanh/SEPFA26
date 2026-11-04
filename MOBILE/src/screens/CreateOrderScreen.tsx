@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,6 +16,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { LocationPickerModal } from '../components/LocationPickerModal';
 import { orderService } from '../services/orderService';
 import { uploadService } from '../services/uploadService';
+import { providerService } from '../services/providerService';
+import { calculateRoadDistanceKm } from '../utils/distance';
 
 interface CreateOrderScreenProps {
   navigation: any;
@@ -23,6 +25,9 @@ interface CreateOrderScreenProps {
     params: {
       providerId: string;
       providerName?: string;
+      providerGpsLat?: string | number | null;
+      providerGpsLng?: string | number | null;
+      providerAddress?: string | null;
       package: {
         id: string;
         name: string;
@@ -72,6 +77,41 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
   const [pickupLat, setPickupLat] = useState<number>(10.8505);
   const [pickupLng, setPickupLng] = useState<number>(106.7719);
   const [showLocationPicker, setShowLocationPicker] = useState<boolean>(false);
+
+  // Provider location to compute distance
+  const [providerCoords, setProviderCoords] = useState<{
+    lat: number | null;
+    lng: number | null;
+    address?: string;
+  }>({
+    lat: route.params.providerGpsLat != null ? Number(route.params.providerGpsLat) : null,
+    lng: route.params.providerGpsLng != null ? Number(route.params.providerGpsLng) : null,
+    address: route.params.providerAddress || undefined,
+  });
+
+  useEffect(() => {
+    if ((providerCoords.lat == null || providerCoords.lng == null) && providerId) {
+      providerService.getProviderById(providerId).then((res) => {
+        if (res?.gpsLat != null && res?.gpsLng != null) {
+          setProviderCoords({
+            lat: Number(res.gpsLat),
+            lng: Number(res.gpsLng),
+            address: res.address || undefined,
+          });
+        }
+      }).catch((err) => {
+        console.warn('Could not fetch provider coords:', err);
+      });
+    }
+  }, [providerId]);
+
+  // Real road distance in km
+  const roadDistanceKm = calculateRoadDistanceKm(
+    pickupLat,
+    pickupLng,
+    providerCoords.lat,
+    providerCoords.lng,
+  );
 
   // Scheduled pickup (Default tomorrow 09:00 AM)
   const tomorrow = new Date();
@@ -382,6 +422,14 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
               <Text style={styles.locationSubText}>
                 Tọa độ: {pickupLat.toFixed(4)}, {pickupLng.toFixed(4)}
               </Text>
+              {roadDistanceKm !== null ? (
+                <View style={styles.distanceBadge}>
+                  <Ionicons name="navigate-circle" size={15} color="#6027D2" />
+                  <Text style={styles.distanceBadgeText}>
+                    Khoảng cách tới vườn: <Text style={styles.distanceHighlight}>~{roadDistanceKm} km</Text>
+                  </Text>
+                </View>
+              ) : null}
             </View>
             <Ionicons name="chevron-forward" size={18} color="#A0AEC0" />
           </TouchableOpacity>
@@ -419,9 +467,14 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
       {/* Footer / Submit bar */}
       <View style={styles.footer}>
         <View style={styles.totalPriceContainer}>
-          <Text style={styles.totalLabel}>Tổng tạm tính</Text>
+          <Text style={styles.totalLabel}>
+            Tiền dịch vụ {roadDistanceKm !== null ? `(cách ~${roadDistanceKm}km)` : ''}
+          </Text>
           <Text style={styles.totalValue}>
             {(priceVal * plants.length).toLocaleString('vi-VN')} VNĐ
+          </Text>
+          <Text style={styles.footerShippingNote}>
+            *Phí lấy cây sẽ tính tự động theo {roadDistanceKm !== null ? `${roadDistanceKm} km` : 'km định vị'}
           </Text>
         </View>
 
@@ -751,5 +804,31 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '700',
     fontSize: 14,
+  },
+  distanceBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F3E8FF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+    marginTop: 6,
+  },
+  distanceBadgeText: {
+    fontSize: 11,
+    color: '#4A5568',
+    fontWeight: '500',
+  },
+  distanceHighlight: {
+    fontWeight: '800',
+    color: '#6027D2',
+  },
+  footerShippingNote: {
+    fontSize: 10,
+    color: '#94A3B8',
+    marginTop: 2,
+    fontStyle: 'italic',
   },
 });
