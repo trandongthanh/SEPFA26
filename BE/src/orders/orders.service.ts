@@ -17,6 +17,7 @@ import { ServicePackage } from '../providers/entities/service-package.entity';
 import { DistanceService } from './distance.service';
 import { PlantRecognitionService } from './plant-recognition.service';
 import { ContractTemplateService } from './contract-template.service';
+import { CryptoService } from '../crypto/crypto.service';
 import { AddInitialPhotoDto } from './dto/add-initial-photo.dto';
 import { CreateOrderDto, CreateOrderPlantDto } from './dto/create-order.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
@@ -61,7 +62,17 @@ export class OrdersService {
     private readonly plantRecognition: PlantRecognitionService,
     private readonly contractTemplate: ContractTemplateService,
     private readonly dataSource: DataSource,
+    private readonly crypto: CryptoService,
   ) {}
+
+  private safeDecrypt(value: string | null | undefined): string | null {
+    if (!value) return null;
+    try {
+      return this.crypto.decrypt(value);
+    } catch {
+      return value;
+    }
+  }
 
   async listShippingRatesForAdmin(): Promise<ShippingRate[]> {
     return this.shippingRateRepo.find({ order: { minKm: 'ASC' } });
@@ -602,8 +613,8 @@ export class OrdersService {
       customerParty: {
         fullName: customer.account?.fullName ?? 'Chưa cung cấp',
         address: customer.address ?? customer.defaultPickupAddress ?? 'Chưa cung cấp',
-        phone: customer.account?.phone ?? 'Chưa cung cấp',
-        identityNumber: 'Chưa cung cấp',
+        phone: this.safeDecrypt(customer.account?.phone) ?? 'Chưa cung cấp',
+        identityNumber: this.safeDecrypt(customer.cccdNumber) ?? 'Chưa cung cấp',
         identityDocuments: [customer.cccdFrontUrl, customer.cccdBackUrl, customer.selfieWithIdUrl].filter(
           (url): url is string => Boolean(url),
         ),
@@ -611,8 +622,8 @@ export class OrdersService {
       providerParty: {
         fullName: provider.account?.fullName ?? provider.displayName ?? 'Chưa cung cấp',
         address: provider.address ?? 'Chưa cung cấp',
-        phone: provider.account?.phone ?? 'Chưa cung cấp',
-        identityNumber: 'Chưa cung cấp',
+        phone: this.safeDecrypt(provider.account?.phone) ?? 'Chưa cung cấp',
+        identityNumber: provider.licenseInfo ?? 'Đã xác minh',
         identityDocuments: [provider.cccdFrontUrl, provider.cccdBackUrl].filter(
           (url): url is string => Boolean(url),
         ),
