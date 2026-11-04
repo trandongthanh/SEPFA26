@@ -227,6 +227,9 @@ export const ProviderDetailScreen: React.FC<ProviderDetailScreenProps> = ({
                       providerId,
                       providerName: provider?.displayName,
                       package: pkg,
+                      providerGpsLat: provider?.gpsLat,
+                      providerGpsLng: provider?.gpsLng,
+                      providerAddress: provider?.address,
                     });
                   }}
                 >

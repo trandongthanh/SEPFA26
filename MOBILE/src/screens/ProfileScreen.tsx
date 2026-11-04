@@ -23,6 +23,7 @@ import { CustomerProfileResponse, UpdateCustomerProfilePayload } from '../types/
 import { storage } from '../utils/storage';
 import { GoogleSignin } from '../utils/googleAuth';
 import { socketService } from '../services/socketService';
+import { navigationRef } from '../navigation/navigationRef';
 
 interface ProfileScreenProps {
   navigation: any;
@@ -314,23 +315,44 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         style: 'destructive',
         onPress: async () => {
           try {
-            if (GoogleSignin) {
+            if (GoogleSignin && typeof GoogleSignin.signOut === 'function') {
               await GoogleSignin.signOut();
             }
           } catch (_) {
             // Bỏ qua lỗi nếu chưa có tài khoản Google nào
           }
-          socketService.disconnect();
-          await storage.clearAll();
+
+          try {
+            socketService.disconnect();
+          } catch (_) {}
+
+          try {
+            await storage.clearAll();
+          } catch (_) {}
+
           setProfile(null);
           setUserName('Khách hàng');
           setUserEmail('');
-          const { navigationRef } = await import('../navigation/AppNavigator');
-          if (navigationRef.isReady()) {
-            navigationRef.reset({
-              index: 0,
-              routes: [{ name: 'Login' }],
-            });
+
+          try {
+            if (navigationRef.isReady()) {
+              navigationRef.reset({
+                index: 0,
+                routes: [{ name: 'Login' }],
+              });
+            } else if (navigation?.getParent?.()) {
+              navigation.getParent().reset({
+                index: 0,
+                routes: [{ name: 'Login' }],
+              });
+            } else if (navigation?.reset) {
+              navigation.reset({
+                index: 0,
+                routes: [{ name: 'Login' }],
+              });
+            }
+          } catch (navErr) {
+            console.warn('Logout navigation error:', navErr);
           }
         },
       },

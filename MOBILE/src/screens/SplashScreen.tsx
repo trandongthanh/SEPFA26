@@ -10,6 +10,8 @@ import {
   StatusBar,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { storage } from '../utils/storage';
+import { socketService } from '../services/socketService';
 
 const { width, height } = Dimensions.get('window');
 
@@ -93,10 +95,8 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
     const timer = setTimeout(async () => {
       if (navigation) {
         try {
-          const { storage } = await import('../utils/storage');
           const token = await storage.getToken();
           if (token) {
-            const { socketService } = await import('../services/socketService');
             socketService.connect(token);
             navigation.replace('MainTabs');
           } else {

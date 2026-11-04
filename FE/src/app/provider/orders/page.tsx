@@ -574,11 +574,11 @@ function OrdersPageContent() {
                         <Button
                           type="primary"
                           icon={<FileProtectOutlined />}
-                          onClick={() => handlePromptSignAgreement(order.id, undefined, order.orderCode)}
+                          onClick={() => handleOpenContractModal(order.id)}
                           loading={actionLoading === order.id}
                           className="!h-9 !px-4 !rounded-xl !bg-[#D97706] hover:!bg-[#B45309] !font-semibold text-xs shadow-sm flex items-center gap-1 text-white"
                         >
-                          Ký hợp đồng online
+                          Xem & Ký hợp đồng
                         </Button>
                       )}
 

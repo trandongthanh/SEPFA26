@@ -53,6 +53,8 @@ export interface ProviderProfileInfo {
   address?: string;
   phone?: string;
   avatarUrl?: string;
+  gpsLat?: string | null;
+  gpsLng?: string | null;
 }
 
 export interface OrderItem {
@@ -68,6 +70,8 @@ export interface OrderItem {
   finalTotal?: string | null;
   scheduledPickupAt: string;
   pickupAddress?: string;
+  pickupGpsLat?: number | string | null;
+  pickupGpsLng?: number | string | null;
   customerNote?: string;
   createdAt: string;
   servicePackage?: ServicePackageInfo;
