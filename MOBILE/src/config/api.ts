@@ -66,12 +66,48 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
+// ===== Mutex: tránh nhiều request cùng lúc đều gọi /auth/refresh =====
+let isRefreshing = false;
+let failedQueue: Array<{
+  resolve: (token: string) => void;
+  reject: (err: unknown) => void;
+}> = [];
+
+function processQueue(error: unknown, token: string | null = null) {
+  failedQueue.forEach(({ resolve, reject }) => {
+    if (error) reject(error);
+    else resolve(token!);
+  });
+  failedQueue = [];
+}
+
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config;
-    if (error.response?.status === 401 && !originalRequest?._retry) {
+    if (
+      error.response?.status === 401 &&
+      originalRequest &&
+      !originalRequest._retry &&
+      !originalRequest.url?.includes('/auth/refresh') &&
+      !originalRequest.url?.includes('/auth/login')
+    ) {
+      if (isRefreshing) {
+        return new Promise<string>((resolve, reject) => {
+          failedQueue.push({ resolve, reject });
+        })
+          .then((newToken) => {
+            if (originalRequest.headers) {
+              originalRequest.headers['Authorization'] = `Bearer ${newToken}`;
+            }
+            return apiClient(originalRequest);
+          })
+          .catch((err) => Promise.reject(err));
+      }
+
       originalRequest._retry = true;
+      isRefreshing = true;
+
       try {
         const { storage } = await import('../utils/storage');
         const refreshToken = await storage.getRefreshToken();
@@ -84,9 +120,13 @@ apiClient.interceptors.response.use(
           if (originalRequest.headers) {
             originalRequest.headers['Authorization'] = `Bearer ${accessToken}`;
           }
+          processQueue(null, accessToken);
           return apiClient(originalRequest);
+        } else {
+          processQueue(new Error('No refresh token available'), null);
         }
       } catch (refreshErr) {
+        processQueue(refreshErr, null);
         // Refresh token expired or invalid -> clear tokens and redirect to Login
         try {
           const { storage } = await import('../utils/storage');
@@ -99,6 +139,8 @@ apiClient.interceptors.response.use(
             });
           }
         } catch (e) {}
+      } finally {
+        isRefreshing = false;
       }
     }
     return Promise.reject(error);

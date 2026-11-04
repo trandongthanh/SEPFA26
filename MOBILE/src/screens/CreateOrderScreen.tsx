@@ -231,12 +231,19 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
         ]
       );
     } catch (error: any) {
-      console.error('Order creation failed:', error?.response?.data || error?.message || error);
-      const errMsg =
-        error?.response?.data?.message ||
-        error?.message ||
-        'Không thể tạo đơn hàng. Vui lòng kiểm tra lại kết nối.';
-      Alert.alert('Tạo đơn thất bại', Array.isArray(errMsg) ? errMsg.join('\n') : errMsg);
+      if (error?.response?.status !== 401) {
+        console.error('Order creation failed:', error?.response?.data || error?.message || error);
+      }
+      const is401 = error?.response?.status === 401;
+      const errMsg = is401
+        ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại để tiếp tục tạo đơn hàng.'
+        : error?.response?.data?.message ||
+          error?.message ||
+          'Không thể tạo đơn hàng. Vui lòng kiểm tra lại kết nối.';
+      Alert.alert(
+        is401 ? 'Hết phiên đăng nhập' : 'Tạo đơn thất bại',
+        Array.isArray(errMsg) ? errMsg.join('\n') : errMsg
+      );
     } finally {
       setSubmitting(false);
     }

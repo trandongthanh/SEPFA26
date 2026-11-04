@@ -52,6 +52,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const [cccdBackUrl, setCccdBackUrl] = useState<string>('');
   const [selfieWithIdUrl, setSelfieWithIdUrl] = useState<string>('');
   const [uploadingType, setUploadingType] = useState<'front' | 'back' | 'selfie' | null>(null);
+  const [sessionExpired, setSessionExpired] = useState<boolean>(false);
 
   const loadProfile = async () => {
     setLoading(true);
@@ -64,12 +65,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
 
       const token = await storage.getToken();
       if (!token) {
+        setSessionExpired(true);
         setLoading(false);
         return;
       }
 
       const res = await customerService.getMyProfile();
       setProfile(res);
+      setSessionExpired(false);
       if (res.fullName) setUserName(res.fullName);
       if (res.email) setUserEmail(res.email);
 
@@ -84,7 +87,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       setCccdBackUrl(res.cccdBackUrl || '');
       setSelfieWithIdUrl(res.selfieWithIdUrl || '');
     } catch (err: any) {
-      if (err?.response?.status !== 401) {
+      if (err?.response?.status === 401) {
+        setSessionExpired(true);
+      } else {
         console.log('Customer profile info:', err?.message || err);
       }
     } finally {
@@ -334,6 +339,43 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          {/* Cảnh báo phiên đăng nhập hết hạn */}
+          {sessionExpired && (
+            <View
+              style={{
+                backgroundColor: '#FEF2F2',
+                borderColor: '#F87171',
+                borderWidth: 1,
+                borderRadius: 12,
+                padding: 12,
+                marginBottom: 14,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: '#991B1B' }}>
+                  ⚠️ Phiên đăng nhập đã hết hạn
+                </Text>
+                <Text style={{ fontSize: 11, color: '#B91C1C', marginTop: 2 }}>
+                  Vui lòng đăng xuất và đăng nhập lại để làm mới dữ liệu hồ sơ đã xác thực của bạn.
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={handleLogout}
+                style={{
+                  backgroundColor: '#DC2626',
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderRadius: 8,
+                }}
+              >
+                <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>Đăng xuất</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
           {/* Top Banner User Profile */}
           <View style={styles.topProfileBar}>
             <View style={styles.avatarCircle}>
