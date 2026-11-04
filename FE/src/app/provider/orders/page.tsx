@@ -14,12 +14,17 @@ import {
   EyeOutlined,
   FileProtectOutlined,
   FileTextOutlined,
+  FormOutlined,
+  InfoCircleOutlined,
+  LockOutlined,
   PictureOutlined,
+  PrinterOutlined,
+  SafetyCertificateFilled,
   SafetyCertificateOutlined,
   UserOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Image, Input, Modal, Radio, Segmented, Select, Spin, Tag, message } from 'antd';
+import { Avatar, Button, Checkbox, Image, Input, Modal, Radio, Segmented, Select, Spin, Tag, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
 import { videoCallApi } from '@/lib/video-call.api';
@@ -67,6 +72,12 @@ function OrdersPageContent() {
   const [contractModalOpen, setContractModalOpen] = useState(false);
   const [contractLoading, setContractLoading] = useState(false);
   const [contractData, setContractData] = useState<any | null>(null);
+  const [currentContractOrderId, setCurrentContractOrderId] = useState<string | null>(null);
+
+  // State for Sign Confirmation Modal
+  const [signConfirmModalOpen, setSignConfirmModalOpen] = useState(false);
+  const [orderToSign, setOrderToSign] = useState<{ id: string; agreementNo?: string; orderCode?: string } | null>(null);
+  const [hasAgreedTerms, setHasAgreedTerms] = useState(false);
 
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
 
@@ -140,13 +151,27 @@ function OrdersPageContent() {
     }
   };
 
-  // Handle Provider Sign Service Agreement
-  const handleSignAgreement = async (orderId: string) => {
+  // Yêu cầu mở popup xác nhận ký hợp đồng
+  const handlePromptSignAgreement = (orderId: string, agreementNo?: string, orderCode?: string) => {
+    setOrderToSign({ id: orderId, agreementNo, orderCode });
+    setHasAgreedTerms(false);
+    setSignConfirmModalOpen(true);
+  };
+
+  // Xác nhận ký hợp đồng từ popup
+  const handleConfirmSignAgreement = async () => {
+    if (!orderToSign) return;
+    const orderId = orderToSign.id;
     setActionLoading(orderId);
     try {
       await providerApi.signAgreement(orderId);
       message.success('Đã ký hợp đồng dịch vụ trực tuyến thành công!');
+      setSignConfirmModalOpen(false);
+      setOrderToSign(null);
       loadData(activeTab);
+      if (contractModalOpen && currentContractOrderId === orderId) {
+        handleOpenContractModal(orderId);
+      }
     } catch (err: any) {
       const msg = err?.response?.data?.message || err?.message || 'Không thể ký hợp đồng lúc này.';
       message.error(Array.isArray(msg) ? msg.join(', ') : msg);
@@ -255,6 +280,7 @@ function OrdersPageContent() {
 
   // Mở modal xem chi tiết hợp đồng điện tử
   const handleOpenContractModal = async (orderId: string) => {
+    setCurrentContractOrderId(orderId);
     setContractModalOpen(true);
     setContractLoading(true);
     try {
@@ -548,7 +574,7 @@ function OrdersPageContent() {
                         <Button
                           type="primary"
                           icon={<FileProtectOutlined />}
-                          onClick={() => handleSignAgreement(order.id)}
+                          onClick={() => handlePromptSignAgreement(order.id, undefined, order.orderCode)}
                           loading={actionLoading === order.id}
                           className="!h-9 !px-4 !rounded-xl !bg-[#D97706] hover:!bg-[#B45309] !font-semibold text-xs shadow-sm flex items-center gap-1 text-white"
                         >
@@ -1026,25 +1052,79 @@ function OrdersPageContent() {
       {/* Contract Detail Modal */}
       <Modal
         title={
-          <div className="flex items-center gap-2 text-base font-bold text-[#1E1B2E]">
-            <FileProtectOutlined className="text-[#D97706]" />
-            <span>Chi tiết Hợp đồng dịch vụ chăm sóc hoa lan</span>
+          <div className="flex items-center justify-between w-full pr-6">
+            <div className="flex items-center gap-2 text-base font-bold text-[#1E1B2E]">
+              <FileProtectOutlined className="text-[#6027D2] text-lg" />
+              <span>Văn bản Hợp đồng Dịch vụ Chăm sóc Hoa Lan Điện tử</span>
+            </div>
+            <Button
+              size="small"
+              icon={<PrinterOutlined />}
+              onClick={() => {
+                if (typeof window !== 'undefined') window.print();
+              }}
+              className="!rounded-lg text-xs"
+            >
+              In / Lưu PDF
+            </Button>
           </div>
         }
         open={contractModalOpen}
         onCancel={() => setContractModalOpen(false)}
-        width={750}
+        width={860}
         centered
+        styles={{ body: { maxHeight: '78vh', overflowY: 'auto', paddingRight: '6px' } }}
         footer={
-          <Button onClick={() => setContractModalOpen(false)} className="!rounded-xl">
-            Đóng
-          </Button>
+          (() => {
+            const isProviderSigned = contractData?.signatures?.some(
+              (s: any) =>
+                (s.role === 'PROVIDER' || s.signerRole === 'PROVIDER') &&
+                (s.signedAt || s.signatureHash)
+            );
+            const agreementNumber =
+              contractData?.agreementNo ||
+              contractData?.agreement?.agreementNo ||
+              'N/A';
+            const orderCode =
+              contractData?.orderSummary?.orderCode ||
+              contractData?.orderCode ||
+              'N/A';
+
+            return (
+              <div className="flex items-center justify-between w-full pt-2">
+                <div className="text-xs text-[#6E6A8A] flex items-center gap-1.5">
+                  <LockOutlined className="text-[#6027D2]" />
+                  <span>Xác thực & Bảo mật bởi LanCare Hub</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button onClick={() => setContractModalOpen(false)} className="!rounded-xl">
+                    Đóng
+                  </Button>
+                  {contractData && !isProviderSigned && (
+                    <Button
+                      type="primary"
+                      icon={<FormOutlined />}
+                      onClick={() => {
+                        const ordId = currentContractOrderId || contractData.orderSummary?.orderId || contractData.serviceOrderId;
+                        if (ordId) {
+                          handlePromptSignAgreement(ordId, agreementNumber, orderCode);
+                        }
+                      }}
+                      className="!bg-[#6027D2] hover:!bg-[#4E1BA8] !rounded-xl !font-semibold text-white shadow-md shadow-[#6027D2]/30"
+                    >
+                      Ký hợp đồng ngay
+                    </Button>
+                  )}
+                </div>
+              </div>
+            );
+          })()
         }
       >
         {contractLoading ? (
-          <div className="py-16 text-center">
+          <div className="py-20 text-center">
             <Spin size="large" />
-            <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải nội dung hợp đồng điện tử...</p>
+            <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải dữ liệu hợp đồng điện tử...</p>
           </div>
         ) : contractData ? (
           (() => {
@@ -1065,6 +1145,10 @@ function OrdersPageContent() {
               customerParty.address && customerParty.address !== 'Chưa cung cấp'
                 ? customerParty.address
                 : 'Chưa cập nhật địa chỉ';
+            const customerIdentity =
+              customerParty.identityNumber && customerParty.identityNumber !== 'Chưa cung cấp'
+                ? customerParty.identityNumber
+                : 'Chưa cung cấp';
 
             const providerName =
               providerParty.fullName && providerParty.fullName !== 'Chưa cung cấp'
@@ -1078,11 +1162,23 @@ function OrdersPageContent() {
               providerParty.address && providerParty.address !== 'Chưa cung cấp'
                 ? providerParty.address
                 : 'Chưa cập nhật địa chỉ';
+            const providerIdentity =
+              providerParty.identityNumber && providerParty.identityNumber !== 'Chưa cung cấp'
+                ? providerParty.identityNumber
+                : 'Chưa cung cấp';
 
             const agreementNumber =
               contractData.agreementNo ||
               contractData.agreement?.agreementNo ||
               'N/A';
+            const orderCode =
+              contractData.orderSummary?.orderCode ||
+              contractData.orderCode ||
+              'N/A';
+            const agreementDate =
+              contractData.createdAt ||
+              contractData.agreement?.createdAt ||
+              new Date().toISOString();
 
             const isCustomerSigned = contractData.signatures?.some(
               (s: any) =>
@@ -1095,101 +1191,438 @@ function OrdersPageContent() {
                 (s.signedAt || s.signatureHash)
             );
 
+            const customerSig = contractData.signatures?.find(
+              (s: any) => s.role === 'CUSTOMER' || s.signerRole === 'CUSTOMER'
+            );
+            const providerSig = contractData.signatures?.find(
+              (s: any) => s.role === 'PROVIDER' || s.signerRole === 'PROVIDER'
+            );
+
+            const pricing = contractData.pricing || {};
+            const orderSummary = contractData.orderSummary || {};
+            const compensationPolicy = contractData.compensationPolicy || {};
+
+            // Fallback 9 standard clauses if empty
+            const defaultClauses = [
+              'Điều 1 – Phạm vi dịch vụ: Bên B (Nhà vườn) cam kết thực hiện dịch vụ chăm sóc hoa lan theo đúng quy trình gói dịch vụ đã chọn, bao gồm tưới nước, bón phân, điều chỉnh ánh sáng, phòng trừ sâu bệnh và các kỹ thuật chuyên sâu theo từng dòng lan.',
+              'Điều 2 – Xác nhận tiếp nhận cây tại địa điểm bàn giao: Bên B (Nhà vườn) xác nhận tiếp nhận cây từ Bên A (Khách hàng) theo đúng hình ảnh chụp ban đầu và kết quả khảo sát qua video call, bao gồm số lượng, loài lan và tình trạng thực tế tại thời điểm bàn giao.',
+              'Điều 3 – Trách nhiệm trong quá trình vận chuyển: Nếu xảy ra tình trạng cây bị thất lạc hoặc hư hỏng dẫn đến hậu quả nghiêm trọng trong quá trình vận chuyển giao nhận, Bên B cam kết bồi thường 120% giá trị định giá của cây.',
+              'Điều 4 – Trách nhiệm trong quá trình chăm sóc: Trong suốt thời gian chăm sóc tại nhà vườn, nếu cây bị suy yếu nặng, chết hoặc thất lạc do lỗi chăm sóc kỹ thuật, Bên B chịu trách nhiệm bồi thường cho Bên A mức bằng 120% giá trị khai báo của cây đã thống nhất.',
+              'Điều 5 – Cam kết của Bên A: Bên A cam kết thông tin về cây, chủng loại, số lượng, giá trị khai báo và ảnh chụp ban đầu là hoàn toàn trung thực, chính xác.',
+              'Điều 6 – Quyền từ chối nhận cây: Nếu tình trạng thực tế cây khác biệt đáng kể so với ảnh ban đầu hoặc nội dung đã trao đổi qua video call, Bên B có quyền từ chối nhận cây và hủy đơn theo quy trình.',
+              'Điều 7 – Báo cáo định kỳ: Bên B có nghĩa vụ gửi báo cáo tình trạng cây định kỳ đúng tần suất thỏa thuận kèm hình ảnh minh chứng cụ thể qua Hệ thống LanCare Hub.',
+              'Điều 8 – Giải quyết tranh chấp: Mọi tranh chấp được ưu tiên đối soát, hòa giải dựa trên hình ảnh ban đầu, video call và biên bản bàn giao lưu giữ trên LanCare Hub.',
+              'Điều 9 – Hiệu lực hợp đồng: Hợp đồng điện tử có hiệu lực kể từ khi cả hai bên hoàn tất ký xác nhận điện tử trên hệ thống và có giá trị pháp lý theo Luật Giao dịch điện tử số 20/2023/QH15.',
+            ];
+            const clausesToRender = (contractData.clauses && contractData.clauses.length > 0)
+              ? contractData.clauses
+              : defaultClauses;
+
             return (
-              <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
-                <div className="text-center p-3 bg-[#F8F6FC] rounded-xl border border-[#ECE7FA]">
-                  <h3 className="font-extrabold text-base text-[#1E1B2E]">HỢP ĐỒNG DỊCH VỤ CHĂM SÓC HOA LAN</h3>
-                  <p className="text-xs text-[#6027D2] font-semibold mt-1">
-                    Số HĐ: {agreementNumber}
+              <div className="bg-white p-6 sm:p-8 rounded-2xl border border-gray-200 text-[#1E1B2E] space-y-6">
+                {/* Header Quốc hiệu & Tiêu ngữ */}
+                <div className="text-center pb-6 border-b-2 border-double border-[#6027D2]/30">
+                  <h4 className="text-xs font-bold tracking-widest text-[#6027D2] uppercase">
+                    CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM
+                  </h4>
+                  <p className="text-xs font-semibold text-gray-700 mt-1">
+                    Độc lập – Tự do – Hạnh phúc
                   </p>
-                </div>
-
-                {/* Parties */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="p-3 bg-white rounded-xl border border-[#ECE7FA]">
-                    <span className="text-[10px] font-bold text-[#6027D2] uppercase tracking-wider">
-                      BÊN A (Khách hàng)
-                    </span>
-                    <h5 className="font-bold text-sm text-[#1E1B2E] mt-1">{customerName}</h5>
-                    <p className="text-xs text-[#6E6A8A] mt-0.5">SĐT: {customerPhone}</p>
-                    <p className="text-xs text-[#6E6A8A]">Địa chỉ: {customerAddress}</p>
-                  </div>
-
-                  <div className="p-3 bg-white rounded-xl border border-[#ECE7FA]">
-                    <span className="text-[10px] font-bold text-[#6027D2] uppercase tracking-wider">
-                      BÊN B (Nhà vườn)
-                    </span>
-                    <h5 className="font-bold text-sm text-[#1E1B2E] mt-1">{providerName}</h5>
-                    <p className="text-xs text-[#6E6A8A] mt-0.5">SĐT: {providerPhone}</p>
-                    <p className="text-xs text-[#6E6A8A]">Địa chỉ: {providerAddress}</p>
+                  <div className="w-24 h-0.5 bg-[#6027D2]/40 mx-auto my-2.5" />
+                  <h2 className="text-xl font-extrabold text-[#1E1B2E] uppercase mt-3 tracking-wide">
+                    HỢP ĐỒNG DỊCH VỤ CHĂM SÓC HOA LAN ĐIỆN TỬ
+                  </h2>
+                  <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-gray-500 mt-2 font-medium">
+                    <span>Số HĐ: <strong className="text-[#6027D2] font-mono">{agreementNumber}</strong></span>
+                    <span>•</span>
+                    <span>Mã đơn: <strong className="text-gray-800 font-mono">{orderCode}</strong></span>
+                    <span>•</span>
+                    <span>Ngày lập: <strong>{new Date(agreementDate).toLocaleDateString('vi-VN')}</strong></span>
                   </div>
                 </div>
 
-                {/* Compensation Policy */}
-                <div className="p-3 bg-[#ECFDF5] border border-[#A7F3D0] rounded-xl">
-                  <h5 className="font-bold text-xs text-[#065F46] flex items-center gap-1.5 mb-1">
-                    <SafetyCertificateOutlined /> Điều khoản bồi thường thiệt hại (Tối đa 120%)
-                  </h5>
-                  <p className="text-xs text-[#047857] leading-relaxed">
-                    Nhà vườn cam kết bồi thường lên đến <strong>120% giá trị khai báo hợp lệ</strong> trong trường hợp chậu lan bị chết, thất lạc hoặc hư hỏng nặng do lỗi chăm sóc của nhà vườn trong suốt thời gian nhận chăm sóc.
+                {/* Căn cứ pháp lý */}
+                <div className="text-[11px] text-gray-500 italic space-y-1 bg-gray-50 p-3.5 rounded-xl border border-gray-100">
+                  <p>• Căn cứ Bộ luật Dân sự số 91/2015/QH13 ngày 24/11/2015 của Quốc hội Nước CHXHCN Việt Nam;</p>
+                  <p>• Căn cứ Luật Giao dịch điện tử số 20/2023/QH15 ngày 22/06/2023 và các văn bản hướng dẫn thi hành;</p>
+                  <p>• Căn cứ thỏa thuận tự nguyện và biên bản khảo sát trực tuyến qua video call giữa hai bên trên Nền tảng LanCare Hub;</p>
+                  <p className="font-semibold text-gray-700 not-italic pt-1">
+                    Hôm nay, hai bên thống nhất ký kết Hợp đồng dịch vụ chăm sóc hoa lan điện tử với các điều khoản chi tiết như sau:
                   </p>
                 </div>
 
-                {/* Plants list */}
+                {/* I. THÔNG TIN CÁC BÊN */}
                 <div>
-                  <h5 className="font-bold text-xs text-[#4B4764] mb-2">
-                    Danh sách cây trong hợp đồng ({contractData.plants?.length || 0}):
-                  </h5>
-                  <div className="space-y-2">
-                    {contractData.plants?.map((p: any, i: number) => (
-                      <div key={i} className="flex items-center justify-between p-2.5 bg-[#F8F9FA] rounded-lg text-xs">
-                        <span className="font-medium text-[#1E1B2E]">
-                          {i + 1}. {p.name} {p.speciesName ? `(${p.speciesName})` : ''}
-                        </span>
-                        <span className="font-bold text-[#6027D2]">
-                          {p.isValueDeclared && p.declaredValue
-                            ? `Giá trị khai báo: ${Number(p.declaredValue).toLocaleString('vi-VN')} VNĐ`
-                            : 'Không khai báo giá trị'}
-                        </span>
+                  <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#6027D2] mb-3 flex items-center gap-1.5">
+                    <UserOutlined /> I. THÔNG TIN CÁC BÊN GIAO KẾT
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Bên A */}
+                    <div className="p-4 bg-[#F8F6FC] rounded-xl border border-[#ECE7FA]">
+                      <span className="text-[10px] font-extrabold text-[#6027D2] uppercase tracking-wider px-2 py-0.5 rounded bg-white border border-[#ECE7FA]">
+                        BÊN A (Bên thuê dịch vụ / Khách hàng)
+                      </span>
+                      <h5 className="font-bold text-sm text-[#1E1B2E] mt-2">{customerName}</h5>
+                      <div className="space-y-1 text-xs text-[#4B4764] mt-1.5">
+                        <p><span className="text-gray-400">Số điện thoại:</span> {customerPhone}</p>
+                        <p><span className="text-gray-400">Địa chỉ:</span> {customerAddress}</p>
+                        <p><span className="text-gray-400">Số CCCD/Định danh:</span> {customerIdentity}</p>
                       </div>
+                    </div>
+
+                    {/* Bên B */}
+                    <div className="p-4 bg-[#F0FDF4] rounded-xl border border-[#DCFCE7]">
+                      <span className="text-[10px] font-extrabold text-[#16A34A] uppercase tracking-wider px-2 py-0.5 rounded bg-white border border-[#DCFCE7]">
+                        BÊN B (Bên cung cấp dịch vụ / Nhà vườn)
+                      </span>
+                      <h5 className="font-bold text-sm text-[#1E1B2E] mt-2">{providerName}</h5>
+                      <div className="space-y-1 text-xs text-[#4B4764] mt-1.5">
+                        <p><span className="text-gray-400">Số điện thoại:</span> {providerPhone}</p>
+                        <p><span className="text-gray-400">Địa chỉ vườn:</span> {providerAddress}</p>
+                        <p><span className="text-gray-400">Mã định danh/GPKD:</span> {providerIdentity}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* II. THÔNG TIN GÓI DỊCH VỤ */}
+                <div>
+                  <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#6027D2] mb-3 flex items-center gap-1.5">
+                    <CalendarOutlined /> II. THÔNG TIN GÓI DỊCH VỤ & LỊCH TRÌNH THỰC HIỆN
+                  </h4>
+                  <div className="bg-[#FAF9FD] rounded-xl border border-[#ECE7FA] p-4 text-xs space-y-2">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <span className="text-gray-400">Gói dịch vụ:</span>{' '}
+                        <strong className="text-[#1E1B2E]">{orderSummary.servicePackageName || 'Chăm sóc hoa lan chuyên sâu'}</strong>
+                      </div>
+                      <div>
+                        <span className="text-gray-400">Thời hạn chăm sóc:</span>{' '}
+                        <strong className="text-[#6027D2]">{orderSummary.durationDays || 30} ngày</strong>
+                      </div>
+                      <div>
+                        <span className="text-gray-400">Tần suất gửi báo cáo:</span>{' '}
+                        <strong className="text-[#1E1B2E]">Mỗi {orderSummary.reportFrequencyDays || 7} ngày / lần</strong> (kèm ảnh & video hiện trạng)
+                      </div>
+                      <div>
+                        <span className="text-gray-400">Ngày hẹn lấy/tiếp nhận:</span>{' '}
+                        <strong className="text-[#1E1B2E]">
+                          {orderSummary.scheduledPickupAt ? new Date(orderSummary.scheduledPickupAt).toLocaleDateString('vi-VN') : 'Theo lịch hẹn'}
+                        </strong>
+                      </div>
+                    </div>
+                    {orderSummary.pickupAddress && (
+                      <div className="pt-2 border-t border-gray-100">
+                        <span className="text-gray-400">Địa chỉ giao nhận cây:</span>{' '}
+                        <strong className="text-[#1E1B2E]">{orderSummary.pickupAddress}</strong>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* III. DANH MỤC CÂY & ĐỊNH GIÁ BỒI THƯỜNG */}
+                <div>
+                  <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#6027D2] mb-3 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <PictureOutlined /> III. DANH MỤC CÂY GIAO NHẬN & MỨC ĐỀN BÙ
+                    </span>
+                    <span className="text-[11px] font-semibold text-gray-500 lowercase">
+                      ({contractData.plants?.length || 0} chậu cây)
+                    </span>
+                  </h4>
+                  <div className="overflow-x-auto rounded-xl border border-[#ECE7FA]">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-[#6027D2] text-white font-semibold">
+                          <th className="py-2.5 px-3 w-12 text-center">STT</th>
+                          <th className="py-2.5 px-3">Tên chậu lan</th>
+                          <th className="py-2.5 px-3">Giống / Loài</th>
+                          <th className="py-2.5 px-3 text-right">Giá trị khai báo</th>
+                          <th className="py-2.5 px-3 text-right text-yellow-200">Cam kết đền bù (120%)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#ECE7FA]">
+                        {contractData.plants?.map((p: any, idx: number) => {
+                          const declared = p.declaredValue ? Number(p.declaredValue) : 0;
+                          const comp = p.compensationAmount
+                            ? Number(p.compensationAmount)
+                            : (declared > 0 ? declared * 1.2 : 0);
+
+                          return (
+                            <tr key={idx} className="hover:bg-[#F8F6FC] transition-colors">
+                              <td className="py-2.5 px-3 text-center text-gray-400 font-medium">#{idx + 1}</td>
+                              <td className="py-2.5 px-3 font-semibold text-[#1E1B2E]">
+                                {p.name}
+                                {p.initialPhotos && p.initialPhotos.length > 0 && (
+                                  <div className="mt-1">
+                                    <Image
+                                      src={p.initialPhotos[0]}
+                                      alt={p.name}
+                                      width={40}
+                                      height={40}
+                                      className="rounded-lg object-cover border border-gray-200"
+                                    />
+                                  </div>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-gray-600 italic">
+                                {p.speciesName || 'Chưa định danh'}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-medium text-gray-700">
+                                {declared > 0 ? `${declared.toLocaleString('vi-VN')} VNĐ` : 'Không khai báo'}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-bold text-[#DC2626]">
+                                {comp > 0 ? `${comp.toLocaleString('vi-VN')} VNĐ` : 'Theo giá gói mặc định'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* IV. CHI PHÍ DỊCH VỤ & BẢO CHỨNG ESCROW */}
+                <div>
+                  <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#6027D2] mb-3 flex items-center gap-1.5">
+                    <DollarOutlined /> IV. CHI PHÍ DỊCH VỤ & QUY ĐỊNH BẢO CHỨNG THANH TOÁN (ESCROW)
+                  </h4>
+                  <div className="bg-[#FAF9FD] rounded-xl border border-[#ECE7FA] p-4 text-xs space-y-2">
+                    <div className="flex justify-between items-center py-1">
+                      <span className="text-gray-500">Phí dịch vụ chăm sóc:</span>
+                      <span className="font-semibold text-gray-800">
+                        {Number(pricing.provisionalTotal || contractData.provisionalTotal || 0).toLocaleString('vi-VN')} VNĐ
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center py-1">
+                      <span className="text-gray-500">Phí vận chuyển giao nhận:</span>
+                      <span className="font-semibold text-gray-800">
+                        {Number(pricing.pickupFee || contractData.pickupFeeSnapshot || 0).toLocaleString('vi-VN')} VNĐ
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center py-2 border-t border-dashed border-[#ECE7FA] text-sm">
+                      <span className="font-bold text-[#1E1B2E]">TỔNG GIÁ TRỊ HỢP ĐỒNG:</span>
+                      <span className="font-extrabold text-[#6027D2] text-base">
+                        {Number(
+                          pricing.grandTotal ||
+                          (Number(pricing.provisionalTotal || contractData.provisionalTotal || 0) +
+                           Number(pricing.pickupFee || contractData.pickupFeeSnapshot || 0))
+                        ).toLocaleString('vi-VN')}{' '}
+                        VNĐ
+                      </span>
+                    </div>
+                    <div className="p-2.5 bg-blue-50/70 rounded-lg border border-blue-100 text-[11px] text-blue-800 flex items-start gap-2 mt-2">
+                      <SafetyCertificateFilled className="text-blue-600 mt-0.5 text-xs flex-shrink-0" />
+                      <span>
+                        <strong>Cơ chế bảo vệ LanCare Escrow:</strong> Toàn bộ chi phí dịch vụ được tạm giữ an toàn trong tài khoản trung gian của LanCare Hub. Nhà vườn chỉ được giải ngân sau khi hoàn tất quy trình bàn giao cây và Khách hàng đã kiểm tra, ký xác nhận nghiệm thu đạt yêu cầu.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* V. CHÍNH SÁCH BỒI THƯỜNG 120% */}
+                <div className="p-4 bg-[#FEF2F2] border border-[#FECACA] rounded-xl">
+                  <h4 className="font-bold text-xs text-[#991B1B] flex items-center gap-1.5 mb-2 uppercase tracking-wide">
+                    <SafetyCertificateFilled className="text-[#DC2626]" /> V. CHÍNH SÁCH BỒI THƯỜNG THIỆT HẠI (CAM KẾT 120%)
+                  </h4>
+                  <p className="text-xs text-[#B91C1C] font-semibold mb-2">
+                    Mức bồi thường: 120% giá trị định giá của cây đã được hai bên thống nhất tại thời điểm ký hợp đồng.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-[#7F1D1D]">
+                    <div className="bg-white/70 p-2.5 rounded-lg border border-[#FEE2E2]">
+                      <p className="font-bold mb-1">Trong quá trình chăm sóc:</p>
+                      <ul className="list-disc list-inside space-y-0.5 text-[11px]">
+                        <li>Cây suy yếu nghiêm trọng so với biên bản bàn giao ban đầu</li>
+                        <li>Cây chết do lỗi kỹ thuật chăm sóc của Nhà vườn</li>
+                        <li>Cây bị thất lạc trong thời gian lưu giữ tại vườn</li>
+                      </ul>
+                    </div>
+                    <div className="bg-white/70 p-2.5 rounded-lg border border-[#FEE2E2]">
+                      <p className="font-bold mb-1">Trong quá trình vận chuyển:</p>
+                      <ul className="list-disc list-inside space-y-0.5 text-[11px]">
+                        <li>Cây bị dập gãy ngọn, hư hỏng nặng khi giao nhận</li>
+                        <li>Cây bị thất lạc trong quá trình vận chuyển</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+
+                {/* VI. ĐIỀU KHOẢN HỢP ĐỒNG */}
+                <div>
+                  <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#6027D2] mb-3 flex items-center gap-1.5">
+                    <AuditOutlined /> VI. CÁC ĐIỀU KHOẢN THỎA THUẬN CHUNG
+                  </h4>
+                  <div className="space-y-2.5 bg-gray-50/70 p-4 rounded-xl border border-gray-100 text-xs text-gray-700 leading-relaxed">
+                    {clausesToRender.map((clause: string, cIdx: number) => (
+                      <p key={cIdx} className="text-[11.5px]">
+                        <strong>{clause.split(':')[0]}:</strong>{clause.includes(':') ? clause.substring(clause.indexOf(':') + 1) : clause}
+                      </p>
                     ))}
                   </div>
                 </div>
 
-                {/* Signatures status */}
-                <div className="p-3 bg-[#F8F6FC] rounded-xl border border-[#ECE7FA]">
-                  <h5 className="font-bold text-xs text-[#4B4764] mb-2">Tình trạng chữ ký điện tử:</h5>
-                  <div className="grid grid-cols-2 gap-3 text-center">
-                    <div className="p-2 bg-white rounded-lg border border-[#ECE7FA]">
-                      <p className="text-[11px] text-[#6E6A8A]">Đại diện Bên A (Khách hàng)</p>
+                {/* VII. CHỮ KÝ ĐIỆN TỬ */}
+                <div>
+                  <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#6027D2] mb-3 flex items-center gap-1.5">
+                    <FormOutlined /> VII. XÁC NHẬN CHỮ KÝ ĐIỆN TỬ CỦA HAI BÊN
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-center">
+                    {/* Chữ ký Bên A */}
+                    <div className={`p-4 rounded-xl border-2 transition-all ${
+                      isCustomerSigned ? 'bg-[#F0FDF4] border-[#16A34A]/50' : 'bg-gray-50 border-gray-200'
+                    }`}>
+                      <p className="text-xs font-bold text-[#6027D2] uppercase tracking-wider">ĐẠI DIỆN BÊN A (KHÁCH HÀNG)</p>
+                      <p className="text-sm font-semibold text-[#1E1B2E] mt-2 mb-3">
+                        {customerSig?.signerName || customerName}
+                      </p>
                       {isCustomerSigned ? (
-                        <Tag color="green" className="mt-1 font-bold">
-                          ĐÃ KÝ ĐIỆN TỬ
-                        </Tag>
+                        <div className="space-y-1">
+                          <Tag color="green" className="font-extrabold px-3 py-1 text-xs uppercase tracking-wide">
+                            ✓ ĐÃ KÝ ĐIỆN TỬ
+                          </Tag>
+                          <p className="text-[10px] text-gray-400 mt-1">
+                            Ký lúc: {customerSig?.signedAt ? new Date(customerSig.signedAt).toLocaleString('vi-VN') : 'Đã ghi nhận'}
+                          </p>
+                          {customerSig?.signatureHash && (
+                            <p className="text-[9px] text-gray-400 font-mono break-all line-clamp-1">
+                              Hash: {customerSig.signatureHash}
+                            </p>
+                          )}
+                        </div>
                       ) : (
-                        <Tag color="default" className="mt-1 font-medium italic">
-                          Chưa ký
+                        <Tag color="default" className="text-xs italic py-0.5">
+                          Đang chờ Bên A ký điện tử
                         </Tag>
                       )}
                     </div>
-                    <div className="p-2 bg-white rounded-lg border border-[#ECE7FA]">
-                      <p className="text-[11px] text-[#6E6A8A]">Đại diện Bên B (Nhà vườn)</p>
+
+                    {/* Chữ ký Bên B */}
+                    <div className={`p-4 rounded-xl border-2 transition-all ${
+                      isProviderSigned ? 'bg-[#F0FDF4] border-[#16A34A]/50' : 'bg-gray-50 border-gray-200'
+                    }`}>
+                      <p className="text-xs font-bold text-[#16A34A] uppercase tracking-wider">ĐẠI DIỆN BÊN B (NHÀ VƯỜN)</p>
+                      <p className="text-sm font-semibold text-[#1E1B2E] mt-2 mb-3">
+                        {providerSig?.signerName || providerName}
+                      </p>
                       {isProviderSigned ? (
-                        <Tag color="green" className="mt-1 font-bold">
-                          ĐÃ KÝ ĐIỆN TỬ
-                        </Tag>
+                        <div className="space-y-1">
+                          <Tag color="green" className="font-extrabold px-3 py-1 text-xs uppercase tracking-wide">
+                            ✓ ĐÃ KÝ ĐIỆN TỬ
+                          </Tag>
+                          <p className="text-[10px] text-gray-400 mt-1">
+                            Ký lúc: {providerSig?.signedAt ? new Date(providerSig.signedAt).toLocaleString('vi-VN') : 'Đã ghi nhận'}
+                          </p>
+                          {providerSig?.signatureHash && (
+                            <p className="text-[9px] text-gray-400 font-mono break-all line-clamp-1">
+                              Hash: {providerSig.signatureHash}
+                            </p>
+                          )}
+                        </div>
                       ) : (
-                        <Tag color="default" className="mt-1 font-medium italic">
-                          Chưa ký
+                        <Tag color="warning" className="text-xs font-medium py-0.5">
+                          Chưa ký điện tử
                         </Tag>
                       )}
                     </div>
                   </div>
+                </div>
+
+                <div className="text-center pt-2 text-[11px] text-gray-400 border-t border-gray-100">
+                  Hợp đồng điện tử này được tạo lập và bảo chứng an toàn bởi Hệ thống LanCare Hub theo quy định của pháp luật Việt Nam.
                 </div>
               </div>
             );
           })()
         ) : null}
+      </Modal>
+
+      {/* Sign Confirmation Modal */}
+      <Modal
+        title={
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#F6F4FC] flex items-center justify-center text-[#6027D2] text-xl flex-shrink-0">
+              <FormOutlined />
+            </div>
+            <div>
+              <h4 className="text-base font-extrabold text-[#1E1B2E] leading-tight">
+                Xác nhận Ký Hợp đồng Dịch vụ
+              </h4>
+              <p className="text-xs text-[#6E6A8A] font-normal mt-0.5">
+                Ký kết điện tử dịch vụ chăm sóc hoa lan LanCare
+              </p>
+            </div>
+          </div>
+        }
+        open={signConfirmModalOpen}
+        onCancel={() => {
+          if (actionLoading === null) setSignConfirmModalOpen(false);
+        }}
+        width={520}
+        centered
+        footer={
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              onClick={() => setSignConfirmModalOpen(false)}
+              disabled={actionLoading !== null}
+              className="!rounded-xl"
+            >
+              Hủy / Xem lại
+            </Button>
+            <Button
+              type="primary"
+              loading={actionLoading === orderToSign?.id}
+              disabled={!hasAgreedTerms}
+              onClick={handleConfirmSignAgreement}
+              className="!rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !font-semibold text-white shadow-md shadow-[#6027D2]/30"
+            >
+              Xác nhận & Ký điện tử ngay
+            </Button>
+          </div>
+        }
+      >
+        <div className="py-2 space-y-4 text-xs text-[#4B4764]">
+          <div className="p-3 bg-[#F8F6FC] rounded-xl border border-[#ECE7FA] flex items-center justify-between">
+            <div>
+              <span className="text-[11px] text-gray-400">Mã đơn hàng:</span>
+              <p className="font-bold text-sm text-[#1E1B2E] font-mono">
+                {orderToSign?.orderCode || 'N/A'}
+              </p>
+            </div>
+            {orderToSign?.agreementNo && (
+              <div className="text-right">
+                <span className="text-[11px] text-gray-400">Số hợp đồng:</span>
+                <p className="font-bold text-xs text-[#6027D2] font-mono">
+                  {orderToSign.agreementNo}
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="p-3.5 bg-amber-50/80 rounded-xl border border-amber-200 text-amber-900 space-y-1.5 leading-relaxed">
+            <p className="font-bold text-xs flex items-center gap-1.5 text-amber-800">
+              <SafetyCertificateFilled className="text-amber-600" /> Cam kết và Trách nhiệm pháp lý:
+            </p>
+            <p className="text-[11.5px]">
+              • Nhà vườn xác nhận đã đọc, hiểu rõ và đồng thuận thực hiện đúng quy trình chăm sóc kỹ thuật, nộp báo cáo định kỳ đúng hạn.
+            </p>
+            <p className="text-[11.5px]">
+              • Cam kết chịu trách nhiệm bồi thường lên tới <strong>120% giá trị khai báo</strong> của cây nếu phát sinh hư hại do lỗi chăm sóc theo điều khoản hợp đồng.
+            </p>
+            <p className="text-[11px] text-amber-700 italic pt-1">
+              * Chữ ký điện tử này có hiệu lực pháp lý ràng buộc theo quy định của Luật Giao dịch điện tử số 20/2023/QH15.
+            </p>
+          </div>
+
+          <div className="pt-2">
+            <Checkbox
+              checked={hasAgreedTerms}
+              onChange={(e) => setHasAgreedTerms(e.target.checked)}
+              className="text-xs text-[#1E1B2E] font-medium leading-normal"
+            >
+              Tôi xác nhận là đại diện Nhà vườn, đã đọc kỹ toàn bộ điều khoản và đồng ý ký kết hợp đồng dịch vụ điện tử này.
+            </Checkbox>
+          </div>
+        </div>
       </Modal>
     </div>
 

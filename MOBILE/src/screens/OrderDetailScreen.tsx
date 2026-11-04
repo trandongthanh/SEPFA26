@@ -71,6 +71,10 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
   const [contractData, setContractData] = useState<any | null>(null);
   const [signingLoading, setSigningLoading] = useState<boolean>(false);
 
+  // Sign Confirmation Modal state
+  const [signConfirmModalVisible, setSignConfirmModalVisible] = useState<boolean>(false);
+  const [customerAgreedTerms, setCustomerAgreedTerms] = useState<boolean>(false);
+
   // Payment Modal state
   const [paymentModalVisible, setPaymentModalVisible] = useState<boolean>(false);
   const [paymentLoading, setPaymentLoading] = useState<boolean>(false);
@@ -148,33 +152,28 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
     }
   };
 
-  // Ký hợp đồng online
-  const handleSignContract = () => {
-    Alert.alert(
-      'Xác nhận ký hợp đồng',
-      'Bạn xác nhận đồng ý với các điều khoản trong hợp đồng dịch vụ chăm sóc lan và cam kết thực hiện đúng nghĩa vụ?',
-      [
-        { text: 'Xem lại', style: 'cancel' },
-        {
-          text: 'Đồng ý ký',
-          onPress: async () => {
-            setSigningLoading(true);
-            try {
-              await orderService.signAgreement(orderId);
-              Alert.alert('Thành công', 'Bạn đã ký hợp đồng online thành công!');
-              setContractModalVisible(false);
-              fetchDetail();
-            } catch (err: any) {
-              console.error('Sign agreement failed:', err);
-              const msg = err?.response?.data?.message || 'Ký hợp đồng thất bại.';
-              Alert.alert('Lỗi', Array.isArray(msg) ? msg.join('\n') : msg);
-            } finally {
-              setSigningLoading(false);
-            }
-          },
-        },
-      ]
-    );
+  // Yêu cầu mở popup xác nhận ký hợp đồng cho Customer
+  const handlePromptSignContract = () => {
+    setCustomerAgreedTerms(false);
+    setSignConfirmModalVisible(true);
+  };
+
+  // Xác nhận ký hợp đồng từ popup
+  const handleConfirmSignContract = async () => {
+    setSigningLoading(true);
+    try {
+      await orderService.signAgreement(orderId);
+      setSignConfirmModalVisible(false);
+      setContractModalVisible(false);
+      Alert.alert('Thành công', 'Bạn đã ký hợp đồng online thành công!');
+      fetchDetail();
+    } catch (err: any) {
+      console.error('Sign agreement failed:', err);
+      const msg = err?.response?.data?.message || 'Ký hợp đồng thất bại.';
+      Alert.alert('Lỗi', Array.isArray(msg) ? msg.join('\n') : msg);
+    } finally {
+      setSigningLoading(false);
+    }
   };
 
   // Mở modal thanh toán VietQR
@@ -694,93 +693,237 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                   (s.signedAt || s.signatureHash)
               );
 
+              const customerSig = contractData.signatures?.find(
+                (s: any) => s.role === 'CUSTOMER' || s.signerRole === 'CUSTOMER'
+              );
+              const providerSig = contractData.signatures?.find(
+                (s: any) => s.role === 'PROVIDER' || s.signerRole === 'PROVIDER'
+              );
+
+              const pricing = contractData.pricing || {};
+              const orderSummary = contractData.orderSummary || {};
+
+              const defaultClauses = [
+                'Điều 1 – Phạm vi dịch vụ: Bên B (Nhà vườn) cam kết thực hiện dịch vụ chăm sóc hoa lan theo đúng quy trình gói dịch vụ đã chọn, bao gồm tưới nước, bón phân, điều chỉnh ánh sáng, phòng trừ sâu bệnh và các kỹ thuật chuyên sâu theo từng dòng lan.',
+                'Điều 2 – Tiếp nhận bàn giao: Bên B (Nhà vườn) xác nhận tiếp nhận cây từ Bên A (Khách hàng) theo đúng hình ảnh chụp ban đầu và kết quả khảo sát qua video call, bao gồm số lượng, loài lan và hiện trạng thực tế.',
+                'Điều 3 – Trách nhiệm vận chuyển: Nếu xảy ra tình trạng cây bị thất lạc hoặc hư hỏng dẫn đến hậu quả nghiêm trọng trong quá trình vận chuyển giao nhận, Bên B cam kết bồi thường 120% giá trị định giá của cây.',
+                'Điều 4 – Trách nhiệm chăm sóc: Trong suốt thời gian chăm sóc tại nhà vườn, nếu cây bị suy yếu nặng, chết hoặc thất lạc do lỗi chăm sóc kỹ thuật, Bên B chịu trách nhiệm bồi thường cho Bên A mức bằng 120% giá trị khai báo của cây.',
+                'Điều 5 – Cam kết của Bên A: Bên A cam kết thông tin về cây, chủng loại, số lượng, giá trị khai báo và ảnh chụp ban đầu là hoàn toàn trung thực, chính xác.',
+                'Điều 6 – Quyền từ chối nhận cây: Nếu tình trạng thực tế cây khác biệt đáng kể so với ảnh ban đầu hoặc nội dung đã trao đổi qua video call, Bên B có quyền từ chối nhận cây và hủy đơn theo quy trình.',
+                'Điều 7 – Báo cáo định kỳ: Bên B có nghĩa vụ gửi báo cáo tình trạng cây định kỳ đúng tần suất thỏa thuận kèm hình ảnh minh chứng cụ thể qua Hệ thống LanCare Hub.',
+                'Điều 8 – Giải quyết tranh chấp: Mọi tranh chấp được ưu tiên đối soát, hòa giải dựa trên hình ảnh ban đầu, video call và biên bản bàn giao lưu giữ trên LanCare Hub.',
+                'Điều 9 – Hiệu lực hợp đồng: Hợp đồng điện tử có hiệu lực kể từ khi cả hai bên hoàn tất ký xác nhận điện tử trên hệ thống và có giá trị pháp lý theo Luật Giao dịch điện tử số 20/2023/QH15.',
+              ];
+              const clausesToRender = (contractData.clauses && contractData.clauses.length > 0)
+                ? contractData.clauses
+                : defaultClauses;
+
               return (
                 <View style={{ flex: 1 }}>
                   <ScrollView style={styles.modalScrollView} contentContainerStyle={styles.modalScrollContent}>
-                    {/* Header card */}
+                    {/* Header Quốc hiệu & Tiêu ngữ */}
                     <View style={styles.contractCard}>
-                      <Text style={styles.contractDocTitle}>HỢP ĐỒNG DỊCH VỤ CHĂM SÓC HOA LAN</Text>
-                      <Text style={styles.contractNumber}>
-                        Số HĐ: {agreementNumber}
-                      </Text>
+                      <View style={styles.nationHeaderBox}>
+                        <Text style={styles.nationTitle}>CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</Text>
+                        <Text style={styles.nationSubtitle}>Độc lập – Tự do – Hạnh phúc</Text>
+                        <View style={styles.nationDivider} />
+                      </View>
+
+                      <Text style={styles.contractDocTitle}>HỢP ĐỒNG DỊCH VỤ CHĂM SÓC HOA LAN ĐIỆN TỬ</Text>
+                      <Text style={styles.contractNumber}>Số HĐ: {agreementNumber}</Text>
                       <Text style={styles.contractDate}>
-                        Ngày lập: {new Date(agreementDate).toLocaleDateString('vi-VN')}
+                        Mã đơn: {order.orderCode} • Ngày lập: {new Date(agreementDate).toLocaleDateString('vi-VN')}
                       </Text>
+
+                      {/* Legal basis */}
+                      <View style={styles.legalBasisBox}>
+                        <Text style={styles.legalBasisText}>
+                          • Căn cứ Bộ luật Dân sự số 91/2015/QH13 ngày 24/11/2015;{'\n'}
+                          • Căn cứ Luật Giao dịch điện tử số 20/2023/QH15 ngày 22/06/2023;{'\n'}
+                          • Căn cứ thỏa thuận tự nguyện và khảo sát trực tuyến trên Nền tảng LanCare Hub.
+                        </Text>
+                      </View>
                     </View>
 
                     {/* Parties info */}
                     <View style={styles.contractCard}>
-                      <Text style={styles.contractSectionTitle}>1. CÁC BÊN THAM GIA</Text>
+                      <Text style={styles.contractSectionTitle}>I. CÁC BÊN GIAO KẾT</Text>
                       <View style={styles.partyBox}>
-                        <Text style={styles.partyRole}>BÊN A (Khách hàng / Chủ sở hữu cây):</Text>
+                        <Text style={styles.partyRole}>BÊN A (BÊN THUÊ DỊCH VỤ / KHÁCH HÀNG):</Text>
                         <Text style={styles.partyName}>{customerName}</Text>
                         <Text style={styles.partyDetail}>SĐT: {customerPhone}</Text>
                         <Text style={styles.partyDetail}>Địa chỉ: {customerAddress}</Text>
+                        <Text style={styles.partyDetail}>
+                          Số CCCD: {customerParty.identityNumber && customerParty.identityNumber !== 'Chưa cung cấp' ? customerParty.identityNumber : 'Chưa cập nhật'}
+                        </Text>
                       </View>
 
-                      <View style={[styles.partyBox, { marginTop: 10 }]}>
-                        <Text style={styles.partyRole}>BÊN B (Nhà vườn cung cấp dịch vụ):</Text>
+                      <View style={[styles.partyBox, { marginTop: 10, borderLeftColor: '#16A34A' }]}>
+                        <Text style={[styles.partyRole, { color: '#16A34A' }]}>BÊN B (BÊN CUNG CẤP DỊCH VỤ / NHÀ VƯỜN):</Text>
                         <Text style={styles.partyName}>{providerName}</Text>
                         <Text style={styles.partyDetail}>SĐT: {providerPhone}</Text>
-                        <Text style={styles.partyDetail}>Địa chỉ: {providerAddress}</Text>
+                        <Text style={styles.partyDetail}>Địa chỉ vườn: {providerAddress}</Text>
+                        <Text style={styles.partyDetail}>
+                          Định danh/GPKD: {providerParty.identityNumber && providerParty.identityNumber !== 'Chưa cung cấp' ? providerParty.identityNumber : 'Đã xác minh'}
+                        </Text>
                       </View>
                     </View>
 
-                    {/* Plants info */}
+                    {/* Service & Schedule info */}
                     <View style={styles.contractCard}>
-                      <Text style={styles.contractSectionTitle}>2. DANH SÁCH CÂY GỬI CHĂM SÓC ({contractData.plants?.length || 0} cây)</Text>
-                      {contractData.plants?.map((plant: any, index: number) => (
-                        <View key={index} style={styles.contractPlantItem}>
-                          <Text style={styles.contractPlantName}>
-                            {index + 1}. {plant.name} {plant.speciesName ? `(${plant.speciesName})` : ''}
-                          </Text>
-                          <Text style={styles.contractPlantValue}>
-                            Giá trị khai báo:{' '}
-                            {plant.isValueDeclared && plant.declaredValue
-                              ? `${Number(plant.declaredValue).toLocaleString('vi-VN')} VNĐ`
-                              : 'Không khai báo'}
+                      <Text style={styles.contractSectionTitle}>II. GÓI DỊCH VỤ & LỊCH TRÌNH THỰC HIỆN</Text>
+                      <View style={styles.infoRow}>
+                        <Text style={styles.infoLabel}>Gói dịch vụ:</Text>
+                        <Text style={styles.infoValue}>{orderSummary.servicePackageName || 'Chăm sóc hoa lan chuyên sâu'}</Text>
+                      </View>
+                      <View style={styles.infoRow}>
+                        <Text style={styles.infoLabel}>Thời gian chăm sóc:</Text>
+                        <Text style={[styles.infoValue, { color: '#6027D2', fontWeight: '700' }]}>
+                          {orderSummary.durationDays || order.durationDaysSnapshot || 30} ngày
+                        </Text>
+                      </View>
+                      <View style={styles.infoRow}>
+                        <Text style={styles.infoLabel}>Tần suất báo cáo:</Text>
+                        <Text style={styles.infoValue}>
+                          Mỗi {orderSummary.reportFrequencyDays || order.reportFrequencySnapshot || 7} ngày/lần kèm ảnh hiện trạng
+                        </Text>
+                      </View>
+                      <View style={styles.infoRow}>
+                        <Text style={styles.infoLabel}>Hẹn lấy cây:</Text>
+                        <Text style={styles.infoValue}>
+                          {orderSummary.scheduledPickupAt ? new Date(orderSummary.scheduledPickupAt).toLocaleDateString('vi-VN') : 'Theo lịch hẹn'}
+                        </Text>
+                      </View>
+                      <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
+                        <Text style={styles.infoLabel}>Địa chỉ lấy:</Text>
+                        <Text style={[styles.infoValue, { flex: 1, textAlign: 'right' }]}>
+                          {orderSummary.pickupAddress || order.pickupAddress || customerAddress}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Plants list */}
+                    <View style={styles.contractCard}>
+                      <Text style={styles.contractSectionTitle}>
+                        III. DANH MỤC CÂY GIAO NHẬN ({contractData.plants?.length || 0} chậu)
+                      </Text>
+                      {contractData.plants?.map((plant: any, index: number) => {
+                        const declared = plant.declaredValue ? Number(plant.declaredValue) : 0;
+                        const comp = plant.compensationAmount
+                          ? Number(plant.compensationAmount)
+                          : (declared > 0 ? declared * 1.2 : 0);
+
+                        return (
+                          <View key={index} style={styles.contractPlantItem}>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <Text style={styles.contractPlantName}>
+                                {index + 1}. {plant.name}
+                              </Text>
+                              <Text style={{ fontSize: 11, color: '#718096', fontStyle: 'italic' }}>
+                                {plant.speciesName || 'Chưa định danh'}
+                              </Text>
+                            </View>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 }}>
+                              <Text style={styles.contractPlantValue}>
+                                Giá trị: {declared > 0 ? `${declared.toLocaleString('vi-VN')} VNĐ` : 'Không khai báo'}
+                              </Text>
+                              <Text style={{ fontSize: 11, fontWeight: '700', color: '#DC2626' }}>
+                                Đền bù (120%): {comp > 0 ? `${comp.toLocaleString('vi-VN')} VNĐ` : 'Theo giá gói'}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </View>
+
+                    {/* Pricing & Escrow */}
+                    <View style={styles.contractCard}>
+                      <Text style={styles.contractSectionTitle}>IV. CHI PHÍ DỊCH VỤ & LANCARE ESCROW</Text>
+                      <View style={styles.pricingRow}>
+                        <Text style={styles.pricingLabel}>Phí chăm sóc tạm tính:</Text>
+                        <Text style={styles.pricingValue}>
+                          {Number(pricing.provisionalTotal || order.provisionalTotal || 0).toLocaleString('vi-VN')} VNĐ
+                        </Text>
+                      </View>
+                      <View style={styles.pricingRow}>
+                        <Text style={styles.pricingLabel}>Phí vận chuyển giao nhận:</Text>
+                        <Text style={styles.pricingValue}>
+                          {Number(pricing.pickupFee || order.pickupFeeSnapshot || 0).toLocaleString('vi-VN')} VNĐ
+                        </Text>
+                      </View>
+                      <View style={[styles.pricingRow, { borderBottomWidth: 0, paddingTop: 8 }]}>
+                        <Text style={[styles.pricingLabel, { fontWeight: '700', color: '#1A202C' }]}>TỔNG CỘNG:</Text>
+                        <Text style={[styles.pricingValue, { fontSize: 15, fontWeight: '800', color: '#6027D2' }]}>
+                          {Number(
+                            pricing.grandTotal ||
+                            (Number(pricing.provisionalTotal || order.provisionalTotal || 0) +
+                             Number(pricing.pickupFee || order.pickupFeeSnapshot || 0))
+                          ).toLocaleString('vi-VN')} VNĐ
+                        </Text>
+                      </View>
+                      <View style={[styles.clauseHighlight, { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE', marginTop: 8 }]}>
+                        <Ionicons name="shield-checkmark" size={18} color="#2563EB" />
+                        <Text style={[styles.clauseHighlightText, { color: '#1E40AF', fontSize: 11 }]}>
+                          Bảo chứng LanCare Escrow: Toàn bộ chi phí được hệ thống tạm giữ an toàn và chỉ thanh toán cho Nhà vườn sau khi bạn kiểm tra và xác nhận bàn giao nhận lại cây đạt yêu cầu.
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Compensation policy */}
+                    <View style={styles.contractCard}>
+                      <Text style={styles.contractSectionTitle}>V. CHÍNH SÁCH BỒI THƯỜNG THIỆT HẠI (120%)</Text>
+                      <View style={styles.clauseHighlight}>
+                        <Ionicons name="shield-checkmark" size={20} color="#059669" />
+                        <Text style={styles.clauseHighlightText}>
+                          Cam kết bồi thường tối đa 120% giá trị định giá của cây nếu xảy ra rủi ro trong suốt quá trình chăm sóc hoặc vận chuyển theo thỏa thuận.
+                        </Text>
+                      </View>
+                      <Text style={styles.clauseSummary}>
+                        • Áp dụng khi cây chết, thối ngọn/thối rễ nghiêm trọng do lỗi kỹ thuật chăm sóc của Nhà vườn{'\n'}
+                        • Áp dụng khi cây bị dập nát, gãy hỏng nặng hoặc thất lạc trong quá trình vận chuyển giao nhận
+                      </Text>
+                    </View>
+
+                    {/* Clauses */}
+                    <View style={styles.contractCard}>
+                      <Text style={styles.contractSectionTitle}>VI. CÁC ĐIỀU KHOẢN THỎA THUẬN CHUNG</Text>
+                      {clausesToRender.map((clause: string, cIdx: number) => (
+                        <View key={cIdx} style={{ marginBottom: 8 }}>
+                          <Text style={{ fontSize: 11.5, color: '#2D3748', lineHeight: 18 }}>
+                            <Text style={{ fontWeight: '700', color: '#1A202C' }}>{clause.split(':')[0]}:</Text>
+                            {clause.includes(':') ? clause.substring(clause.indexOf(':') + 1) : clause}
                           </Text>
                         </View>
                       ))}
                     </View>
 
-                    {/* Compensation & Clauses */}
-                    <View style={styles.contractCard}>
-                      <Text style={styles.contractSectionTitle}>3. ĐIỀU KHOẢN TRỌNG YẾU & BỒI THƯỜNG</Text>
-                      <View style={styles.clauseHighlight}>
-                        <Ionicons name="shield-checkmark" size={20} color="#059669" />
-                        <Text style={styles.clauseHighlightText}>
-                          Chính sách bồi thường: Nhà vườn cam kết bồi thường tối đa 120% giá trị khai báo hợp lệ nếu phát sinh hư hại do lỗi chăm sóc theo thỏa thuận.
-                        </Text>
-                      </View>
-                      <Text style={styles.clauseSummary}>
-                        • Thời gian chăm sóc: {order.durationDaysSnapshot || 30} ngày{'\n'}
-                        • Tần suất nộp báo cáo: {order.reportFrequencySnapshot || 7} ngày/lần kèm ảnh hiện trạng{'\n'}
-                        • Chi phí dịch vụ tạm tính: {Number(order.provisionalTotal || 0).toLocaleString('vi-VN')} VNĐ
-                      </Text>
-                    </View>
-
                     {/* Signatures status */}
                     <View style={styles.contractCard}>
-                      <Text style={styles.contractSectionTitle}>4. TÌNH TRẠNG CHỮ KÝ ĐIỆN TỬ</Text>
+                      <Text style={styles.contractSectionTitle}>VII. TÌNH TRẠNG CHỮ KÝ ĐIỆN TỬ</Text>
                       <View style={styles.signatureRow}>
-                        <View style={styles.signatureBlock}>
+                        <View style={[styles.signatureBlock, isCustomerSigned && { borderColor: '#10B981', backgroundColor: '#F0FDF4' }]}>
                           <Text style={styles.sigRole}>Bên A (Khách hàng)</Text>
+                          <Text style={{ fontSize: 12, fontWeight: '700', color: '#1A202C', marginBottom: 4 }}>
+                            {customerSig?.signerName || customerName}
+                          </Text>
                           {isCustomerSigned ? (
                             <View style={styles.signedBadge}>
-                              <Ionicons name="checkmark-circle" size={16} color="#059669" />
-                              <Text style={styles.signedText}>ĐÃ KÝ</Text>
+                              <Ionicons name="checkmark-circle" size={14} color="#059669" />
+                              <Text style={styles.signedText}>ĐÃ KÝ ĐIỆN TỬ</Text>
                             </View>
                           ) : (
                             <Text style={styles.unsignedText}>Chưa ký</Text>
                           )}
                         </View>
-                        <View style={styles.signatureBlock}>
+                        <View style={[styles.signatureBlock, isProviderSigned && { borderColor: '#10B981', backgroundColor: '#F0FDF4' }]}>
                           <Text style={styles.sigRole}>Bên B (Nhà vườn)</Text>
+                          <Text style={{ fontSize: 12, fontWeight: '700', color: '#1A202C', marginBottom: 4 }}>
+                            {providerSig?.signerName || providerName}
+                          </Text>
                           {isProviderSigned ? (
                             <View style={styles.signedBadge}>
-                              <Ionicons name="checkmark-circle" size={16} color="#059669" />
-                              <Text style={styles.signedText}>ĐÃ KÝ</Text>
+                              <Ionicons name="checkmark-circle" size={14} color="#059669" />
+                              <Text style={styles.signedText}>ĐÃ KÝ ĐIỆN TỬ</Text>
                             </View>
                           ) : (
                             <Text style={styles.unsignedText}>Chưa ký</Text>
@@ -795,7 +938,7 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                     <View style={styles.modalBottomBar}>
                       <TouchableOpacity
                         style={styles.modalSignBtn}
-                        onPress={handleSignContract}
+                        onPress={handlePromptSignContract}
                         disabled={signingLoading}
                         activeOpacity={0.85}
                       >
@@ -819,6 +962,100 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
             </View>
           )}
         </SafeAreaView>
+      </Modal>
+
+      {/* Signature Confirmation Modal */}
+      <Modal
+        visible={signConfirmModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!signingLoading) setSignConfirmModalVisible(false);
+        }}
+      >
+        <View style={styles.confirmBackdrop}>
+          <View style={styles.confirmCard}>
+            <View style={styles.confirmHeader}>
+              <View style={styles.confirmIconCircle}>
+                <Ionicons name="document-text" size={26} color="#6027D2" />
+              </View>
+              <Text style={styles.confirmTitle}>Xác nhận Ký Hợp đồng</Text>
+              <Text style={styles.confirmSub}>Hợp đồng dịch vụ chăm sóc hoa lan LanCare</Text>
+            </View>
+
+            <View style={styles.confirmSummaryBox}>
+              <View style={styles.confirmSummaryRow}>
+                <Text style={styles.confirmSummaryLabel}>Mã đơn hàng:</Text>
+                <Text style={styles.confirmSummaryVal}>{order?.orderCode || 'N/A'}</Text>
+              </View>
+              <View style={styles.confirmSummaryRow}>
+                <Text style={styles.confirmSummaryLabel}>Khách hàng:</Text>
+                <Text style={styles.confirmSummaryVal}>
+                  {contractData?.parties?.customer?.fullName || (order as any)?.customer?.fullName || 'Khách hàng'}
+                </Text>
+              </View>
+              <View style={styles.confirmSummaryRow}>
+                <Text style={styles.confirmSummaryLabel}>Nhà vườn:</Text>
+                <Text style={styles.confirmSummaryVal}>
+                  {contractData?.parties?.provider?.fullName || order?.provider?.gardenName || 'Nhà vườn'}
+                </Text>
+              </View>
+              <View style={[styles.confirmSummaryRow, { borderBottomWidth: 0, paddingBottom: 0 }]}>
+                <Text style={styles.confirmSummaryLabel}>Tổng chi phí:</Text>
+                <Text style={[styles.confirmSummaryVal, { color: '#6027D2', fontWeight: '800' }]}>
+                  {Number(order?.provisionalTotal || 0).toLocaleString('vi-VN')} VNĐ
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.confirmLegalBox}>
+              <Ionicons name="shield-checkmark" size={18} color="#C05621" style={{ marginTop: 2 }} />
+              <Text style={styles.confirmLegalText}>
+                Quý khách xác nhận giao cây cho nhà vườn theo gói dịch vụ đã chọn và cam kết tuân thủ các điều khoản thanh toán, nhận bàn giao theo hợp đồng điện tử. Chữ ký này có giá trị pháp lý ràng buộc.
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.checkboxRow}
+              onPress={() => setCustomerAgreedTerms(!customerAgreedTerms)}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={customerAgreedTerms ? 'checkbox' : 'square-outline'}
+                size={22}
+                color={customerAgreedTerms ? '#6027D2' : '#A0AEC0'}
+              />
+              <Text style={styles.checkboxLabel}>
+                Tôi đã đọc kỹ, hiểu rõ và đồng ý với tất cả điều khoản hợp đồng & chính sách bồi thường 120%.
+              </Text>
+            </TouchableOpacity>
+
+            <View style={styles.confirmActionRow}>
+              <TouchableOpacity
+                style={styles.confirmCancelBtn}
+                onPress={() => setSignConfirmModalVisible(false)}
+                disabled={signingLoading}
+              >
+                <Text style={styles.confirmCancelText}>Xem lại</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.confirmSubmitBtn,
+                  (!customerAgreedTerms || signingLoading) && { opacity: 0.5 },
+                ]}
+                onPress={handleConfirmSignContract}
+                disabled={!customerAgreedTerms || signingLoading}
+              >
+                {signingLoading ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.confirmSubmitText}>Xác nhận & Ký ngay</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
 
       {/* VietQR Payment Modal */}
@@ -1313,6 +1550,62 @@ const styles = StyleSheet.create({
   },
 
   // Contract Modal styles
+  nationHeaderBox: {
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  nationTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#6027D2',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+    textAlign: 'center',
+  },
+  nationSubtitle: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#4A5568',
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  nationDivider: {
+    width: 60,
+    height: 1.5,
+    backgroundColor: '#CBD5E0',
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  legalBasisBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#EDF2F7',
+  },
+  legalBasisText: {
+    fontSize: 10.5,
+    color: '#718096',
+    fontStyle: 'italic',
+    lineHeight: 15,
+  },
+  pricingRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  pricingLabel: {
+    fontSize: 12,
+    color: '#718096',
+  },
+  pricingValue: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1A202C',
+  },
   contractCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 14,
@@ -1467,6 +1760,130 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 15,
     fontWeight: '700',
+  },
+
+  // Confirm Modal styles
+  confirmBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  confirmCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 20,
+    width: '100%',
+    maxWidth: 420,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  confirmHeader: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  confirmIconCircle: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#F6F4FC',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  confirmTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#1A202C',
+  },
+  confirmSub: {
+    fontSize: 12,
+    color: '#718096',
+    marginTop: 2,
+  },
+  confirmSummaryBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 12,
+  },
+  confirmSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EDF2F7',
+  },
+  confirmSummaryLabel: {
+    fontSize: 12,
+    color: '#718096',
+  },
+  confirmSummaryVal: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1A202C',
+  },
+  confirmLegalBox: {
+    backgroundColor: '#FFFBEB',
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+  },
+  confirmLegalText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#92400E',
+    lineHeight: 16,
+  },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 18,
+  },
+  checkboxLabel: {
+    flex: 1,
+    fontSize: 12,
+    color: '#2D3748',
+    lineHeight: 17,
+  },
+  confirmActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  confirmCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+  },
+  confirmCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4A5568',
+  },
+  confirmSubmitBtn: {
+    flex: 1.5,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: '#6027D2',
+    alignItems: 'center',
+  },
+  confirmSubmitText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 
   // Payment Modal styles
