@@ -87,10 +87,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       setCccdBackUrl(res.cccdBackUrl || '');
       setSelfieWithIdUrl(res.selfieWithIdUrl || '');
     } catch (err: any) {
+      console.error('[ProfileScreen] loadProfile error:', err?.response?.status, err?.response?.data || err?.message || err);
       if (err?.response?.status === 401) {
         setSessionExpired(true);
+        Alert.alert(
+          'Phiên làm việc hết hạn',
+          'Token đăng nhập đã hết hạn (401). Vui lòng bấm Đăng xuất ở góc trên bên phải màn hình để đăng nhập lại.'
+        );
       } else {
-        console.log('Customer profile info:', err?.message || err);
+        Alert.alert(
+          'Lỗi tải hồ sơ',
+          `Không thể tải thông tin hồ sơ: ${err?.response?.status || 'Lỗi mạng'}\n${JSON.stringify(err?.response?.data || err?.message || err)}`
+        );
       }
     } finally {
       setLoading(false);
@@ -306,13 +314,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
           }
           socketService.disconnect();
           await storage.clearAll();
-          navigation.getParent()?.reset({
-            index: 0,
-            routes: [{ name: 'Login' }],
-          }) || navigation.reset({
-            index: 0,
-            routes: [{ name: 'Login' }],
-          });
+          setProfile(null);
+          setUserName('Khách hàng');
+          setUserEmail('');
+          const { navigationRef } = await import('../navigation/AppNavigator');
+          if (navigationRef.isReady()) {
+            navigationRef.reset({
+              index: 0,
+              routes: [{ name: 'Login' }],
+            });
+          }
         },
       },
     ]);
