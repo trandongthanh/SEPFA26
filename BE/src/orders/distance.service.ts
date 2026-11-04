@@ -72,17 +72,17 @@ export class DistanceService {
       }
       return Math.round((element.distance.value / 1000) * 100) / 100; // khớp cột numeric(6,2)
     } catch (err) {
-      this.logger.warn(
-        `Distance Matrix lỗi: ${(err as Error).message} — fallback đường chim bay × 1.3`,
-      );
-      return Math.round(haversineKm(from, to) * ROAD_FACTOR * 100) / 100;
+      // Không đoán phí khi không đo được — phí lệch âm thầm khó lần hơn lỗi rõ ràng.
+      this.logger.error(`Distance Matrix lỗi: ${(err as Error).message}`);
+      throw new ServiceUnavailableException('DISTANCE_SERVICE_UNAVAILABLE');
     }
   }
 
   private async getOsrmKm(from: GpsPoint, to: GpsPoint): Promise<number> {
-    const baseUrl =
-      this.config.get<string>('OSRM_BASE_URL') ||
-      'https://router.project-osrm.org';
+    const baseUrl = this.config.get<string>('OSRM_BASE_URL');
+    if (!baseUrl) {
+      throw new ServiceUnavailableException('OSRM_NOT_CONFIGURED');
+    }
     const url = new URL(
       `/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}`,
       baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`,
@@ -98,10 +98,8 @@ export class DistanceService {
       }
       return Math.round((meters / 1000) * 100) / 100;
     } catch (err) {
-      this.logger.warn(
-        `OSRM lỗi (${(err as Error).message}) — fallback đường chim bay × 1.3`,
-      );
-      return Math.round(haversineKm(from, to) * ROAD_FACTOR * 100) / 100;
+      this.logger.error(`OSRM lỗi: ${(err as Error).message}`);
+      throw new ServiceUnavailableException('DISTANCE_SERVICE_UNAVAILABLE');
     }
   }
 }
