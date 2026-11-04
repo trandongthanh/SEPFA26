@@ -1,5 +1,7 @@
 import axios from 'axios';
 import { Platform } from 'react-native';
+import { storage } from '../utils/storage';
+import { navigationRef } from '../navigation/navigationRef';
 
 // @ts-ignore
 import Constants from 'expo-constants';
@@ -49,7 +51,6 @@ export const apiClient = axios.create({
 apiClient.interceptors.request.use(
   async (config) => {
     try {
-      const { storage } = await import('../utils/storage');
       const token = await storage.getToken();
       if (token && config.headers) {
         if (typeof (config.headers as any).set === 'function') {
@@ -109,7 +110,6 @@ apiClient.interceptors.response.use(
       isRefreshing = true;
 
       try {
-        const { storage } = await import('../utils/storage');
         const refreshToken = await storage.getRefreshToken();
         if (refreshToken) {
           const res = await axios.post(`${API_BASE_URL}/auth/refresh`, {
@@ -129,9 +129,7 @@ apiClient.interceptors.response.use(
         processQueue(refreshErr, null);
         // Refresh token expired or invalid -> clear tokens and redirect to Login
         try {
-          const { storage } = await import('../utils/storage');
           await storage.clearAll();
-          const { navigationRef } = await import('../navigation/AppNavigator');
           if (navigationRef.isReady()) {
             navigationRef.reset({
               index: 0,

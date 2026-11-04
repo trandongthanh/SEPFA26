@@ -1,8 +1,5 @@
 import React from 'react';
-import {
-  NavigationContainer,
-  createNavigationContainerRef,
-} from '@react-navigation/native';
+import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { SplashScreen } from '../screens/SplashScreen';
 import { RegisterScreen } from '../screens/RegisterScreen';
@@ -45,7 +42,8 @@ export type RootStackParamList = {
   };
 };
 
-export const navigationRef = createNavigationContainerRef<RootStackParamList>();
+export { navigationRef } from './navigationRef';
+import { navigationRef } from './navigationRef';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
