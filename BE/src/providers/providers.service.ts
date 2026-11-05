@@ -10,12 +10,16 @@ import { assertGpsPair } from '../common/gps';
 import { ProviderProfile } from './entities/provider-profile.entity';
 import { ServicePackage } from './entities/service-package.entity';
 import { Account } from '../accounts/entities/account.entity';
+import { toAccountSummary } from '../accounts/account.mapper';
 import { CryptoService } from '../crypto/crypto.service';
 import { PasswordService } from '../crypto/password.service';
 import { QueryProviderDto } from './dto/query-provider.dto';
 import { UpsertProfileDto } from './dto/upsert-profile.dto';
 import { VerifyProviderDto } from './dto/verify-provider.dto';
 import { UpsertPackageDto } from './dto/upsert-package.dto';
+
+// Postgres unique_violation — 2 request tạo hồ sơ cùng account chạy song song.
+const PG_UNIQUE_VIOLATION = '23505';
 
 @Injectable()
 export class ProvidersService {
@@ -30,8 +34,9 @@ export class ProvidersService {
     private readonly passwords: PasswordService,
   ) {}
 
-  // Lấy hồ sơ của provider đang đăng nhập (GET /providers/me)
-  async getMyProfile(accountId: string): Promise<any> {
+  // Lấy hồ sơ của provider đang đăng nhập (GET /providers/me) — chủ hồ sơ thấy đủ field của mình,
+  // account đi qua toAccountSummary (không spread entity → không lộ passwordHash/phoneHash).
+  async getMyProfile(accountId: string) {
     const profile = await this.profileRepo.findOne({
       where: { accountId },
       relations: { account: true },
@@ -41,16 +46,10 @@ export class ProvidersService {
       throw new NotFoundException('PROVIDER_PROFILE_NOT_FOUND');
     }
 
+    const { account, ...rest } = profile;
     return {
-      ...profile,
-      account: profile.account
-        ? {
-            ...profile.account,
-            phone: profile.account.phone
-              ? this.crypto.decrypt(profile.account.phone)
-              : null,
-          }
-        : null,
+      ...rest,
+      account: account ? toAccountSummary(account, this.crypto) : null,
     };
   }
 
@@ -66,7 +65,7 @@ export class ProvidersService {
     const existing = await this.profileRepo.findOne({ where: { accountId } });
 
     if (!existing) {
-      throw new NotFoundException('PROVIDER_PROFILE_NOT_FOUND');
+      return this.createProfile(accountId, dto);
     }
 
     // C1: MERGE — chỉ cập nhật field client thực sự gửi (!== undefined);
@@ -85,30 +84,7 @@ export class ProvidersService {
       (dto.businessLicenseUrl !== undefined &&
         existing.businessLicenseUrl !== dto.businessLicenseUrl);
 
-    existing.providerType = nextProviderType;
-    if (dto.displayName !== undefined) existing.displayName = dto.displayName;
-    if (dto.bio !== undefined) existing.bio = dto.bio;
-    existing.licenseInfo = nextLicenseInfo;
-    if (dto.portfolioUrl !== undefined)
-      existing.portfolioUrl = dto.portfolioUrl;
-    if (dto.selfieUrl !== undefined) existing.selfieUrl = dto.selfieUrl;
-    if (dto.cccdFrontUrl !== undefined)
-      existing.cccdFrontUrl = dto.cccdFrontUrl;
-    if (dto.cccdBackUrl !== undefined) existing.cccdBackUrl = dto.cccdBackUrl;
-    if (dto.businessLicenseUrl !== undefined)
-      existing.businessLicenseUrl = dto.businessLicenseUrl;
-    if (dto.address !== undefined) existing.address = dto.address;
-    if (dto.gpsLat !== undefined) existing.gpsLat = String(dto.gpsLat);
-    if (dto.gpsLng !== undefined) existing.gpsLng = String(dto.gpsLng);
-    if (dto.experience !== undefined) existing.experience = dto.experience;
-    if (dto.specialties !== undefined) existing.specialties = dto.specialties;
-    if (dto.serviceAreas !== undefined)
-      existing.serviceAreas = dto.serviceAreas;
-    if (dto.certificates !== undefined)
-      existing.certificates = dto.certificates;
-    if (dto.bankName !== undefined) existing.bankName = dto.bankName;
-    if (dto.bankAccount !== undefined) existing.bankAccount = dto.bankAccount;
-    if (dto.bankHolder !== undefined) existing.bankHolder = dto.bankHolder;
+    this.applyProfileFields(existing, dto);
 
     if (sensitiveChanged && existing.verificationStatus === 'APPROVED') {
       existing.verificationStatus = 'PENDING';
@@ -117,24 +93,84 @@ export class ProvidersService {
     return this.profileRepo.save(existing);
   }
 
-  async getById(providerId: string): Promise<any> {
+  // Lần PUT đầu tiên của account PROVIDER mới (đăng ký chỉ tạo ACCOUNT) → tạo hồ sơ PENDING
+  // chờ admin duyệt. providerType + displayName là 2 cột NOT NULL nên bắt buộc ở lần này.
+  private async createProfile(
+    accountId: string,
+    dto: UpsertProfileDto,
+  ): Promise<ProviderProfile> {
+    if (!dto.providerType || !dto.displayName) {
+      throw new BadRequestException('PROVIDER_PROFILE_FIELDS_REQUIRED');
+    }
+    const profile = this.profileRepo.create({
+      accountId,
+      verificationStatus: 'PENDING',
+    });
+    this.applyProfileFields(profile, dto);
+    try {
+      return await this.profileRepo.save(profile);
+    } catch (err) {
+      // UNIQUE(account_id): request PUT song song vừa tạo xong hồ sơ → chạy lại như cập nhật.
+      if ((err as { code?: string }).code === PG_UNIQUE_VIOLATION) {
+        return this.upsertProfile(accountId, dto);
+      }
+      throw err;
+    }
+  }
+
+  // MERGE: chỉ gán field client gửi (!== undefined) — dùng chung cho tạo mới và cập nhật.
+  private applyProfileFields(
+    profile: ProviderProfile,
+    dto: UpsertProfileDto,
+  ): void {
+    if (dto.providerType !== undefined) profile.providerType = dto.providerType;
+    if (dto.displayName !== undefined) profile.displayName = dto.displayName;
+    if (dto.bio !== undefined) profile.bio = dto.bio;
+    if (dto.licenseInfo !== undefined) profile.licenseInfo = dto.licenseInfo;
+    if (dto.portfolioUrl !== undefined) profile.portfolioUrl = dto.portfolioUrl;
+    if (dto.selfieUrl !== undefined) profile.selfieUrl = dto.selfieUrl;
+    if (dto.cccdFrontUrl !== undefined) profile.cccdFrontUrl = dto.cccdFrontUrl;
+    if (dto.cccdBackUrl !== undefined) profile.cccdBackUrl = dto.cccdBackUrl;
+    if (dto.businessLicenseUrl !== undefined)
+      profile.businessLicenseUrl = dto.businessLicenseUrl;
+    if (dto.address !== undefined) profile.address = dto.address;
+    if (dto.gpsLat !== undefined) profile.gpsLat = String(dto.gpsLat);
+    if (dto.gpsLng !== undefined) profile.gpsLng = String(dto.gpsLng);
+    if (dto.experience !== undefined) profile.experience = dto.experience;
+    if (dto.specialties !== undefined) profile.specialties = dto.specialties;
+    if (dto.serviceAreas !== undefined) profile.serviceAreas = dto.serviceAreas;
+    if (dto.certificates !== undefined) profile.certificates = dto.certificates;
+    if (dto.bankName !== undefined) profile.bankName = dto.bankName;
+    if (dto.bankAccount !== undefined) profile.bankAccount = dto.bankAccount;
+    if (dto.bankHolder !== undefined) profile.bankHolder = dto.bankHolder;
+  }
+
+  // Public (GET /providers/:id, khách vãng lai gọi được): CHỈ field giới thiệu vườn.
+  // Không trả account (email, SĐT), ngân hàng, giấy tờ CCCD/selfie/GPKD, licenseInfo,
+  // verificationNote — cùng nguyên tắc với browse (C5).
+  async getById(providerId: string) {
     const profile = await this.profileRepo.findOne({
       where: { id: providerId },
-      relations: { account: true },
     });
     if (!profile) {
       throw new NotFoundException('PROVIDER_NOT_FOUND');
     }
     return {
-      ...profile,
-      account: profile.account
-        ? {
-            ...profile.account,
-            phone: profile.account.phone
-              ? this.crypto.decrypt(profile.account.phone)
-              : null,
-          }
-        : null,
+      id: profile.id,
+      displayName: profile.displayName,
+      providerType: profile.providerType,
+      bio: profile.bio,
+      portfolioUrl: profile.portfolioUrl,
+      address: profile.address,
+      gpsLat: profile.gpsLat,
+      gpsLng: profile.gpsLng,
+      ratingAvg: profile.ratingAvg,
+      experience: profile.experience,
+      specialties: profile.specialties,
+      serviceAreas: profile.serviceAreas,
+      certificates: profile.certificates,
+      verificationStatus: profile.verificationStatus,
+      createdAt: profile.createdAt,
     };
   }
 
@@ -216,18 +252,7 @@ export class ProvidersService {
         p.cccdBackUrl &&
         p.selfieUrl,
       ),
-      account: p.account
-        ? {
-            id: p.account.id,
-            email: p.account.email,
-            fullName: p.account.fullName,
-            role: p.account.role,
-            status: p.account.status,
-            phone: p.account.phone
-              ? this.crypto.decrypt(p.account.phone)
-              : null,
-          }
-        : null,
+      account: p.account ? toAccountSummary(p.account, this.crypto) : null,
     }));
   }
 
@@ -245,16 +270,7 @@ export class ProvidersService {
       provider: {
         ...profile,
         account: profile.account
-          ? {
-              id: profile.account.id,
-              email: profile.account.email,
-              fullName: profile.account.fullName,
-              role: profile.account.role,
-              status: profile.account.status,
-              phone: profile.account.phone
-                ? this.crypto.decrypt(profile.account.phone)
-                : null,
-            }
+          ? toAccountSummary(profile.account, this.crypto)
           : null,
       },
       packages,

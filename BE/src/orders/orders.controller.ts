@@ -19,6 +19,7 @@ import { CompleteHandoverDto } from './dto/complete-handover.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
+import { ContractTemplateService } from './contract-template.service';
 import { HandoverService } from './handover.service';
 import { OrdersService } from './orders.service';
 
@@ -29,6 +30,7 @@ export class OrdersController {
   constructor(
     private readonly ordersService: OrdersService,
     private readonly handoverService: HandoverService,
+    private readonly contractTemplate: ContractTemplateService,
   ) {}
 
   @Roles('CUSTOMER')
@@ -164,6 +166,23 @@ export class OrdersController {
     @Ip() ip: string,
   ) {
     return this.handoverService.confirmHandover(user.accountId, orderId, ip);
+  }
+
+  @Roles('CUSTOMER', 'PROVIDER')
+  @Get(':orderId/agreement/contract')
+  @ApiOperation({
+    summary:
+      'Xem hợp đồng điện tử đầy đủ (điều khoản, cây, bồi thường 120%, chữ ký)',
+  })
+  getContract(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ) {
+    return this.ordersService.getContractDetail(
+      user.accountId,
+      user.role,
+      orderId,
+    );
   }
 
   @Roles('CUSTOMER', 'PROVIDER')
