@@ -10,7 +10,9 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, In, Repository } from 'typeorm';
+import { CryptoService } from '../crypto/crypto.service';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
 import { PaymentComponent } from '../payments/entities/payment-component.entity';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { ServicePackage } from '../providers/entities/service-package.entity';
@@ -61,7 +63,19 @@ export class OrdersService {
     private readonly plantRecognition: PlantRecognitionService,
     private readonly contractTemplate: ContractTemplateService,
     private readonly dataSource: DataSource,
+    private readonly crypto: CryptoService,
   ) {}
+
+  // Giải mã cột nhạy cảm (phone/CCCD). Dữ liệu seed cũ có thể còn là bản rõ →
+  // decrypt ném lỗi authTag; khi đó trả nguyên giá trị thay vì làm hỏng cả hợp đồng.
+  private safeDecrypt(value: string | null | undefined): string | null {
+    if (!value) return null;
+    try {
+      return this.crypto.decrypt(value);
+    } catch {
+      return value;
+    }
+  }
 
   async listShippingRatesForAdmin(): Promise<ShippingRate[]> {
     return this.shippingRateRepo.find({ order: { minKm: 'ASC' } });
@@ -545,6 +559,7 @@ export class OrdersService {
       photosByPlantId.set(ph.plantId, list);
     }
 
+    const ekycRepo = this.dataSource.getRepository(EkycRecord);
     const [customer, provider, allSignatures, servicePackage] = await Promise.all([
       this.customerRepo.findOne({
         where: { id: order.customerId },
@@ -564,6 +579,15 @@ export class OrdersService {
     if (!customer || !provider) {
       throw new InternalServerErrorException('PARTY_PROFILE_NOT_FOUND');
     }
+
+    // Số CCCD: khách ưu tiên hồ sơ (cccdNumber), fallback eKYC; vườn chỉ có ở eKYC.
+    const [customerEkyc, providerEkyc] = await Promise.all([
+      ekycRepo.findOne({ where: { accountId: customer.accountId } }),
+      ekycRepo.findOne({ where: { accountId: provider.accountId } }),
+    ]);
+    const customerIdNumber =
+      this.safeDecrypt(customer.cccdNumber) ?? this.safeDecrypt(customerEkyc?.idDocNumberEnc);
+    const providerIdNumber = this.safeDecrypt(providerEkyc?.idDocNumberEnc);
 
     // Ưu tiên chữ ký giai đoạn bàn giao thực tế (HANDOVER) nếu có
     const handoverSigs = allSignatures.filter((s) => s.signPhase === 'HANDOVER');
@@ -602,8 +626,8 @@ export class OrdersService {
       customerParty: {
         fullName: customer.account?.fullName ?? 'Chưa cung cấp',
         address: customer.address ?? customer.defaultPickupAddress ?? 'Chưa cung cấp',
-        phone: customer.account?.phone ?? 'Chưa cung cấp',
-        identityNumber: 'Chưa cung cấp',
+        phone: this.safeDecrypt(customer.account?.phone) ?? 'Chưa cung cấp',
+        identityNumber: customerIdNumber ?? 'Chưa cung cấp',
         identityDocuments: [customer.cccdFrontUrl, customer.cccdBackUrl, customer.selfieWithIdUrl].filter(
           (url): url is string => Boolean(url),
         ),
@@ -611,8 +635,8 @@ export class OrdersService {
       providerParty: {
         fullName: provider.account?.fullName ?? provider.displayName ?? 'Chưa cung cấp',
         address: provider.address ?? 'Chưa cung cấp',
-        phone: provider.account?.phone ?? 'Chưa cung cấp',
-        identityNumber: 'Chưa cung cấp',
+        phone: this.safeDecrypt(provider.account?.phone) ?? 'Chưa cung cấp',
+        identityNumber: providerIdNumber ?? 'Chưa cung cấp',
         identityDocuments: [provider.cccdFrontUrl, provider.cccdBackUrl].filter(
           (url): url is string => Boolean(url),
         ),
