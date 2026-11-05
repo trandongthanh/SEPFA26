@@ -19,6 +19,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { LocationPickerModal } from '../components/LocationPickerModal';
 import { customerService } from '../services/customerService';
 import { uploadService } from '../services/uploadService';
+import { ekycService } from '../services/ekycService';
 import { CustomerProfileResponse, UpdateCustomerProfilePayload } from '../types/customer';
 import { storage } from '../utils/storage';
 import { GoogleSignin } from '../utils/googleAuth';
@@ -34,6 +35,17 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const [userName, setUserName] = useState<string>('Khách hàng');
   const [userEmail, setUserEmail] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
+
+  // Signed URLs cho ảnh CCCD bảo mật
+  const [signedThumbnails, setSignedThumbnails] = useState<{
+    front?: string;
+    back?: string;
+    selfie?: string;
+  }>({});
+  const [previewDocModalVisible, setPreviewDocModalVisible] = useState<boolean>(false);
+  const [previewDocTitle, setPreviewDocTitle] = useState<string>('');
+  const [previewDocUrl, setPreviewDocUrl] = useState<string | null>(null);
+  const [loadingDocPreview, setLoadingDocPreview] = useState<boolean>(false);
 
   // Edit Modal States
   const [isProfileModalVisible, setIsProfileModalVisible] = useState<boolean>(false);
@@ -95,6 +107,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       setCccdFrontUrl(res.cccdFrontUrl || '');
       setCccdBackUrl(res.cccdBackUrl || '');
       setSelfieWithIdUrl(res.selfieWithIdUrl || '');
+
+      // Tải signed URL cho ảnh bảo mật nếu đã có ảnh CCCD / Selfie
+      if (res.cccdFrontUrl || res.cccdBackUrl || res.selfieWithIdUrl) {
+        try {
+          const [front, back, selfie] = await Promise.all([
+            res.cccdFrontUrl && !res.cccdFrontUrl.startsWith('http')
+              ? ekycService.getDocumentUrl('front').then((r) => r.url).catch(() => null)
+              : Promise.resolve(res.cccdFrontUrl?.startsWith('http') ? res.cccdFrontUrl : null),
+            res.cccdBackUrl && !res.cccdBackUrl.startsWith('http')
+              ? ekycService.getDocumentUrl('back').then((r) => r.url).catch(() => null)
+              : Promise.resolve(res.cccdBackUrl?.startsWith('http') ? res.cccdBackUrl : null),
+            res.selfieWithIdUrl && !res.selfieWithIdUrl.startsWith('http')
+              ? ekycService.getDocumentUrl('selfie').then((r) => r.url).catch(() => null)
+              : Promise.resolve(res.selfieWithIdUrl?.startsWith('http') ? res.selfieWithIdUrl : null),
+          ]);
+          setSignedThumbnails({
+            front: front || undefined,
+            back: back || undefined,
+            selfie: selfie || undefined,
+          });
+        } catch (_) {}
+      }
     } catch (err: any) {
       console.error('[ProfileScreen] loadProfile error:', err?.response?.status, err?.response?.data || err?.message || err);
       if (err?.response?.status === 401) {
@@ -123,6 +157,52 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       loadProfile();
     }, [])
   );
+
+  const getDocUri = (field: 'front' | 'back' | 'selfie') => {
+    if (field === 'front') {
+      return signedThumbnails.front || (profile?.cccdFrontUrl?.startsWith('http') ? profile.cccdFrontUrl : undefined);
+    }
+    if (field === 'back') {
+      return signedThumbnails.back || (profile?.cccdBackUrl?.startsWith('http') ? profile.cccdBackUrl : undefined);
+    }
+    if (field === 'selfie') {
+      return signedThumbnails.selfie || (profile?.selfieWithIdUrl?.startsWith('http') ? profile.selfieWithIdUrl : undefined);
+    }
+    return undefined;
+  };
+
+  const handlePressThumbnail = async (field: 'front' | 'back' | 'selfie', title: string) => {
+    const existing = getDocUri(field);
+    if (existing) {
+      setPreviewDocTitle(title);
+      setPreviewDocUrl(existing);
+      setPreviewDocModalVisible(true);
+      return;
+    }
+    const hasField =
+      field === 'front'
+        ? profile?.cccdFrontUrl
+        : field === 'back'
+          ? profile?.cccdBackUrl
+          : profile?.selfieWithIdUrl;
+
+    if (hasField) {
+      setPreviewDocTitle(title);
+      setPreviewDocModalVisible(true);
+      setLoadingDocPreview(true);
+      try {
+        const res = await ekycService.getDocumentUrl(field);
+        setPreviewDocUrl(res.url);
+        setSignedThumbnails((prev) => ({ ...prev, [field]: res.url }));
+      } catch (_) {
+        setPreviewDocUrl(null);
+      } finally {
+        setLoadingDocPreview(false);
+      }
+      return;
+    }
+    handleOpenCccdModal();
+  };
 
   // Open Modal 1: Personal Info & Delivery Profile
   const handleOpenProfileModal = () => {
@@ -674,10 +754,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               <TouchableOpacity
                 style={styles.thumbnailCard}
                 activeOpacity={0.85}
-                onPress={handleOpenCccdModal}
+                onPress={() => handlePressThumbnail('front', 'Ảnh CCCD Mặt trước')}
               >
-                {profile?.cccdFrontUrl ? (
-                  <Image source={{ uri: profile.cccdFrontUrl }} style={styles.thumbnailImg} />
+                {getDocUri('front') ? (
+                  <Image source={{ uri: getDocUri('front') }} style={styles.thumbnailImg} />
                 ) : (
                   <View style={styles.thumbnailPlaceholder}>
                     <Ionicons name="id-card-outline" size={26} color="#CBD5E0" />
@@ -687,7 +767,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                   <Text style={styles.thumbnailOverlayText} numberOfLines={1}>
                     Mặt trước
                   </Text>
-                  <Ionicons name="chevron-forward" size={12} color="#FFFFFF" />
+                  <Ionicons name="eye-outline" size={12} color="#FFFFFF" />
                 </View>
               </TouchableOpacity>
 
@@ -695,10 +775,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               <TouchableOpacity
                 style={styles.thumbnailCard}
                 activeOpacity={0.85}
-                onPress={handleOpenCccdModal}
+                onPress={() => handlePressThumbnail('back', 'Ảnh CCCD Mặt sau')}
               >
-                {profile?.cccdBackUrl ? (
-                  <Image source={{ uri: profile.cccdBackUrl }} style={styles.thumbnailImg} />
+                {getDocUri('back') ? (
+                  <Image source={{ uri: getDocUri('back') }} style={styles.thumbnailImg} />
                 ) : (
                   <View style={styles.thumbnailPlaceholder}>
                     <Ionicons name="card-outline" size={26} color="#CBD5E0" />
@@ -708,7 +788,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                   <Text style={styles.thumbnailOverlayText} numberOfLines={1}>
                     Mặt sau
                   </Text>
-                  <Ionicons name="chevron-forward" size={12} color="#FFFFFF" />
+                  <Ionicons name="eye-outline" size={12} color="#FFFFFF" />
                 </View>
               </TouchableOpacity>
 
@@ -716,10 +796,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               <TouchableOpacity
                 style={styles.thumbnailCard}
                 activeOpacity={0.85}
-                onPress={handleOpenCccdModal}
+                onPress={() => handlePressThumbnail('selfie', 'Ảnh chân dung cầm CCCD')}
               >
-                {profile?.selfieWithIdUrl ? (
-                  <Image source={{ uri: profile.selfieWithIdUrl }} style={styles.thumbnailImg} />
+                {getDocUri('selfie') ? (
+                  <Image source={{ uri: getDocUri('selfie') }} style={styles.thumbnailImg} />
                 ) : (
                   <View style={styles.thumbnailPlaceholder}>
                     <Ionicons name="person-outline" size={26} color="#CBD5E0" />
@@ -729,7 +809,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                   <Text style={styles.thumbnailOverlayText} numberOfLines={1}>
                     Ảnh chân dung
                   </Text>
-                  <Ionicons name="chevron-forward" size={12} color="#FFFFFF" />
+                  <Ionicons name="eye-outline" size={12} color="#FFFFFF" />
                 </View>
               </TouchableOpacity>
             </View>
@@ -902,9 +982,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                   maxLength={12}
                   value={cccdNumber}
                   onChangeText={setCccdNumber}
-                  editable={profile?.verificationStatus !== 'APPROVED'}
+                  editable={profile?.verificationStatus !== 'APPROVED' || !profile?.cccdNumber}
                 />
-                {profile?.verificationStatus === 'APPROVED' && (
+                {profile?.verificationStatus === 'APPROVED' && !!profile?.cccdNumber && (
                   <Text style={{ fontSize: 11, color: '#2E7D32', marginTop: 4 }}>
                     🔒 Hồ sơ đã được Admin phê duyệt, không thể thay đổi thông tin định danh.
                   </Text>
@@ -921,7 +1001,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                 <View style={styles.uploadCard}>
                   <Text style={styles.uploadCardLabel}>1. Ảnh mặt trước CCCD</Text>
                   {cccdFrontUrl ? (
-                    <Image source={{ uri: cccdFrontUrl }} style={styles.uploadedImagePreview} />
+                    <Image
+                      source={{
+                        uri:
+                          cccdFrontUrl.startsWith('http') || cccdFrontUrl.startsWith('file://')
+                            ? cccdFrontUrl
+                            : signedThumbnails.front || cccdFrontUrl,
+                      }}
+                      style={styles.uploadedImagePreview}
+                    />
                   ) : null}
                   <TouchableOpacity
                     style={styles.selectImageBtn}
@@ -945,7 +1033,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                 <View style={styles.uploadCard}>
                   <Text style={styles.uploadCardLabel}>2. Ảnh mặt sau CCCD</Text>
                   {cccdBackUrl ? (
-                    <Image source={{ uri: cccdBackUrl }} style={styles.uploadedImagePreview} />
+                    <Image
+                      source={{
+                        uri:
+                          cccdBackUrl.startsWith('http') || cccdBackUrl.startsWith('file://')
+                            ? cccdBackUrl
+                            : signedThumbnails.back || cccdBackUrl,
+                      }}
+                      style={styles.uploadedImagePreview}
+                    />
                   ) : null}
                   <TouchableOpacity
                     style={styles.selectImageBtn}
@@ -969,7 +1065,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                 <View style={styles.uploadCard}>
                   <Text style={styles.uploadCardLabel}>3. Ảnh Selfie cầm CCCD</Text>
                   {selfieWithIdUrl ? (
-                    <Image source={{ uri: selfieWithIdUrl }} style={styles.uploadedImagePreview} />
+                    <Image
+                      source={{
+                        uri:
+                          selfieWithIdUrl.startsWith('http') || selfieWithIdUrl.startsWith('file://')
+                            ? selfieWithIdUrl
+                            : signedThumbnails.selfie || selfieWithIdUrl,
+                      }}
+                      style={styles.uploadedImagePreview}
+                    />
                   ) : null}
                   <TouchableOpacity
                     style={styles.selectImageBtn}
@@ -1024,6 +1128,48 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         initialLat={gpsLat ? parseFloat(gpsLat) : 10.776889}
         initialLng={gpsLng ? parseFloat(gpsLng) : 106.700806}
       />
+
+      {/* Modal phóng to xem ảnh CCCD/Selfie bảo mật */}
+      <Modal
+        visible={previewDocModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setPreviewDocModalVisible(false)}
+      >
+        <View style={styles.docPreviewOverlay}>
+          <View style={styles.docPreviewContainer}>
+            <View style={styles.docPreviewHeader}>
+              <Text style={styles.docPreviewTitle}>{previewDocTitle}</Text>
+              <TouchableOpacity
+                onPress={() => setPreviewDocModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="close-circle" size={26} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.docPreviewBody}>
+              {loadingDocPreview ? (
+                <View style={styles.docPreviewCenter}>
+                  <ActivityIndicator size="large" color="#6027D2" />
+                  <Text style={styles.docPreviewLoadingText}>Đang tải ảnh bảo mật từ Cloudinary...</Text>
+                </View>
+              ) : previewDocUrl ? (
+                <Image
+                  source={{ uri: previewDocUrl }}
+                  style={styles.docPreviewImage}
+                  resizeMode="contain"
+                />
+              ) : (
+                <View style={styles.docPreviewCenter}>
+                  <Ionicons name="alert-circle-outline" size={48} color="#CBD5E0" />
+                  <Text style={styles.docPreviewLoadingText}>Không thể hiển thị ảnh</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -1564,6 +1710,65 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+
+  // Document Fullscreen Preview Modal Styles
+  docPreviewOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  docPreviewContainer: {
+    width: '100%',
+    maxHeight: '85%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+  docPreviewHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+    backgroundColor: '#FAF8FC',
+  },
+  docPreviewTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1E1B2E',
+  },
+  docPreviewBody: {
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 260,
+    backgroundColor: '#0F172A',
+  },
+  docPreviewCenter: {
+    paddingVertical: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  docPreviewLoadingText: {
+    marginTop: 12,
+    fontSize: 13,
+    color: '#94A3B8',
+    textAlign: 'center',
+  },
+  docPreviewImage: {
+    width: '100%',
+    height: 320,
+    borderRadius: 8,
   },
 });
 
