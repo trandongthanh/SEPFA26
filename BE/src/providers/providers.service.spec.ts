@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
@@ -45,6 +46,7 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
   };
   let profileRepo: { findOne: jest.Mock; find: jest.Mock; save: jest.Mock };
   let accountRepo: { save: jest.Mock };
+  let packageRepo: { create: jest.Mock; save: jest.Mock };
   let dataSource: { transaction: jest.Mock };
 
   const makeProfile = (patch: Partial<ProviderProfile> = {}) =>
@@ -136,10 +138,16 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
       save: jest.fn((p: ProviderProfile) => Promise.resolve(p)),
     };
     accountRepo = { save: jest.fn((a: Account) => Promise.resolve(a)) };
+    packageRepo = {
+      create: jest.fn((data: Partial<ServicePackage>) => data),
+      save: jest.fn((pkg: Partial<ServicePackage>) =>
+        Promise.resolve({ id: 'pkg-1', ...pkg }),
+      ),
+    };
 
     service = new ProvidersService(
       profileRepo as unknown as Repository<ProviderProfile>,
-      {} as Repository<ServicePackage>,
+      packageRepo as unknown as Repository<ServicePackage>,
       accountRepo as unknown as Repository<Account>,
       crypto,
       {} as PasswordService,
@@ -352,6 +360,87 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
       expect(list.map((p) => p.canVerify)).toEqual([true, false]);
       expect(list[0].cccdNumber).toBe(CCCD);
       for (const p of list) expect(p).not.toHaveProperty('cccdNumberHash');
+    });
+  });
+
+  // B01: trước đây vườn chưa có hồ sơ → code lấy hồ sơ APPROVED mới nhất của VƯỜN KHÁC để gắn gói.
+  describe('POST /providers/me/packages — gói chỉ gắn hồ sơ của chính người gọi', () => {
+    const VUON_A_PROFILE_ID = '44444444-4444-4444-8444-444444444444';
+    const packageDto = {
+      name: 'Gói chăm Hồ Điệp 30 ngày',
+      description: 'Tưới, bón, báo cáo 7 ngày/lần',
+      durationDays: 30,
+      reportFrequencyDays: 7,
+      maxPlants: 5,
+      basePrice: 200000,
+      minDeclaredValue: 100000,
+      maxDeclaredValue: 5000000,
+    };
+
+    // DB giả: có Vườn A đã duyệt. Tìm theo accountId chỉ ra hồ sơ khớp đúng account đó;
+    // query KHÔNG lọc theo người gọi (như fallback cũ) sẽ trả về Vườn A.
+    const dbWith = (callerProfile: ProviderProfile | null) => {
+      const vuonA = makeProfile({
+        id: VUON_A_PROFILE_ID,
+        accountId: OTHER_ACCOUNT_ID,
+        verificationStatus: 'APPROVED',
+      });
+      profileRepo.findOne.mockImplementation(
+        ({ where }: { where: Record<string, unknown> }) => {
+          if (where?.accountId === ACCOUNT_ID) {
+            return Promise.resolve(callerProfile);
+          }
+          if (where?.accountId === OTHER_ACCOUNT_ID) {
+            return Promise.resolve(vuonA);
+          }
+          return Promise.resolve(vuonA); // query không gắn người gọi → "trúng" vườn khác
+        },
+      );
+    };
+
+    it('vườn đã duyệt → gói gắn đúng hồ sơ của mình, PENDING, chưa mở bán', async () => {
+      dbWith(makeProfile({ verificationStatus: 'APPROVED' }));
+      const pkg = await service.createPackage(ACCOUNT_ID, packageDto);
+      expect(pkg.providerId).toBe(PROFILE_ID);
+      expect(pkg).toMatchObject({ approvalStatus: 'PENDING', isActive: false });
+      // Chỉ 1 lần tìm hồ sơ, và đúng theo accountId trong token.
+      expect(profileRepo.findOne).toHaveBeenCalledTimes(1);
+      expect(profileRepo.findOne).toHaveBeenCalledWith({
+        where: { accountId: ACCOUNT_ID },
+      });
+    });
+
+    it('vườn CHƯA có hồ sơ (dù DB có vườn khác đã duyệt) → 404 PROFILE_NOT_FOUND, không tạo gói', async () => {
+      dbWith(null);
+      await expect(
+        service.createPackage(ACCOUNT_ID, packageDto),
+      ).rejects.toThrow(new NotFoundException('PROFILE_NOT_FOUND'));
+      expect(packageRepo.save).not.toHaveBeenCalled();
+      expect(profileRepo.findOne).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['PENDING', 'REJECTED'] as const)(
+      'hồ sơ %s → 403 PROFILE_NOT_APPROVED, không tạo gói',
+      async (status) => {
+        dbWith(makeProfile({ verificationStatus: status }));
+        await expect(
+          service.createPackage(ACCOUNT_ID, packageDto),
+        ).rejects.toThrow(new ForbiddenException('PROFILE_NOT_APPROVED'));
+        expect(packageRepo.save).not.toHaveBeenCalled();
+      },
+    );
+
+    it('khoảng giá khai sai (min > max) → 400 DECLARED_VALUE_RANGE_INVALID', async () => {
+      dbWith(makeProfile({ verificationStatus: 'APPROVED' }));
+      await expect(
+        service.createPackage(ACCOUNT_ID, {
+          ...packageDto,
+          minDeclaredValue: 9000000,
+        }),
+      ).rejects.toThrow(
+        new BadRequestException('DECLARED_VALUE_RANGE_INVALID'),
+      );
+      expect(packageRepo.save).not.toHaveBeenCalled();
     });
   });
 });
