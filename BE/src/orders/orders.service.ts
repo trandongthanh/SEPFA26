@@ -33,6 +33,12 @@ import { ServiceAgreement } from './entities/service-agreement.entity';
 import { ServiceOrder } from './entities/service-order.entity';
 import { ShippingRate } from './entities/shipping-rate.entity';
 import { generateAgreementNo, generateOrderCode } from './order-code';
+import {
+  assertProviderIdentityComplete,
+  buildPartySnapshot,
+  readPartySnapshot,
+  type PartySnapshotV2,
+} from './party-snapshot';
 import { assertTransition } from './order-status';
 import { computeShippingFee, pickTier } from './shipping-fee';
 
@@ -501,9 +507,18 @@ export class OrdersService {
             status: agreement.status,
             termsSnapshot: {
               ...agreement.termsSnapshot,
+              // v2 (SĐT/CCCD mã hoá) → giải mã; snapshot cũ → trả nguyên (không backfill);
+              // hợp đồng rất cũ chưa có parties → dựng từ hồ sơ hiện tại.
               parties:
+                readPartySnapshot(
+                  agreement.termsSnapshot.parties,
+                  this.crypto,
+                ) ??
                 agreement.termsSnapshot.parties ??
-                this.buildPartySnapshot(customer, provider),
+                readPartySnapshot(
+                  buildPartySnapshot({ customer, provider }, this.crypto),
+                  this.crypto,
+                ),
               clauses:
                 agreement.termsSnapshot.clauses ?? this.contractClauses(),
             },
@@ -580,14 +595,25 @@ export class OrdersService {
       throw new InternalServerErrorException('PARTY_PROFILE_NOT_FOUND');
     }
 
-    // Số CCCD: khách ưu tiên hồ sơ (cccdNumber), fallback eKYC; vườn chỉ có ở eKYC.
-    const [customerEkyc, providerEkyc] = await Promise.all([
-      ekycRepo.findOne({ where: { accountId: customer.accountId } }),
-      ekycRepo.findOne({ where: { accountId: provider.accountId } }),
-    ]);
+    // Hợp đồng mới (snapshot v2): thông tin 2 bên lấy từ bản ĐÓNG BĂNG lúc ACCEPT — hồ sơ đổi sau
+    // này không làm hợp đồng đã ký đổi theo. Hợp đồng cũ (chưa có v2): đọc hồ sơ hiện tại như trước.
+    const frozenParties = readPartySnapshot(
+      agreement.termsSnapshot.parties,
+      this.crypto,
+    );
+
+    // Số CCCD (chỉ dùng cho hợp đồng cũ): ưu tiên hồ sơ (cccdNumber), fallback eKYC — cả 2 bên.
+    const [customerEkyc, providerEkyc] = frozenParties
+      ? [null, null]
+      : await Promise.all([
+          ekycRepo.findOne({ where: { accountId: customer.accountId } }),
+          ekycRepo.findOne({ where: { accountId: provider.accountId } }),
+        ]);
     const customerIdNumber =
       this.safeDecrypt(customer.cccdNumber) ?? this.safeDecrypt(customerEkyc?.idDocNumberEnc);
-    const providerIdNumber = this.safeDecrypt(providerEkyc?.idDocNumberEnc);
+    const providerIdNumber =
+      this.safeDecrypt(provider.cccdNumber) ??
+      this.safeDecrypt(providerEkyc?.idDocNumberEnc);
 
     // Ưu tiên chữ ký giai đoạn bàn giao thực tế (HANDOVER) nếu có
     const handoverSigs = allSignatures.filter((s) => s.signPhase === 'HANDOVER');
@@ -623,7 +649,7 @@ export class OrdersService {
         initialPhotos: photosByPlantId.get(p.id) ?? [],
       })),
       servicePackageName: servicePackage?.name ?? 'N/A',
-      customerParty: {
+      customerParty: frozenParties?.customer ?? {
         fullName: customer.account?.fullName ?? 'Chưa cung cấp',
         address: customer.address ?? customer.defaultPickupAddress ?? 'Chưa cung cấp',
         phone: this.safeDecrypt(customer.account?.phone) ?? 'Chưa cung cấp',
@@ -632,7 +658,7 @@ export class OrdersService {
           (url): url is string => Boolean(url),
         ),
       },
-      providerParty: {
+      providerParty: frozenParties?.provider ?? {
         fullName: provider.account?.fullName ?? provider.displayName ?? 'Chưa cung cấp',
         address: provider.address ?? 'Chưa cung cấp',
         phone: this.safeDecrypt(provider.account?.phone) ?? 'Chưa cung cấp',
@@ -672,6 +698,10 @@ export class OrdersService {
     if (provider.verificationStatus !== 'APPROVED') {
       throw new ForbiddenException('PROFILE_NOT_APPROVED');
     }
+    // ACCEPT tạo hợp đồng ngay → Bên B phải có SĐT + số CCCD (REJECT thì không cần).
+    if (dto.response === 'ACCEPT') {
+      assertProviderIdentityComplete(provider);
+    }
     const order = await this.orderRepo.findOne({
       where: { id: orderId, providerId: provider.id },
       relations: { plants: true },
@@ -684,6 +714,13 @@ export class OrdersService {
       relations: { account: true },
     });
     if (!customer) throw new InternalServerErrorException('CUSTOMER_PROFILE_NOT_FOUND');
+    // Khách cũ có thể chưa khai số CCCD trong hồ sơ → snapshot fallback bản đọc từ eKYC.
+    const customerEkyc =
+      dto.response === 'ACCEPT'
+        ? await this.dataSource
+            .getRepository(EkycRecord)
+            .findOne({ where: { accountId: customer.accountId } })
+        : null;
 
     // D5: khoá dòng + kiểm lại trạng thái trong transaction — vườn bấm 2 lần
     // (hoặc ACCEPT+REJECT chồng nhau) chỉ 1 request thắng, không lật trạng thái terminal.
@@ -747,7 +784,14 @@ export class OrdersService {
           termsSnapshot: this.buildTermsSnapshot(
             locked,
             dto,
-            this.buildPartySnapshot(customer, provider),
+            buildPartySnapshot(
+              {
+                customer,
+                provider,
+                customerEkycIdNumberEnc: customerEkyc?.idDocNumberEnc,
+              },
+              this.crypto,
+            ),
           ),
           status: 'PENDING',
         }),
@@ -864,7 +908,7 @@ export class OrdersService {
   private buildTermsSnapshot(
     order: ServiceOrder,
     negotiation?: RespondNegotiationDto,
-    parties?: Record<string, unknown>,
+    parties?: PartySnapshotV2,
   ) {
     return {
       orderCode: order.orderCode,
@@ -890,29 +934,6 @@ export class OrdersService {
         : null,
       parties,
       clauses: this.contractClauses(),
-    };
-  }
-
-  private buildPartySnapshot(
-    customer: CustomerProfile | null,
-    provider: ProviderProfile | null,
-  ) {
-    return {
-      customer: {
-        fullName: customer?.account?.fullName ?? 'Chưa cung cấp',
-        address:
-          customer?.address ?? customer?.defaultPickupAddress ?? 'Chưa cung cấp',
-        identityNumber: 'Chưa cung cấp',
-        identityDocuments: [],
-      },
-      provider: {
-        fullName: provider?.account?.fullName ?? provider?.displayName ?? 'Chưa cung cấp',
-        address: provider?.address ?? 'Chưa cung cấp',
-        identityNumber: 'Chưa cung cấp',
-        identityDocuments: [provider?.cccdFrontUrl, provider?.cccdBackUrl].filter(
-          (url): url is string => Boolean(url),
-        ),
-      },
     };
   }
 

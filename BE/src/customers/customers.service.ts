@@ -6,17 +6,18 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
-import { createHash } from 'crypto';
 import { assertGpsPair } from '../common/gps';
+import {
+  mapIdentityUniqueViolation,
+  normalizePhone,
+  sha256Hex,
+} from '../common/identity';
 import { Account } from '../accounts/entities/account.entity';
 import { toAccountSummary } from '../accounts/account.mapper';
 import { CryptoService } from '../crypto/crypto.service';
 import { CustomerProfile } from './entities/customer-profile.entity';
 import { UpsertCustomerProfileDto } from './dto/upsert-customer-profile.dto';
 import { VerifyCustomerDto } from './dto/verify-customer.dto';
-
-// Postgres unique_violation — 2 khách khai trùng SĐT/CCCD chạy song song.
-const PG_UNIQUE_VIOLATION = '23505';
 
 @Injectable()
 export class CustomersService {
@@ -101,9 +102,7 @@ export class CustomersService {
 
         // Mã hóa AES + hash SHA-256 để check unique (giống SĐT).
         if (dto.cccdNumber !== undefined) {
-          const cccdNumberHash = createHash('sha256')
-            .update(dto.cccdNumber)
-            .digest('hex');
+          const cccdNumberHash = sha256Hex(dto.cccdNumber);
           const duplicate = await manager.findOne(CustomerProfile, {
             where: { cccdNumberHash },
           });
@@ -115,10 +114,8 @@ export class CustomersService {
         }
 
         if (dto.phone !== undefined) {
-          const normalized = this.normalizePhone(dto.phone);
-          const phoneHash = createHash('sha256')
-            .update(normalized)
-            .digest('hex');
+          const normalized = normalizePhone(dto.phone);
+          const phoneHash = sha256Hex(normalized);
           const duplicate = await manager.findOne(Account, {
             where: { phoneHash },
           });
@@ -136,7 +133,7 @@ export class CustomersService {
       });
     } catch (err) {
       // Check trùng ở trên có khe đua (2 khách cùng SĐT/CCCD song song) — UNIQUE là chốt cuối.
-      throw this.mapUniqueViolation(err);
+      throw mapIdentityUniqueViolation(err);
     }
 
     return this.getMyProfile(accountId);
@@ -207,26 +204,5 @@ export class CustomersService {
       phone: summary?.phone ?? null,
       cccdNumber: rest.cccdNumber ? this.crypto.decrypt(rest.cccdNumber) : null,
     };
-  }
-
-  private mapUniqueViolation(err: unknown): unknown {
-    const pg = err as { code?: string; detail?: string };
-    if (pg.code !== PG_UNIQUE_VIOLATION) {
-      return err;
-    }
-    if (pg.detail?.includes('phone_hash')) {
-      return new ConflictException('PHONE_EXISTS');
-    }
-    if (pg.detail?.includes('cccd_number_hash')) {
-      return new ConflictException('CCCD_NUMBER_EXISTS');
-    }
-    return err;
-  }
-
-  private normalizePhone(phone: string) {
-    return phone
-      .replace(/[\s.()-]/g, '')
-      .replace(/^\+84/, '0')
-      .replace(/^84/, '0');
   }
 }

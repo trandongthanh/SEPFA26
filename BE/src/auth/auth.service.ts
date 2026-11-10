@@ -7,11 +7,12 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes } from 'crypto';
 import { EntityManager, IsNull, LessThan, MoreThan, Repository } from 'typeorm';
 import { Account } from '../accounts/entities/account.entity';
 import { AccountsService } from '../accounts/accounts.service';
 import type { SelfRegisterRole } from '../common/constants/roles';
+import { normalizePhone, sha256Hex } from '../common/identity';
 import { PasswordService } from '../crypto/password.service';
 import { MailService, PASSWORD_RESET_LINK_MINUTES } from '../mail/mail.service';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
@@ -147,8 +148,9 @@ export class AuthService {
     let phoneEnc: string | null = null;
     let phoneHash: string | null = null;
     if (dto.phone?.trim()) {
-      const cleanPhone = dto.phone.trim().replace(/[\s.()-]/g, '').replace(/^\+84/, '0').replace(/^84/, '0');
-      phoneHash = createHash('sha256').update(cleanPhone).digest('hex');
+      // Helper chung với customers/providers — cùng 1 số luôn ra cùng 1 hash.
+      const cleanPhone = normalizePhone(dto.phone);
+      phoneHash = sha256Hex(cleanPhone);
       const dupPhone = await this.accounts.findOne({ where: { phoneHash } });
       if (dupPhone) {
         throw new ConflictException('Số điện thoại này đã được sử dụng bởi một tài khoản khác.');

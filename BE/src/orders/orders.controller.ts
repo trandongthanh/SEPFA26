@@ -9,7 +9,12 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import type { CurrentUserData } from '../auth/types/current-user.type';
@@ -80,6 +85,11 @@ export class OrdersController {
   @HttpCode(200)
   @ApiOperation({
     summary: 'Vườn quyết đơn: ACCEPT → AGREEMENT_PENDING / REJECT → REJECTED',
+  })
+  @ApiResponse({
+    status: 403,
+    description:
+      'PROFILE_NOT_APPROVED | PROVIDER_IDENTITY_INCOMPLETE (ACCEPT khi vườn chưa khai SĐT/số CCCD)',
   })
   respondNegotiation(
     @CurrentUser() user: CurrentUserData,

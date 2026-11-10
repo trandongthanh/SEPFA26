@@ -4,11 +4,13 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
+import { CCCD_REGEX, VN_PHONE_REGEX } from '../../common/identity';
 
 // Trùng giá trị provider_type trong entity.
 const PROVIDER_TYPES = ['NURSERY', 'EXPERT'] as const;
@@ -53,6 +55,24 @@ export class UpsertProfileDto {
   @IsString()
   @MaxLength(500) // khớp cột portfolio_url varchar(500)
   portfolioUrl?: string;
+
+  // SĐT lưu ở bảng accounts (dùng chung mọi role) — vườn đăng nhập Google chưa có SĐT khai ở đây.
+  // KHÔNG nhạy cảm: đổi SĐT không làm hồ sơ APPROVED về PENDING (chỉ là thông tin liên lạc).
+  @ApiPropertyOptional({ example: '0909123456' })
+  @IsOptional()
+  @IsString()
+  @Matches(VN_PHONE_REGEX, { message: 'Số điện thoại Việt Nam chưa hợp lệ.' })
+  phone?: string;
+
+  // Số CCCD: mã hoá AES + hash check trùng. NHẠY CẢM: đổi (kể cả khai lần đầu) khi APPROVED → PENDING.
+  @ApiPropertyOptional({
+    description: 'Số căn cước công dân (12 chữ số)',
+    example: '001234567890',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(CCCD_REGEX, { message: 'Số căn cước phải gồm đúng 12 chữ số.' })
+  cccdNumber?: string;
 
   @ApiPropertyOptional({
     example: 'https://res.cloudinary.com/.../portrait.jpg',

@@ -1,12 +1,19 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { assertGpsPair } from '../common/gps';
+import {
+  PG_UNIQUE_VIOLATION,
+  mapIdentityUniqueViolation,
+  normalizePhone,
+  sha256Hex,
+} from '../common/identity';
 import { ProviderProfile } from './entities/provider-profile.entity';
 import { ServicePackage } from './entities/service-package.entity';
 import { Account } from '../accounts/entities/account.entity';
@@ -18,8 +25,25 @@ import { UpsertProfileDto } from './dto/upsert-profile.dto';
 import { VerifyProviderDto } from './dto/verify-provider.dto';
 import { UpsertPackageDto } from './dto/upsert-package.dto';
 
-// Postgres unique_violation — 2 request tạo hồ sơ cùng account chạy song song.
-const PG_UNIQUE_VIOLATION = '23505';
+// Đủ bộ định danh để admin duyệt + vườn nhận đơn (hợp đồng cần SĐT + số CCCD thật).
+function hasCompleteIdentity(profile: ProviderProfile): boolean {
+  return Boolean(
+    profile.cccdFrontUrl &&
+    profile.cccdBackUrl &&
+    profile.selfieUrl &&
+    profile.cccdNumber &&
+    profile.account?.phone,
+  );
+}
+
+// 23505 trên UNIQUE(account_id): 2 PUT TẠO hồ sơ cùng account chạy song song.
+function isAccountIdConflict(err: unknown): boolean {
+  const pg = err as { code?: string; detail?: string };
+  return (
+    pg.code === PG_UNIQUE_VIOLATION &&
+    Boolean(pg.detail?.includes('account_id'))
+  );
+}
 
 @Injectable()
 export class ProvidersService {
@@ -32,10 +56,11 @@ export class ProvidersService {
     private readonly accountRepo: Repository<Account>,
     private readonly crypto: CryptoService,
     private readonly passwords: PasswordService,
+    private readonly dataSource: DataSource,
   ) {}
 
-  // Lấy hồ sơ của provider đang đăng nhập (GET /providers/me) — chủ hồ sơ thấy đủ field của mình,
-  // account đi qua toAccountSummary (không spread entity → không lộ passwordHash/phoneHash).
+  // Lấy hồ sơ của provider đang đăng nhập (GET /providers/me) — chủ hồ sơ thấy đủ field của mình
+  // (SĐT + số CCCD đã giải mã); không bao giờ thấy hash/ciphertext/passwordHash.
   async getMyProfile(accountId: string) {
     const profile = await this.profileRepo.findOne({
       where: { accountId },
@@ -46,76 +71,136 @@ export class ProvidersService {
       throw new NotFoundException('PROVIDER_PROFILE_NOT_FOUND');
     }
 
-    const { account, ...rest } = profile;
-    return {
-      ...rest,
-      account: account ? toAccountSummary(account, this.crypto) : null,
-    };
+    return this.toProfileView(profile);
   }
 
-  // Upsert hồ sơ provider: chưa có → tạo (PENDING); có rồi → cập nhật.
-  // Đổi field nhạy cảm (license/type) khi đang APPROVED → tự về PENDING (duyệt lại).
-  // address/gps KHÔNG nhạy cảm (thông tin vận hành — dời vườn không cần duyệt lại).
-  async upsertProfile(
-    accountId: string,
-    dto: UpsertProfileDto,
-  ): Promise<ProviderProfile> {
+  // Upsert hồ sơ provider: chưa có → tạo (PENDING); có rồi → cập nhật. Trả cùng dạng GET /me.
+  // Đổi field nhạy cảm (license/type/ảnh giấy tờ/số CCCD) khi đang APPROVED → tự về PENDING.
+  // address/gps/SĐT KHÔNG nhạy cảm (thông tin vận hành/liên lạc — đổi không cần duyệt lại).
+  async upsertProfile(accountId: string, dto: UpsertProfileDto) {
     assertGpsPair(dto.gpsLat, dto.gpsLng);
 
-    const existing = await this.profileRepo.findOne({ where: { accountId } });
-
-    if (!existing) {
-      return this.createProfile(accountId, dto);
+    try {
+      await this.writeProfile(accountId, dto);
+    } catch (err) {
+      if (!isAccountIdConflict(err)) {
+        throw mapIdentityUniqueViolation(err);
+      }
+      // UNIQUE(account_id): PUT song song vừa tạo xong hồ sơ → chạy lại 1 lần như cập nhật.
+      try {
+        await this.writeProfile(accountId, dto);
+      } catch (retryErr) {
+        throw mapIdentityUniqueViolation(retryErr);
+      }
     }
 
-    // C1: MERGE — chỉ cập nhật field client thực sự gửi (!== undefined);
-    // field không gửi giữ nguyên giá trị cũ (không còn full-replace nuốt dữ liệu).
-    // So field nhạy cảm dựa trên GIÁ TRỊ MỚI SẼ CÓ (đã merge) so với giá trị cũ.
-    const nextProviderType = dto.providerType ?? existing.providerType;
-    const nextLicenseInfo =
-      dto.licenseInfo !== undefined ? dto.licenseInfo : existing.licenseInfo;
-    const sensitiveChanged =
-      existing.licenseInfo !== nextLicenseInfo ||
-      existing.providerType !== nextProviderType ||
-      (dto.cccdFrontUrl !== undefined &&
-        existing.cccdFrontUrl !== dto.cccdFrontUrl) ||
-      (dto.cccdBackUrl !== undefined &&
-        existing.cccdBackUrl !== dto.cccdBackUrl) ||
-      (dto.businessLicenseUrl !== undefined &&
-        existing.businessLicenseUrl !== dto.businessLicenseUrl);
-
-    this.applyProfileFields(existing, dto);
-
-    if (sensitiveChanged && existing.verificationStatus === 'APPROVED') {
-      existing.verificationStatus = 'PENDING';
-    }
-
-    return this.profileRepo.save(existing);
+    return this.getMyProfile(accountId);
   }
 
-  // Lần PUT đầu tiên của account PROVIDER mới (đăng ký chỉ tạo ACCOUNT) → tạo hồ sơ PENDING
-  // chờ admin duyệt. providerType + displayName là 2 cột NOT NULL nên bắt buộc ở lần này.
-  private async createProfile(
+  // Hồ sơ + SĐT (bảng accounts) ghi trong 1 transaction: lỗi 1 bên thì không bên nào đổi.
+  // Check trùng SĐT/CCCD bằng findOne trước; khe đua song song do UNIQUE index chặn (23505 → 409
+  // ở upsertProfile).
+  private async writeProfile(
     accountId: string,
     dto: UpsertProfileDto,
-  ): Promise<ProviderProfile> {
-    if (!dto.providerType || !dto.displayName) {
-      throw new BadRequestException('PROVIDER_PROFILE_FIELDS_REQUIRED');
-    }
-    const profile = this.profileRepo.create({
-      accountId,
-      verificationStatus: 'PENDING',
-    });
-    this.applyProfileFields(profile, dto);
-    try {
-      return await this.profileRepo.save(profile);
-    } catch (err) {
-      // UNIQUE(account_id): request PUT song song vừa tạo xong hồ sơ → chạy lại như cập nhật.
-      if ((err as { code?: string }).code === PG_UNIQUE_VIOLATION) {
-        return this.upsertProfile(accountId, dto);
+  ): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const existing = await manager.findOne(ProviderProfile, {
+        where: { accountId },
+      });
+
+      // Lần PUT đầu của account PROVIDER mới (đăng ký chỉ tạo ACCOUNT) → tạo hồ sơ PENDING.
+      // providerType + displayName là 2 cột NOT NULL nên bắt buộc ở lần này.
+      if (!existing && (!dto.providerType || !dto.displayName)) {
+        throw new BadRequestException('PROVIDER_PROFILE_FIELDS_REQUIRED');
       }
-      throw err;
-    }
+
+      const cccdNumberHash =
+        dto.cccdNumber !== undefined ? sha256Hex(dto.cccdNumber) : undefined;
+      if (cccdNumberHash !== undefined) {
+        const duplicate = await manager.findOne(ProviderProfile, {
+          where: { cccdNumberHash },
+        });
+        if (duplicate && duplicate.accountId !== accountId) {
+          throw new ConflictException('CCCD_NUMBER_EXISTS');
+        }
+      }
+
+      let phone: { encrypted: string; hash: string } | undefined;
+      if (dto.phone !== undefined) {
+        const normalized = normalizePhone(dto.phone);
+        const phoneHash = sha256Hex(normalized);
+        const duplicate = await manager.findOne(Account, {
+          where: { phoneHash },
+        });
+        if (duplicate && duplicate.id !== accountId) {
+          throw new ConflictException('PHONE_EXISTS');
+        }
+        phone = { encrypted: this.crypto.encrypt(normalized), hash: phoneHash };
+      }
+
+      const profile =
+        existing ??
+        manager.create(ProviderProfile, {
+          accountId,
+          verificationStatus: 'PENDING',
+        });
+
+      if (existing) {
+        // C1: MERGE — so field nhạy cảm dựa trên GIÁ TRỊ MỚI SẼ CÓ (đã merge) so với giá trị cũ.
+        const nextProviderType = dto.providerType ?? existing.providerType;
+        const nextLicenseInfo =
+          dto.licenseInfo !== undefined
+            ? dto.licenseInfo
+            : existing.licenseInfo;
+        const sensitiveChanged =
+          existing.licenseInfo !== nextLicenseInfo ||
+          existing.providerType !== nextProviderType ||
+          (dto.cccdFrontUrl !== undefined &&
+            existing.cccdFrontUrl !== dto.cccdFrontUrl) ||
+          (dto.cccdBackUrl !== undefined &&
+            existing.cccdBackUrl !== dto.cccdBackUrl) ||
+          (dto.businessLicenseUrl !== undefined &&
+            existing.businessLicenseUrl !== dto.businessLicenseUrl) ||
+          // Số CCCD đổi — KỂ CẢ khai lần đầu (null → số): số in lên hợp đồng phải được admin
+          // đối chiếu với ảnh CCCD. So hash vì cột cccdNumber là ciphertext (IV ngẫu nhiên).
+          (cccdNumberHash !== undefined &&
+            existing.cccdNumberHash !== cccdNumberHash);
+
+        if (sensitiveChanged && existing.verificationStatus === 'APPROVED') {
+          existing.verificationStatus = 'PENDING';
+        }
+      }
+
+      this.applyProfileFields(profile, dto);
+      if (dto.cccdNumber !== undefined && cccdNumberHash !== undefined) {
+        profile.cccdNumber = this.crypto.encrypt(dto.cccdNumber);
+        profile.cccdNumberHash = cccdNumberHash;
+      }
+      await manager.save(profile);
+
+      // SĐT KHÔNG thuộc bộ KYC → không đụng verificationStatus (cố ý — đừng thêm luật về PENDING).
+      if (phone) {
+        await manager.update(
+          Account,
+          { id: accountId },
+          { phone: phone.encrypted, phoneHash: phone.hash },
+        );
+      }
+    });
+  }
+
+  // Dạng trả ra cho chủ hồ sơ + admin: bỏ hash, số CCCD giải mã, SĐT giải mã ở cấp ngoài,
+  // account qua toAccountSummary (không spread entity → không lộ passwordHash/phoneHash).
+  private toProfileView(profile: ProviderProfile) {
+    const { account, cccdNumberHash: _hash, ...rest } = profile;
+    const summary = account ? toAccountSummary(account, this.crypto) : null;
+    return {
+      ...rest,
+      account: summary,
+      phone: summary?.phone ?? null,
+      cccdNumber: rest.cccdNumber ? this.crypto.decrypt(rest.cccdNumber) : null,
+    };
   }
 
   // MERGE: chỉ gán field client gửi (!== undefined) — dùng chung cho tạo mới và cập nhật.
@@ -245,14 +330,9 @@ export class ProvidersService {
       order: { createdAt: 'DESC' },
     });
     return profiles.map((p) => ({
-      ...p,
-      canVerify: Boolean(
-        p.verificationStatus === 'PENDING' &&
-        p.cccdFrontUrl &&
-        p.cccdBackUrl &&
-        p.selfieUrl,
-      ),
-      account: p.account ? toAccountSummary(p.account, this.crypto) : null,
+      ...this.toProfileView(p),
+      // Nút "Duyệt" chỉ bật khi đủ bộ định danh — khớp điều kiện chặn ở verifyProvider.
+      canVerify: p.verificationStatus === 'PENDING' && hasCompleteIdentity(p),
     }));
   }
 
@@ -267,21 +347,13 @@ export class ProvidersService {
       order: { createdAt: 'DESC' },
     });
     return {
-      provider: {
-        ...profile,
-        account: profile.account
-          ? toAccountSummary(profile.account, this.crypto)
-          : null,
-      },
+      provider: this.toProfileView(profile),
       packages,
     };
   }
 
-  // Admin duyệt hồ sơ: đổi verificationStatus + lưu lý do. Admin toàn quyền.
-  async verifyProvider(
-    providerIdOrEmail: string,
-    dto: VerifyProviderDto,
-  ): Promise<ProviderProfile & { tempPassword?: string }> {
+  // Admin duyệt hồ sơ: đổi verificationStatus + lưu lý do. Trả dạng view (không entity thô).
+  async verifyProvider(providerIdOrEmail: string, dto: VerifyProviderDto) {
     const isUuid =
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
         providerIdOrEmail,
@@ -315,10 +387,9 @@ export class ProvidersService {
       throw new NotFoundException('PROVIDER_NOT_FOUND');
     }
 
-    if (
-      dto.decision === 'APPROVED' &&
-      (!profile.cccdFrontUrl || !profile.cccdBackUrl || !profile.selfieUrl)
-    ) {
+    // APPROVED cần đủ SĐT + số CCCD + 3 ảnh — không ngoại lệ cho vườn cũ (vườn tự khai bổ sung
+    // qua PUT /providers/me/profile rồi admin duyệt lại). Giữ mã lỗi cũ để FE admin không phải sửa.
+    if (dto.decision === 'APPROVED' && !hasCompleteIdentity(profile)) {
       throw new BadRequestException('PROVIDER_PROFILE_NOT_SUBMITTED');
     }
 
@@ -334,7 +405,7 @@ export class ProvidersService {
       await this.accountRepo.save(profile.account);
     }
 
-    return this.profileRepo.save(profile);
+    return this.toProfileView(await this.profileRepo.save(profile));
   }
 
   async resetProviderPassword(
