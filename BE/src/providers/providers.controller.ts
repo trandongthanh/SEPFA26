@@ -75,11 +75,15 @@ export class ProvidersController {
   @ApiOperation({
     summary: 'Provider tạo gói dịch vụ mới (cần hồ sơ đã APPROVED)',
   })
+  @ApiResponse({ status: 404, description: 'PROFILE_NOT_FOUND' })
+  @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
+  @ApiResponse({ status: 400, description: 'DECLARED_VALUE_RANGE_INVALID' })
   createPackage(
     @CurrentUser() user: CurrentUserData,
     @Body() dto: UpsertPackageDto,
   ) {
-    return this.providersService.createPackage(user?.accountId || '', dto);
+    // accountId lấy từ JWT (route cần đăng nhập + role PROVIDER) — không nhận id vườn từ client.
+    return this.providersService.createPackage(user.accountId, dto);
   }
 
   @Roles('PROVIDER')

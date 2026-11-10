@@ -511,50 +511,14 @@ export class ProvidersService {
     return pkg;
   }
 
+  // B01: gói luôn gắn vào hồ sơ của CHÍNH account trong token (account_id UNIQUE → tối đa 1 hồ sơ).
+  // Trước đây không thấy hồ sơ thì tìm LIKE mờ rồi lấy hồ sơ APPROVED mới nhất của vườn KHÁC
+  // → gói bị tạo dưới tên vườn khác. Không có hồ sơ → 404, chưa duyệt → 403, không tạo gói.
   async createPackage(
-    accountIdOrId: string,
+    accountId: string,
     dto: UpsertPackageDto,
   ): Promise<ServicePackage> {
-    const isUuid =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-        accountIdOrId || '',
-      );
-    let profile: ProviderProfile | null = null;
-
-    if (isUuid) {
-      profile = await this.profileRepo.findOne({
-        where: [{ accountId: accountIdOrId }, { id: accountIdOrId }],
-      });
-    }
-
-    if (!profile && accountIdOrId) {
-      const kw = accountIdOrId.trim().toLowerCase();
-      profile = await this.profileRepo
-        .createQueryBuilder('p')
-        .leftJoinAndSelect('p.account', 'a')
-        .where('LOWER(a.email) = :kw', { kw })
-        .orWhere('LOWER(a.email) LIKE :kwLike', {
-          kwLike: `%${kw.replace(/-/g, '%')}%`,
-        })
-        .orWhere('LOWER(p.display_name) LIKE :kwLike', {
-          kwLike: `%${kw.replace(/-/g, '%')}%`,
-        })
-        .getOne();
-    }
-
-    if (!profile) {
-      // Fallback: Tìm hồ sơ APPROVED mới nhất trong PostgreSQL DB khi Provider tạo gói từ trang quản lý
-      profile = await this.profileRepo.findOne({
-        where: { verificationStatus: 'APPROVED' },
-        order: { updatedAt: 'DESC' },
-      });
-    }
-
-    if (!profile || profile.verificationStatus !== 'APPROVED') {
-      throw new ForbiddenException(
-        'CHỈ_PROVIDER_ĐÃ_ĐƯỢC_DUYỆT_MỚI_ĐƯỢC_TẠO_GÓI_DỊCH_VỤ',
-      );
-    }
+    const profile = await this.getApprovedProfileOrThrow(accountId);
 
     this.validateDeclaredValueRange(dto);
 
