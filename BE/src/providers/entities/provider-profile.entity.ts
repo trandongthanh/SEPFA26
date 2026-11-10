@@ -1,3 +1,4 @@
+import { Exclude } from 'class-transformer';
 import {
   Check,
   Column,
@@ -118,6 +119,24 @@ export class ProviderProfile extends BaseEntity {
 
   @Column({ type: 'varchar', length: 500, name: 'cccd_back_url', nullable: true })
   cccdBackUrl!: string | null;
+
+  // Số CCCD — mã hoá AES-256-GCM (CryptoService), chỉ chủ hồ sơ/admin/hợp đồng thấy bản giải mã.
+  // @Exclude: lỡ có chỗ trả entity thô (vd admin xem gói kèm provider) thì không lộ ciphertext.
+  @Exclude({ toPlainOnly: true })
+  @Column({ type: 'varchar', length: 500, name: 'cccd_number', nullable: true })
+  cccdNumber!: string | null;
+
+  // SHA-256 của số CCCD → UNIQUE: 2 vườn không khai trùng 1 CCCD (chỉ trong bảng provider —
+  // 1 người được có cả tài khoản khách lẫn vườn). Hash không khoá → KHÔNG BAO GIỜ trả ra API.
+  @Exclude({ toPlainOnly: true })
+  @Index('IDX_provider_profiles_cccd_number_hash', { unique: true })
+  @Column({
+    type: 'varchar',
+    length: 64,
+    name: 'cccd_number_hash',
+    nullable: true,
+  })
+  cccdNumberHash!: string | null;
 
   @Column({ type: 'varchar', length: 500, name: 'selfie_url', nullable: true })
   selfieUrl!: string | null;
