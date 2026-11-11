@@ -7,13 +7,14 @@ import {
 } from './order-status';
 
 describe('ORDER_TRANSITIONS', () => {
-  it('khai đủ 10 trạng thái', () => {
+  it('khai đủ 15 trạng thái theo ERD', () => {
+    expect(ORDER_STATUSES).toHaveLength(15);
     expect(Object.keys(ORDER_TRANSITIONS).sort()).toEqual(
       [...ORDER_STATUSES].sort(),
     );
   });
 
-  // Đường chính (happy path) — đúng thứ tự nghiệp vụ.
+  // Đường chính (happy path) — đúng thứ tự nghiệp vụ, từ nháp tới hoàn tất.
   const HAPPY_PATH: [OrderStatus, OrderStatus][] = [
     ['DRAFT', 'PENDING_PROVIDER'],
     ['PENDING_PROVIDER', 'AGREEMENT_PENDING'],
@@ -22,21 +23,28 @@ describe('ORDER_TRANSITIONS', () => {
     ['PAID', 'HANDOVER_IN_PROGRESS'],
     ['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM'],
     ['HANDOVER_AWAITING_CONFIRM', 'IN_CARE'],
+    ['IN_CARE', 'RETURN_IN_PROGRESS'],
+    ['RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM'],
+    ['RETURN_AWAITING_CONFIRM', 'COMPLETED'],
   ];
   it.each(HAPPY_PATH)('cho phép %s → %s', (from, to) => {
     expect(() => assertTransition(from, to)).not.toThrow();
   });
 
-  // Nhánh kết thúc sớm.
-  const EARLY_EXIT: [OrderStatus, OrderStatus][] = [
+  // Nhánh phụ: kết thúc sớm, hủy phiên trả, tranh chấp.
+  const SIDE_BRANCHES: [OrderStatus, OrderStatus][] = [
     ['PENDING_PROVIDER', 'REJECTED'],
+    ['PENDING_PROVIDER', 'EXPIRED'],
     ['PENDING_PROVIDER', 'CANCELLED'],
     ['AGREEMENT_PENDING', 'CANCELLED'],
     ['AWAITING_PAYMENT', 'CANCELLED'],
     ['PAID', 'CANCELLED'],
     ['HANDOVER_IN_PROGRESS', 'CANCELLED'],
+    ['RETURN_IN_PROGRESS', 'IN_CARE'], // vườn hủy phiên trả, hẹn lại
+    ['RETURN_AWAITING_CONFIRM', 'DISPUTED'],
+    ['DISPUTED', 'COMPLETED'],
   ];
-  it.each(EARLY_EXIT)('cho phép %s → %s', (from, to) => {
+  it.each(SIDE_BRANCHES)('cho phép %s → %s', (from, to) => {
     expect(() => assertTransition(from, to)).not.toThrow();
   });
 
@@ -46,20 +54,29 @@ describe('ORDER_TRANSITIONS', () => {
     ['DRAFT', 'PAID'], // nhảy cóc qua ký + thanh toán
     ['PENDING_PROVIDER', 'PAID'], // chưa ký đã có tiền
     ['PENDING_PROVIDER', 'AWAITING_PAYMENT'], // bỏ qua bước ký
+    ['AGREEMENT_PENDING', 'EXPIRED'], // hết hạn 24 giờ chỉ áp lúc chờ vườn trả lời
     ['AWAITING_PAYMENT', 'HANDOVER_IN_PROGRESS'], // chưa trả tiền đã đi lấy cây
     ['PAID', 'IN_CARE'], // bỏ qua bàn giao thẩm định
-    ['HANDOVER_AWAITING_CONFIRM', 'CANCELLED'], // thẩm định xong chỉ được confirm
-    ['IN_CARE', 'CANCELLED'], // terminal scope Phase 1
-    ['REJECTED', 'PENDING_PROVIDER'], // terminal không mở lại
-    ['CANCELLED', 'DRAFT'], // terminal không mở lại
+    ['HANDOVER_AWAITING_CONFIRM', 'CANCELLED'], // thẩm định xong chỉ được xác nhận
+    ['IN_CARE', 'COMPLETED'], // bỏ qua trả cây
+    ['IN_CARE', 'CANCELLED'], // đã nhận cây thì dừng giữa chừng, không hủy
+    ['IN_CARE', 'DISPUTED'], // tranh chấp chỉ mở sau khi trả cây
+    ['RETURN_IN_PROGRESS', 'COMPLETED'], // khách chưa xem kết quả trả cây
+    ['RETURN_AWAITING_CONFIRM', 'IN_CARE'], // đã chốt trả thì không quay lại chăm
+    ['DISPUTED', 'IN_CARE'], // tranh chấp không mở lại kỳ chăm
     ['PAID', 'AWAITING_PAYMENT'], // không đi lùi
   ];
   it.each(FORBIDDEN)('chặn %s → %s (409)', (from, to) => {
     expect(() => assertTransition(from, to)).toThrow(ConflictException);
   });
 
-  it('terminal (IN_CARE/REJECTED/CANCELLED) không đi được đâu nữa', () => {
-    for (const terminal of ['IN_CARE', 'REJECTED', 'CANCELLED'] as const) {
+  it('trạng thái cuối (COMPLETED/REJECTED/EXPIRED/CANCELLED) không đi được đâu nữa', () => {
+    for (const terminal of [
+      'COMPLETED',
+      'REJECTED',
+      'EXPIRED',
+      'CANCELLED',
+    ] as const) {
       for (const to of ORDER_STATUSES) {
         expect(() => assertTransition(terminal, to)).toThrow(ConflictException);
       }

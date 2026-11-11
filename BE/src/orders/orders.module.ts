@@ -23,6 +23,7 @@ import { AdminShippingRatesController } from './admin-shipping-rates.controller'
 import { DisputesService } from './disputes.service';
 import { HandoverService } from './handover.service';
 import { OrdersController } from './orders.controller';
+import { OrderStateService } from './order-state.service';
 import { OrdersService } from './orders.service';
 import { PlantRecognitionService } from './plant-recognition.service';
 import { ContractTemplateService } from './contract-template.service';
@@ -54,7 +55,8 @@ import { ContractTemplateService } from './contract-template.service';
     VideoCallsModule,
   ],
   controllers: [OrdersController, DisputesController, AdminShippingRatesController],
-  providers: [OrdersService, HandoverService, DistanceService, DisputesService, PlantRecognitionService, ContractTemplateService],
-  exports: [TypeOrmModule, DistanceService],
+  providers: [OrdersService, HandoverService, DistanceService, DisputesService, PlantRecognitionService, ContractTemplateService, OrderStateService],
+  // OrderStateService export sẵn cho module khác (webhook thanh toán chuyển sang dùng ở đợt sau).
+  exports: [TypeOrmModule, DistanceService, OrderStateService],
 })
 export class OrdersModule {}

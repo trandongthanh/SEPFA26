@@ -39,6 +39,7 @@ import {
   readPartySnapshot,
   type PartySnapshotV2,
 } from './party-snapshot';
+import { OrderStateService } from './order-state.service';
 import { assertTransition } from './order-status';
 import { computeShippingFee, pickTier } from './shipping-fee';
 
@@ -70,6 +71,7 @@ export class OrdersService {
     private readonly contractTemplate: ContractTemplateService,
     private readonly dataSource: DataSource,
     private readonly crypto: CryptoService,
+    private readonly orderState: OrderStateService,
   ) {}
 
   // Giải mã cột nhạy cảm (phone/CCCD). Dữ liệu seed cũ có thể còn là bản rõ →
@@ -323,15 +325,12 @@ export class OrdersService {
     // D5: khoá dòng đơn + kiểm lại trạng thái trong transaction — bấm "gửi đơn"
     // 2 lần cùng lúc chỉ 1 request đi tiếp (không lật trạng thái, không 500 vì unique).
     return this.dataSource.transaction(async (manager) => {
-      const locked = await manager.findOne(ServiceOrder, {
-        where: { id: order.id },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!locked || locked.status !== 'DRAFT') {
-        throw new ConflictException('INVALID_STATE_TRANSITION');
-      }
-      locked.status = 'PENDING_PROVIDER';
-      const saved = await manager.save(locked);
+      const saved = await this.orderState.transition(
+        manager,
+        order.id,
+        'DRAFT',
+        'PENDING_PROVIDER',
+      );
       await manager.save(
         manager.create(Negotiation, {
           serviceOrderId: order.id,
@@ -728,10 +727,7 @@ export class OrdersService {
     assertTransition(order.status, target);
 
     return this.dataSource.transaction(async (manager) => {
-      const locked = await manager.findOne(ServiceOrder, {
-        where: { id: order.id },
-        lock: { mode: 'pessimistic_write' },
-      });
+      const locked = await this.orderState.lock(manager, order.id);
       if (!locked || locked.status !== 'PENDING_PROVIDER') {
         throw new ConflictException('INVALID_STATE_TRANSITION');
       }
@@ -742,8 +738,7 @@ export class OrdersService {
           { serviceOrderId: order.id },
           { providerResponse: 'REJECT' },
         );
-        locked.status = 'REJECTED';
-        await manager.save(locked);
+        await this.orderState.apply(manager, locked, 'REJECTED');
         return { status: locked.status };
       }
 
@@ -796,8 +791,8 @@ export class OrdersService {
           status: 'PENDING',
         }),
       );
-      locked.status = 'AGREEMENT_PENDING';
-      await manager.save(locked);
+      // apply lưu luôn provisionalTotal (nếu vườn đề xuất giá) cùng lần đổi trạng thái.
+      await this.orderState.apply(manager, locked, 'AGREEMENT_PENDING');
       return { status: locked.status, agreementId: agreement.id };
     });
   }
@@ -866,39 +861,45 @@ export class OrdersService {
       }
 
       // Đủ 2 chữ ký — chốt: hợp đồng SIGNED, sinh khoản phải trả, khóa giá tạm.
-      assertTransition(order.status, 'AWAITING_PAYMENT');
+      // Khóa dòng đơn + kiểm lại: đơn đã rời AGREEMENT_PENDING (bị hủy...) trong lúc ký
+      // → 409, rollback cả chữ ký vừa ghi, không ghi đè trạng thái từ bản đọc cũ.
+      const locked = await this.orderState.transition(
+        manager,
+        order.id,
+        'AGREEMENT_PENDING',
+        'AWAITING_PAYMENT',
+      );
       agreement.status = 'SIGNED';
       await manager.save(agreement);
 
       const components = [
         manager.create(PaymentComponent, {
-          serviceOrderId: order.id,
+          serviceOrderId: locked.id,
           componentType: 'PACKAGE_PRICE' as const,
-          amount: order.provisionalTotal,
+          amount: locked.provisionalTotal,
           status: 'PENDING' as const,
         }),
       ];
       // Phí ship = 0 thì không tạo dòng component thừa.
-      if (BigInt(order.pickupFeeSnapshot) > 0n) {
+      if (BigInt(locked.pickupFeeSnapshot) > 0n) {
         components.push(
           manager.create(PaymentComponent, {
-            serviceOrderId: order.id,
+            serviceOrderId: locked.id,
             componentType: 'PICKUP_FEE' as const,
-            amount: order.pickupFeeSnapshot,
+            amount: locked.pickupFeeSnapshot,
             status: 'PENDING' as const,
           }),
         );
       }
       await manager.save(components);
 
-      order.provisionalLockedAt = new Date();
-      order.status = 'AWAITING_PAYMENT';
-      await manager.save(order);
+      locked.provisionalLockedAt = new Date();
+      await manager.save(locked);
 
       const amountDue = (
-        BigInt(order.provisionalTotal) + BigInt(order.pickupFeeSnapshot)
+        BigInt(locked.provisionalTotal) + BigInt(locked.pickupFeeSnapshot)
       ).toString();
-      return { status: order.status, amountDue };
+      return { status: locked.status, amountDue };
     });
   }
 
