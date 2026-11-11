@@ -13,6 +13,8 @@ import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { EscrowLedger } from '../payments/entities/escrow-ledger.entity';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { AssessPlantDto } from './dto/assess-plant.dto';
+import { AssessReturnPlantDto } from './dto/assess-return-plant.dto';
+import { CancelReturnDto } from './dto/cancel-return.dto';
 import { CompleteHandoverDto } from './dto/complete-handover.dto';
 import { AgreementSignature } from './entities/agreement-signature.entity';
 import { AssessmentPhoto } from './entities/assessment-photo.entity';
@@ -260,7 +262,11 @@ export class HandoverService {
     assertTransition(order.status, 'IN_CARE');
 
     const handover = await this.handoverRepo.findOne({
-      where: { serviceOrderId: order.id, status: 'AWAITING_CUSTOMER' },
+      where: {
+        serviceOrderId: order.id,
+        handoverType: 'IN',
+        status: 'AWAITING_CUSTOMER',
+      },
     });
     if (!handover) {
       throw new InternalServerErrorException('HANDOVER_NOT_FOUND');
@@ -339,6 +345,216 @@ export class HandoverService {
     });
   }
 
+  // ---- Trả cây (IN_CARE → COMPLETED) ----
+
+  /**
+   * POST /orders/:id/return/start — vườn bắt đầu trả cây (IN_CARE → RETURN_IN_PROGRESS).
+   * Chỉ khi đã hết hạn chăm (care_due_at); trả sớm = dừng giữa chừng, làm sau.
+   */
+  async startReturn(accountId: string, orderId: string) {
+    const order = await this.getOrderAsProvider(accountId, orderId);
+    if (order.status !== 'IN_CARE') {
+      throw new ConflictException('INVALID_STATE_TRANSITION');
+    }
+    if (!order.careDueAt || Date.now() < order.careDueAt.getTime()) {
+      throw new ConflictException('CARE_NOT_DUE');
+    }
+
+    return this.dataSource.transaction(async (manager) => {
+      const locked = await this.orderState.transition(
+        manager,
+        order.id,
+        'IN_CARE',
+        'RETURN_IN_PROGRESS',
+      );
+      const handover = await manager.save(
+        manager.create(Handover, {
+          serviceOrderId: order.id,
+          handoverType: 'OUT' as const,
+          status: 'IN_PROGRESS' as const,
+        }),
+      );
+      return { handoverId: handover.id, status: locked.status };
+    });
+  }
+
+  /**
+   * POST /orders/:id/return/plants/:plantId/assess — ghi tình trạng 1 cây lúc trả.
+   * Append-only như lúc nhận; KHÔNG đụng plants.handover_decision / is_high_risk
+   * (đó là mốc lúc nhận, giữ làm bằng chứng so sánh).
+   */
+  async assessReturnPlant(
+    accountId: string,
+    orderId: string,
+    plantId: string,
+    dto: AssessReturnPlantDto,
+  ) {
+    const order = await this.getOrderAsProvider(accountId, orderId);
+    if (order.status !== 'RETURN_IN_PROGRESS') {
+      throw new ConflictException('INVALID_STATE_TRANSITION');
+    }
+    const plant = await this.plantRepo.findOne({
+      where: { id: plantId, serviceOrderId: order.id },
+    });
+    if (!plant) {
+      throw new NotFoundException('PLANT_NOT_FOUND');
+    }
+    if (plant.handoverDecision === 'REJECT') {
+      // Cây bị từ chối lúc nhận: vườn chưa từng giữ, không có gì để trả.
+      throw new BadRequestException('PLANT_NOT_IN_CARE');
+    }
+    const handover = await this.getActiveHandover(order.id, 'OUT');
+
+    return this.dataSource.transaction(async (manager) => {
+      const assessment = await manager.save(
+        manager.create(PlantAssessment, {
+          plantId: plant.id,
+          handoverId: handover.id,
+          assessorId: accountId,
+          checklist: dto.checklist,
+          note: dto.note ?? null,
+        }),
+      );
+      await manager.save(
+        dto.photos.map((photo) =>
+          manager.create(AssessmentPhoto, {
+            assessmentId: assessment.id,
+            photoUrl: photo.photoUrl,
+            caption: photo.caption ?? null,
+            gpsLat: photo.gpsLat !== undefined ? String(photo.gpsLat) : null,
+            gpsLng: photo.gpsLng !== undefined ? String(photo.gpsLng) : null,
+          }),
+        ),
+      );
+      return { assessmentId: assessment.id };
+    });
+  }
+
+  /**
+   * POST /orders/:id/return/complete — vườn kiểm xong mọi cây đang chăm
+   * (→ RETURN_AWAITING_CONFIRM), hẹn khách xác nhận trong 48h.
+   */
+  async completeReturn(accountId: string, orderId: string) {
+    const order = await this.getOrderAsProvider(accountId, orderId);
+    if (order.status !== 'RETURN_IN_PROGRESS') {
+      throw new ConflictException('INVALID_STATE_TRANSITION');
+    }
+    const handover = await this.getActiveHandover(order.id, 'OUT');
+    const plants = await this.plantRepo.find({
+      where: { serviceOrderId: order.id },
+    });
+    const caredIds = plants
+      .filter((plant) => plant.handoverDecision !== 'REJECT')
+      .map((plant) => plant.id);
+    const assessed = await this.dataSource
+      .getRepository(PlantAssessment)
+      .createQueryBuilder('pa')
+      .select('DISTINCT pa.plant_id', 'plantId')
+      .where('pa.handover_id = :handoverId', { handoverId: handover.id })
+      .getRawMany<{ plantId: string }>();
+    const assessedIds = new Set(assessed.map((row) => row.plantId));
+    if (caredIds.some((id) => !assessedIds.has(id))) {
+      throw new BadRequestException('UNASSESSED_PLANTS');
+    }
+
+    return this.dataSource.transaction(async (manager) => {
+      const locked = await this.orderState.transition(
+        manager,
+        order.id,
+        'RETURN_IN_PROGRESS',
+        'RETURN_AWAITING_CONFIRM',
+      );
+      const customerConfirmDueAt = new Date(
+        Date.now() + CUSTOMER_CONFIRM_WINDOW_MS,
+      );
+      await manager.update(Handover, handover.id, {
+        status: 'AWAITING_CUSTOMER',
+        customerConfirmDueAt,
+      });
+      return { status: locked.status, customerConfirmDueAt };
+    });
+  }
+
+  /**
+   * POST /orders/:id/return/cancel — vườn huỷ phiên trả (khách vắng nhà...)
+   * → đơn về IN_CARE để hẹn lại. Ảnh và bản ghi đã chụp giữ nguyên.
+   */
+  async cancelReturn(accountId: string, orderId: string, dto: CancelReturnDto) {
+    const order = await this.getOrderAsProvider(accountId, orderId);
+    if (order.status !== 'RETURN_IN_PROGRESS') {
+      throw new ConflictException('INVALID_STATE_TRANSITION');
+    }
+    const handover = await this.getActiveHandover(order.id, 'OUT');
+
+    return this.dataSource.transaction(async (manager) => {
+      const locked = await this.orderState.transition(
+        manager,
+        order.id,
+        'RETURN_IN_PROGRESS',
+        'IN_CARE',
+      );
+      await manager.update(Handover, handover.id, {
+        status: 'CANCELLED',
+        note: dto.reason,
+      });
+      return { status: locked.status };
+    });
+  }
+
+  /**
+   * POST /orders/:id/return/confirm — khách xác nhận đã nhận lại cây (→ COMPLETED).
+   * Không chữ ký, không bút toán tiền: giải ngân cho vườn làm sau.
+   */
+  async confirmReturn(accountId: string, orderId: string) {
+    const order = await this.getOrderAsCustomer(accountId, orderId);
+    if (order.status !== 'RETURN_AWAITING_CONFIRM') {
+      throw new ConflictException('INVALID_STATE_TRANSITION');
+    }
+    const handover = await this.handoverRepo.findOne({
+      where: {
+        serviceOrderId: order.id,
+        handoverType: 'OUT',
+        status: 'AWAITING_CUSTOMER',
+      },
+    });
+    if (!handover) {
+      throw new InternalServerErrorException('HANDOVER_NOT_FOUND');
+    }
+
+    return this.dataSource.transaction(async (manager) => {
+      const locked = await this.orderState.transition(
+        manager,
+        order.id,
+        'RETURN_AWAITING_CONFIRM',
+        'COMPLETED',
+      );
+      const completedAt = await this.finalizeReturn(
+        manager,
+        handover.id,
+        'CONFIRMED',
+      );
+      return { status: locked.status, completedAt };
+    });
+  }
+
+  /**
+   * Chốt phiên trả cây — dùng chung cho khách bấm tay và tác vụ tự xác nhận 48h.
+   * Điều kiện status = AWAITING_CUSTOMER để 2 đường không chốt chồng nhau.
+   */
+  async finalizeReturn(
+    manager: EntityManager,
+    handoverId: string,
+    mode: 'CONFIRMED' | 'AUTO_CONFIRMED',
+  ): Promise<Date> {
+    const now = new Date();
+    await manager.update(
+      Handover,
+      { id: handoverId, status: 'AWAITING_CUSTOMER' },
+      { status: mode, confirmedAt: now, lockedAt: now },
+    );
+    return now;
+  }
+
   // ---- helpers ----
 
   // Load đơn với tư cách provider của đơn — người ngoài → 404, chống IDOR.
@@ -374,10 +590,13 @@ export class HandoverService {
     return order;
   }
 
-  // Phiên IN_PROGRESS phải tồn tại khi đơn đang HANDOVER_IN_PROGRESS — lệch là lỗi hệ thống.
-  private async getActiveHandover(serviceOrderId: string) {
+  // Phiên IN_PROGRESS đúng chiều phải tồn tại khi đơn đang ở chặng đó — lệch là lỗi hệ thống.
+  private async getActiveHandover(
+    serviceOrderId: string,
+    handoverType: 'IN' | 'OUT' = 'IN',
+  ) {
     const handover = await this.handoverRepo.findOne({
-      where: { serviceOrderId, status: 'IN_PROGRESS' },
+      where: { serviceOrderId, handoverType, status: 'IN_PROGRESS' },
     });
     if (!handover) {
       throw new InternalServerErrorException('HANDOVER_NOT_FOUND');

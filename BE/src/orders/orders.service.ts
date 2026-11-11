@@ -9,7 +9,8 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
-import { DataSource, In, Repository } from 'typeorm';
+import { DataSource, In, Not, Repository } from 'typeorm';
+import { CareReport } from '../care-reports/entities/care-report.entity';
 import { CryptoService } from '../crypto/crypto.service';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
@@ -24,11 +25,14 @@ import { CreateOrderDto, CreateOrderPlantDto } from './dto/create-order.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
 import { ShippingRateInputDto } from './dto/replace-shipping-rates.dto';
+import { computeCareReportSchedule } from './care-report-schedule';
 import { AgreementSignature } from './entities/agreement-signature.entity';
+import { AssessmentPhoto } from './entities/assessment-photo.entity';
 import { Handover } from './entities/handover.entity';
 import { InitialPhoto } from './entities/initial-photo.entity';
 import { Negotiation } from './entities/negotiation.entity';
 import { Plant } from './entities/plant.entity';
+import { PlantAssessment } from './entities/plant-assessment.entity';
 import { ServiceAgreement } from './entities/service-agreement.entity';
 import { ServiceOrder } from './entities/service-order.entity';
 import { ShippingRate } from './entities/shipping-rate.entity';
@@ -469,9 +473,11 @@ export class OrdersService {
       this.dataSource
         .getRepository(ServiceAgreement)
         .findOne({ where: { serviceOrderId: order.id } }),
-      this.dataSource
-        .getRepository(Handover)
-        .findOne({ where: { serviceOrderId: order.id } }),
+      // Luôn là phiên NHẬN cây (IN) — trước đây không lọc chiều, có phiên trả thì trả nhầm.
+      this.dataSource.getRepository(Handover).findOne({
+        where: { serviceOrderId: order.id, handoverType: 'IN' },
+        order: { createdAt: 'DESC' },
+      }),
       this.customerRepo.findOne({
         where: { id: order.customerId },
         relations: { account: true },
@@ -487,6 +493,26 @@ export class OrdersService {
           order: { signedAt: 'ASC' },
         })
       : [];
+
+    // Chặng trả cây + tiến độ báo cáo — chỉ THÊM field, không đổi field cũ.
+    const [returnHandover, submittedReports] = await Promise.all([
+      this.dataSource.getRepository(Handover).findOne({
+        where: {
+          serviceOrderId: order.id,
+          handoverType: 'OUT',
+          status: Not('CANCELLED'),
+        },
+        order: { createdAt: 'DESC' },
+      }),
+      order.careStartedAt
+        ? this.dataSource
+            .getRepository(CareReport)
+            .count({ where: { serviceOrderId: order.id } })
+        : Promise.resolve(0),
+    ]);
+    const assessmentsByHandover = await this.loadAssessments(
+      [handover?.id, returnHandover?.id].filter((id): id is string => !!id),
+    );
 
     return {
       ...order,
@@ -532,9 +558,84 @@ export class OrdersService {
         ? {
             status: handover.status,
             customerConfirmDueAt: handover.customerConfirmDueAt,
+            assessments: assessmentsByHandover.get(handover.id) ?? [],
           }
         : null,
+      returnHandover: returnHandover
+        ? {
+            status: returnHandover.status,
+            customerConfirmDueAt: returnHandover.customerConfirmDueAt,
+            confirmedAt: returnHandover.confirmedAt,
+            assessments: assessmentsByHandover.get(returnHandover.id) ?? [],
+          }
+        : null,
+      isReturnOverdue:
+        order.status === 'IN_CARE' &&
+        !!order.careDueAt &&
+        Date.now() > order.careDueAt.getTime(),
+      careReportSchedule: computeCareReportSchedule({
+        status: order.status,
+        careStartedAt: order.careStartedAt,
+        careDueAt: order.careDueAt,
+        reportFrequencyDays: order.reportFrequencySnapshot,
+        submittedCount: submittedReports,
+      }),
     };
+  }
+
+  /**
+   * Kết quả kiểm từng cây theo phiên bàn giao: mỗi cây lấy bản ghi MỚI NHẤT
+   * (kiểm lại thì thêm dòng mới), kèm ảnh — để khách so lúc nhận và lúc trả.
+   */
+  private async loadAssessments(handoverIds: string[]) {
+    const result = new Map<
+      string,
+      Array<{
+        plantId: string;
+        checklist: Record<string, unknown>;
+        note: string | null;
+        assessedAt: Date;
+        photos: Array<{ photoUrl: string; caption: string | null }>;
+      }>
+    >();
+    if (handoverIds.length === 0) return result;
+    const rows = await this.dataSource
+      .getRepository(PlantAssessment)
+      .createQueryBuilder('pa')
+      .where('pa.handover_id IN (:...handoverIds)', { handoverIds })
+      .orderBy('pa.created_at', 'DESC')
+      .getMany();
+    const latest = new Map<string, PlantAssessment>();
+    for (const row of rows) {
+      const key = `${row.handoverId}|${row.plantId}`;
+      if (!latest.has(key)) latest.set(key, row);
+    }
+    const ids = [...latest.values()].map((row) => row.id);
+    const photos = ids.length
+      ? await this.dataSource
+          .getRepository(AssessmentPhoto)
+          .createQueryBuilder('ap')
+          .where('ap.assessment_id IN (:...ids)', { ids })
+          .orderBy('ap.created_at', 'ASC')
+          .getMany()
+      : [];
+    for (const row of latest.values()) {
+      const list = result.get(row.handoverId!) ?? [];
+      list.push({
+        plantId: row.plantId,
+        checklist: row.checklist,
+        note: row.note,
+        assessedAt: row.createdAt,
+        photos: photos
+          .filter((photo) => photo.assessmentId === row.id)
+          .map((photo) => ({
+            photoUrl: photo.photoUrl,
+            caption: photo.caption,
+          })),
+      });
+      result.set(row.handoverId!, list);
+    }
+    return result;
   }
 
   /**
