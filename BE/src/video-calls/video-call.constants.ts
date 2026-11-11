@@ -31,8 +31,8 @@ export type VideoCallEndReason = (typeof VIDEO_CALL_END_REASONS)[number];
 export const VIDEO_CALL_ROLES = ['CALLER', 'CALLEE'] as const;
 export type VideoCallRole = (typeof VIDEO_CALL_ROLES)[number];
 
-// B2: đơn gọi được từ lúc gửi cho provider tới khi đang chăm cây.
-// DRAFT (chưa ai thấy đơn), REJECTED, CANCELLED → không gọi được.
+// B2: đơn gọi được từ lúc gửi cho provider tới hết chặng trả cây.
+// DRAFT (chưa ai thấy đơn), REJECTED, CANCELLED, EXPIRED, COMPLETED, DISPUTED → không gọi được.
 export const CALLABLE_ORDER_STATUSES = [
   'PENDING_PROVIDER',
   'AGREEMENT_PENDING',
@@ -41,6 +41,8 @@ export const CALLABLE_ORDER_STATUSES = [
   'HANDOVER_IN_PROGRESS',
   'HANDOVER_AWAITING_CONFIRM',
   'IN_CARE',
+  'RETURN_IN_PROGRESS',
+  'RETURN_AWAITING_CONFIRM',
 ] as const satisfies readonly OrderStatus[];
 
 // Bản chốt §5.3: 4 sự kiện socket (namespace /ws, room theo tài khoản).
