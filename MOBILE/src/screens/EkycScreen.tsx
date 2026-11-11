@@ -180,10 +180,14 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
       Alert.alert('Chưa có ảnh', 'Vui lòng chụp hoặc tải ảnh mặt trước thẻ CCCD.');
       return;
     }
+    if (!backUri) {
+      Alert.alert('Chưa đủ 2 mặt CCCD', 'Vui lòng chụp hoặc tải lên cả ảnh mặt sau thẻ CCCD trước khi quét.');
+      return;
+    }
 
     try {
       setOcrLoading(true);
-      const res = await ekycService.ocrIdCard(frontUri, backUri || undefined);
+      const res = await ekycService.ocrIdCard(frontUri, backUri);
 
       if (res.success && res.extracted) {
         setOcrData(res.extracted);
@@ -489,10 +493,10 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
               )}
             </View>
 
-            {/* 1.2 MẶT SAU CCCD (TUỲ CHỌN) */}
+            {/* 1.2 MẶT SAU CCCD (BẮT BUỘC) */}
             <View style={[styles.cardUploadBox, { marginTop: 14 }]}>
               <View style={styles.cardBoxHeader}>
-                <Text style={styles.cardBoxTitle}>Mặt sau thẻ CCCD (Tuỳ chọn)</Text>
+                <Text style={styles.cardBoxTitle}>Mặt sau thẻ CCCD *</Text>
                 {backUri && (
                   <View style={styles.badgeSuccess}>
                     <Ionicons name="checkmark-circle" size={14} color="#16A34A" />
@@ -506,7 +510,11 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
                   <Image source={{ uri: backUri }} style={styles.idCardImagePreview} />
                   <TouchableOpacity
                     style={styles.retakeBtn}
-                    onPress={() => setBackUri(null)}
+                    onPress={() => {
+                      setBackUri(null);
+                      setOcrData(null);
+                      setAntiFraudInfo(null);
+                    }}
                     activeOpacity={0.8}
                   >
                     <Ionicons name="refresh-outline" size={14} color="#FFFFFF" />
@@ -515,7 +523,7 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
                 </View>
               ) : (
                 <View style={styles.emptyUploadBox}>
-                  <Text style={styles.emptyUploadText}>Chụp thêm mặt sau để bổ sung đầy đủ thông tin thẻ CCCD</Text>
+                  <Text style={styles.emptyUploadText}>Chụp hoặc chọn ảnh mặt sau thẻ CCCD</Text>
                   <View style={styles.uploadActionButtonsRow}>
                     <TouchableOpacity
                       style={styles.actionBtnCameraSmall}
@@ -543,10 +551,10 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
               <TouchableOpacity
                 style={[
                   styles.primarySubmitBtn,
-                  (!frontUri || ocrLoading) && styles.primarySubmitBtnDisabled,
+                  (!frontUri || !backUri || ocrLoading) && styles.primarySubmitBtnDisabled,
                 ]}
                 onPress={handleStartOcr}
-                disabled={!frontUri || ocrLoading}
+                disabled={ocrLoading}
                 activeOpacity={0.85}
               >
                 {ocrLoading ? (

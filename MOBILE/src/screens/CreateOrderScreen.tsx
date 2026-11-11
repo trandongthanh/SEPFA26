@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { LocationPickerModal } from '../components/LocationPickerModal';
 import { orderService } from '../services/orderService';
+import { customerService } from '../services/customerService';
 import { uploadService } from '../services/uploadService';
 import { providerService } from '../services/providerService';
 import { calculateRoadDistanceKm } from '../utils/distance';
@@ -275,11 +276,26 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
         console.error('Order creation failed:', error?.response?.data || error?.message || error);
       }
       const is401 = error?.response?.status === 401;
-      const errMsg = is401
+      let errMsg = is401
         ? 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại để tiếp tục tạo đơn hàng.'
         : error?.response?.data?.message ||
           error?.message ||
           'Không thể tạo đơn hàng. Vui lòng kiểm tra lại kết nối.';
+
+      // Nếu BE trả 403 gộp chung thiếu SĐT / thiếu mặt sau CCCD / chưa xác thực -> kiểm tra chi tiết hồ sơ để báo đúng nguyên nhân
+      if (error?.response?.status === 403) {
+        try {
+          const prof = await customerService.getMyProfile();
+          if (prof?.verificationStatus === 'APPROVED') {
+            if (!prof.phone) {
+              errMsg = 'Tài khoản đã xác thực nhưng chưa có Số điện thoại. Vui lòng cập nhật Số điện thoại trong mục Cá nhân -> Thông tin cá nhân trước khi đặt đơn.';
+            } else if (!prof.cccdBackUrl) {
+              errMsg = 'Hồ sơ của bạn hiện thiếu ảnh mặt sau CCCD trên hệ thống (do tài khoản cũ chưa chụp mặt sau). Vui lòng liên hệ quản trị viên để cập nhật lại hoặc dùng tài khoản mới quét đủ 2 mặt CCCD.';
+            }
+          }
+        } catch (_) {}
+      }
+
       Alert.alert(
         is401 ? 'Hết phiên đăng nhập' : 'Tạo đơn thất bại',
         Array.isArray(errMsg) ? errMsg.join('\n') : errMsg
