@@ -1,8 +1,11 @@
 import { ConflictException } from '@nestjs/common';
 
 /**
- * Máy trạng thái SERVICE_ORDER — 10 trạng thái, nguồn chuẩn: docs/state-machines.md §1.
+ * Máy trạng thái SERVICE_ORDER — đủ 15 trạng thái theo ERD (docs/diagrams/erd/lancare-physical.dbml).
  * Toán thuần (không chạm DB) để unit-test toàn bộ đường đi hợp lệ/cấm.
+ * Đổi trạng thái thật trong DB chỉ đi qua OrderStateService (khóa dòng + kiểm lại).
+ * Trạng thái mới chưa có route dùng: RETURN_* / COMPLETED (chặng trả cây), EXPIRED (vườn im lặng 24 giờ),
+ * DISPUTED (tranh chấp) — khai sẵn để các chặng sau chỉ việc gọi.
  */
 export const ORDER_STATUSES = [
   'DRAFT',
@@ -13,23 +16,35 @@ export const ORDER_STATUSES = [
   'HANDOVER_IN_PROGRESS',
   'HANDOVER_AWAITING_CONFIRM',
   'IN_CARE',
+  'RETURN_IN_PROGRESS',
+  'RETURN_AWAITING_CONFIRM',
+  'COMPLETED',
   'REJECTED',
+  'EXPIRED',
   'CANCELLED',
+  'DISPUTED',
 ] as const;
 
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
-// DRAFT không hủy được (khách cứ bỏ đó — chưa ai thấy đơn); terminal không đi đâu nữa.
+// DRAFT không hủy được (khách cứ bỏ đó — chưa ai thấy đơn); trạng thái cuối không đi đâu nữa.
 export const ORDER_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
   DRAFT: ['PENDING_PROVIDER'],
-  PENDING_PROVIDER: ['AGREEMENT_PENDING', 'REJECTED', 'CANCELLED'],
+  PENDING_PROVIDER: ['AGREEMENT_PENDING', 'REJECTED', 'EXPIRED', 'CANCELLED'],
   AGREEMENT_PENDING: ['AWAITING_PAYMENT', 'CANCELLED'],
   AWAITING_PAYMENT: ['PAID', 'CANCELLED'],
   PAID: ['HANDOVER_IN_PROGRESS', 'CANCELLED'],
   HANDOVER_IN_PROGRESS: ['HANDOVER_AWAITING_CONFIRM', 'CANCELLED'],
   HANDOVER_AWAITING_CONFIRM: ['IN_CARE'],
-  IN_CARE: [],
+  IN_CARE: ['RETURN_IN_PROGRESS'],
+  // Về lại IN_CARE khi vườn hủy phiên trả (khách vắng nhà) để hẹn lại.
+  RETURN_IN_PROGRESS: ['RETURN_AWAITING_CONFIRM', 'IN_CARE'],
+  RETURN_AWAITING_CONFIRM: ['COMPLETED', 'DISPUTED'],
+  // Phân xử xong thì đơn hoàn tất, kết quả ghi ở bảng tranh chấp.
+  DISPUTED: ['COMPLETED'],
+  COMPLETED: [],
   REJECTED: [],
+  EXPIRED: [],
   CANCELLED: [],
 };
 

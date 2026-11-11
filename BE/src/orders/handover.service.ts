@@ -22,6 +22,7 @@ import { Plant } from './entities/plant.entity';
 import { PlantAssessment } from './entities/plant-assessment.entity';
 import { ServiceAgreement } from './entities/service-agreement.entity';
 import { ServiceOrder } from './entities/service-order.entity';
+import { OrderStateService } from './order-state.service';
 import { assertTransition } from './order-status';
 
 // Hạn khách xác nhận kết quả bàn giao — cron auto-confirm HOÃN, deadline vẫn ghi sẵn.
@@ -46,6 +47,7 @@ export class HandoverService {
     @InjectRepository(ProviderProfile)
     private readonly providerRepo: Repository<ProviderProfile>,
     private readonly dataSource: DataSource,
+    private readonly orderState: OrderStateService,
   ) {}
 
   /**
@@ -61,13 +63,12 @@ export class HandoverService {
     assertTransition(order.status, 'HANDOVER_IN_PROGRESS');
 
     return this.dataSource.transaction(async (manager) => {
-      const locked = await manager.findOne(ServiceOrder, {
-        where: { id: order.id },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!locked || locked.status !== 'PAID') {
-        throw new ConflictException('INVALID_STATE_TRANSITION');
-      }
+      const locked = await this.orderState.transition(
+        manager,
+        order.id,
+        'PAID',
+        'HANDOVER_IN_PROGRESS',
+      );
       const handover = await manager.save(
         manager.create(Handover, {
           serviceOrderId: order.id,
@@ -75,8 +76,6 @@ export class HandoverService {
           status: 'IN_PROGRESS' as const,
         }),
       );
-      locked.status = 'HANDOVER_IN_PROGRESS';
-      await manager.save(locked);
       return { handoverId: handover.id, status: locked.status };
     });
   }
@@ -206,13 +205,12 @@ export class HandoverService {
     const handover = await this.getActiveHandover(order.id);
 
     return this.dataSource.transaction(async (manager) => {
-      const locked = await manager.findOne(ServiceOrder, {
-        where: { id: order.id },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!locked || locked.status !== 'HANDOVER_IN_PROGRESS') {
-        throw new ConflictException('INVALID_STATE_TRANSITION');
-      }
+      const locked = await this.orderState.transition(
+        manager,
+        order.id,
+        'HANDOVER_IN_PROGRESS',
+        'HANDOVER_AWAITING_CONFIRM',
+      );
       // Chốt từng cây: high_risk_flag đóng băng tại thời điểm complete.
       await manager.save(
         plants.map((plant) =>
@@ -239,7 +237,6 @@ export class HandoverService {
         customerConfirmDueAt,
       });
       locked.finalTotal = finalTotal;
-      locked.status = 'HANDOVER_AWAITING_CONFIRM';
       await manager.save(locked);
       return { finalTotal, customerConfirmDueAt };
     });
@@ -276,13 +273,12 @@ export class HandoverService {
     ).length;
 
     return this.dataSource.transaction(async (manager) => {
-      const locked = await manager.findOne(ServiceOrder, {
-        where: { id: order.id },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!locked || locked.status !== 'HANDOVER_AWAITING_CONFIRM') {
-        throw new ConflictException('INVALID_STATE_TRANSITION');
-      }
+      const locked = await this.orderState.transition(
+        manager,
+        order.id,
+        'HANDOVER_AWAITING_CONFIRM',
+        'IN_CARE',
+      );
       const now = new Date();
       await manager.update(Handover, handover.id, {
         status: 'CONFIRMED',
@@ -334,7 +330,6 @@ export class HandoverService {
       locked.careDueAt = new Date(
         now.getTime() + locked.durationDaysSnapshot * 24 * 60 * 60 * 1000,
       );
-      locked.status = 'IN_CARE';
       await manager.save(locked);
       return {
         status: locked.status,
