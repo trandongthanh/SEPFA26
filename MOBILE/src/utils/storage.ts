@@ -13,22 +13,35 @@ const TOKEN_KEY = '@auth_access_token';
 const REFRESH_TOKEN_KEY = '@auth_refresh_token';
 const USER_KEY = '@auth_user_data';
 
-// In-memory fallback for Expo Go / Dev without native module
-const memoryStore: Record<string, string> = {};
+// In-memory cache & fallback for Expo Go / Dev without native module (persisted across Fast Refresh via globalThis)
+const memoryStore: Record<string, string | null> =
+  (globalThis as any).__LANCARE_MEMORY_STORE__ ||
+  ((globalThis as any).__LANCARE_MEMORY_STORE__ = {});
+
+const hasInMemory = (key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(memoryStore, key);
 
 const safeGet = async (key: string): Promise<string | null> => {
+  if (hasInMemory(key)) {
+    return memoryStore[key] ?? null;
+  }
   try {
     if (AsyncStorageModule && typeof AsyncStorageModule.getItem === 'function') {
       const val = await AsyncStorageModule.getItem(key);
-      if (val !== null) return val;
+      memoryStore[key] = val ?? null;
+      return memoryStore[key];
     }
-    return memoryStore[key] || null;
+    return null;
   } catch (e) {
-    return memoryStore[key] || null;
+    return memoryStore[key] ?? null;
   }
 };
 
 const safeSet = async (key: string, value: string): Promise<void> => {
+  if (value === undefined || value === null) {
+    await safeRemove(key);
+    return;
+  }
   memoryStore[key] = value;
   try {
     if (AsyncStorageModule && typeof AsyncStorageModule.setItem === 'function') {
@@ -40,7 +53,7 @@ const safeSet = async (key: string, value: string): Promise<void> => {
 };
 
 const safeRemove = async (key: string): Promise<void> => {
-  delete memoryStore[key];
+  memoryStore[key] = null;
   try {
     if (AsyncStorageModule && typeof AsyncStorageModule.removeItem === 'function') {
       await AsyncStorageModule.removeItem(key);
@@ -62,6 +75,7 @@ export const onTokenChange = (listener: TokenListener) => {
 
 export const storage = {
   async setToken(accessToken: string, refreshToken?: string): Promise<void> {
+    if (!accessToken) return;
     await safeSet(TOKEN_KEY, accessToken);
     if (refreshToken) {
       await safeSet(REFRESH_TOKEN_KEY, refreshToken);
@@ -84,6 +98,10 @@ export const storage = {
   },
 
   async setUser(user: any): Promise<void> {
+    if (!user) {
+      await safeRemove(USER_KEY);
+      return;
+    }
     await safeSet(USER_KEY, JSON.stringify(user));
   },
 

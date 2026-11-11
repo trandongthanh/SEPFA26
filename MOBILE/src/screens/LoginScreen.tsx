@@ -53,21 +53,22 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
         routes: [{ name: 'MainTabs' }],
       });
     } catch (err: any) {
+      const rawCode = err.response?.data?.rawCode;
       const msg = err.response?.data?.message;
-      if (msg === 'INVALID_CREDENTIALS') {
+      if (rawCode === 'INVALID_CREDENTIALS' || msg === 'INVALID_CREDENTIALS') {
         Alert.alert('Đăng nhập thất bại', 'Email hoặc mật khẩu không chính xác.');
-      } else if (msg === 'ACCOUNT_SUSPENDED') {
+      } else if (rawCode === 'ACCOUNT_SUSPENDED' || msg === 'ACCOUNT_SUSPENDED') {
         Alert.alert('Tài khoản bị khóa', 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ hỗ trợ.');
-      } else if (msg === 'ACCOUNT_INACTIVE') {
-        Alert.alert('Tài khoản chờ duyệt', 'Tài khoản Provider của bạn đang chờ Admin phê duyệt.');
+      } else if (rawCode === 'ACCOUNT_INACTIVE' || msg === 'ACCOUNT_INACTIVE') {
+        Alert.alert('Tài khoản chờ duyệt', 'Tài khoản của bạn đang chờ quản trị viên phê duyệt.');
       } else if (!err.response) {
         Alert.alert(
-          'Lỗi kết nối máy chủ',
-          'Không thể kết nối đến Backend. Vui lòng đảm bảo điện thoại và máy tính đang kết nối chung một mạng Wi-Fi.'
+          'Không thể kết nối',
+          'Không thể kết nối đến máy chủ lúc này. Vui lòng kiểm tra kết nối mạng và thử lại.'
         );
       } else {
         const displayMsg = Array.isArray(msg) ? msg.join('\n') : msg || err.message || 'Có lỗi xảy ra, vui lòng thử lại.';
-        Alert.alert('Lỗi đăng nhập', displayMsg);
+        Alert.alert('Đăng nhập không thành công', displayMsg);
       }
     } finally {
       setLoading(false);

@@ -143,9 +143,19 @@ function OrdersPageContent() {
       );
       loadData(activeTab);
     } catch (err: any) {
-      const msg =
+      const rawMsg =
         err?.response?.data?.message || err?.message || 'Không thể xử lý đơn hàng lúc này.';
-      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+      const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
+      if (msgText.includes('PROVIDER_IDENTITY_INCOMPLETE')) {
+        message.error(
+          'Vui lòng cập nhật đầy đủ Số điện thoại và Số CCCD (12 chữ số) tại mục Hồ sơ nhà vườn trước khi chấp nhận đơn và tạo hợp đồng!'
+        );
+      } else if (msgText.includes('INVALID_STATE_TRANSITION')) {
+        message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới danh sách...');
+        loadData(activeTab);
+      } else {
+        message.error(msgText);
+      }
     } finally {
       setActionLoading(null);
     }
@@ -173,8 +183,15 @@ function OrdersPageContent() {
         handleOpenContractModal(orderId);
       }
     } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.message || 'Không thể ký hợp đồng lúc này.';
-      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+      const rawMsg = err?.response?.data?.message || err?.message || 'Không thể ký hợp đồng lúc này.';
+      const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
+      if (msgText.includes('INVALID_STATE_TRANSITION')) {
+        message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới dữ liệu...');
+        setSignConfirmModalOpen(false);
+        loadData(activeTab);
+      } else {
+        message.error(msgText);
+      }
     } finally {
       setActionLoading(null);
     }
@@ -188,8 +205,14 @@ function OrdersPageContent() {
       message.success('Đã mở phiên tiếp nhận bàn giao cây! Vui lòng tiến hành thẩm định từng cây.');
       loadData(activeTab);
     } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.message || 'Không thể bắt đầu bàn giao.';
-      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+      const rawMsg = err?.response?.data?.message || err?.message || 'Không thể bắt đầu bàn giao.';
+      const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
+      if (msgText.includes('INVALID_STATE_TRANSITION')) {
+        message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới danh sách...');
+        loadData(activeTab);
+      } else {
+        message.error(msgText);
+      }
     } finally {
       setActionLoading(null);
     }
@@ -271,8 +294,15 @@ function OrdersPageContent() {
       setHandoverModalOpen(false);
       loadData(activeTab);
     } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.message || 'Không thể hoàn tất thẩm định bàn giao.';
-      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+      const rawMsg = err?.response?.data?.message || err?.message || 'Không thể hoàn tất thẩm định bàn giao.';
+      const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
+      if (msgText.includes('INVALID_STATE_TRANSITION')) {
+        message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới dữ liệu...');
+        setHandoverModalOpen(false);
+        loadData(activeTab);
+      } else {
+        message.error(msgText);
+      }
     } finally {
       setCompletingHandover(false);
     }
@@ -362,6 +392,8 @@ function OrdersPageContent() {
 
   const getStatusBadge = (status: string) => {
     switch (status) {
+      case 'DRAFT':
+        return <Tag color="default">Bản nháp</Tag>;
       case 'PENDING_PROVIDER':
         return (
           <Tag color="orange" icon={<ClockCircleOutlined />}>
@@ -404,6 +436,18 @@ function OrdersPageContent() {
             Đang chăm sóc
           </Tag>
         );
+      case 'RETURN_IN_PROGRESS':
+        return (
+          <Tag color="geekblue" icon={<EnvironmentOutlined />}>
+            Đang bàn giao trả cây
+          </Tag>
+        );
+      case 'RETURN_AWAITING_CONFIRM':
+        return (
+          <Tag color="volcano" icon={<ClockCircleOutlined />}>
+            Chờ khách nghiệm thu cây
+          </Tag>
+        );
       case 'COMPLETED':
         return (
           <Tag color="green" icon={<CheckCircleOutlined />}>
@@ -416,10 +460,22 @@ function OrdersPageContent() {
             Đã từ chối
           </Tag>
         );
+      case 'EXPIRED':
+        return (
+          <Tag color="default" icon={<ClockCircleOutlined />}>
+            Quá hạn phản hồi
+          </Tag>
+        );
       case 'CANCELLED':
         return (
           <Tag color="red" icon={<CloseCircleOutlined />}>
             Đã hủy
+          </Tag>
+        );
+      case 'DISPUTED':
+        return (
+          <Tag color="magenta" icon={<InfoCircleOutlined />}>
+            Đang tranh chấp
           </Tag>
         );
       default:
@@ -611,7 +667,7 @@ function OrdersPageContent() {
                         </Tag>
                       )}
 
-                      {['AGREEMENT_PENDING', 'AWAITING_PAYMENT', 'PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE'].includes(order.status) && (
+                      {['AGREEMENT_PENDING', 'AWAITING_PAYMENT', 'PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM', 'COMPLETED', 'DISPUTED'].includes(order.status) && (
                         <Button
                           icon={<FileProtectOutlined />}
                           onClick={() => handleOpenContractModal(order.id)}
@@ -1279,7 +1335,7 @@ function OrdersPageContent() {
                       <div className="space-y-1 text-xs text-[#4B4764] mt-1.5">
                         <p><span className="text-gray-400">Số điện thoại:</span> {providerPhone}</p>
                         <p><span className="text-gray-400">Địa chỉ vườn:</span> {providerAddress}</p>
-                        <p><span className="text-gray-400">Mã định danh/GPKD:</span> {providerIdentity}</p>
+                        <p><span className="text-gray-400">Số CCCD/Định danh:</span> {providerIdentity}</p>
                       </div>
                     </div>
                   </div>
@@ -1483,11 +1539,6 @@ function OrdersPageContent() {
                           <p className="text-[10px] text-gray-400 mt-1">
                             Ký lúc: {customerSig?.signedAt ? new Date(customerSig.signedAt).toLocaleString('vi-VN') : 'Đã ghi nhận'}
                           </p>
-                          {customerSig?.signatureHash && (
-                            <p className="text-[9px] text-gray-400 font-mono break-all line-clamp-1">
-                              Hash: {customerSig.signatureHash}
-                            </p>
-                          )}
                         </div>
                       ) : (
                         <Tag color="default" className="text-xs italic py-0.5">
@@ -1512,11 +1563,6 @@ function OrdersPageContent() {
                           <p className="text-[10px] text-gray-400 mt-1">
                             Ký lúc: {providerSig?.signedAt ? new Date(providerSig.signedAt).toLocaleString('vi-VN') : 'Đã ghi nhận'}
                           </p>
-                          {providerSig?.signatureHash && (
-                            <p className="text-[9px] text-gray-400 font-mono break-all line-clamp-1">
-                              Hash: {providerSig.signatureHash}
-                            </p>
-                          )}
                         </div>
                       ) : (
                         <Tag color="warning" className="text-xs font-medium py-0.5">

@@ -139,10 +139,13 @@ export class OrdersService {
     }
     if (
       customer.verificationStatus !== 'APPROVED' ||
-      !customer.cccdFrontUrl || !customer.cccdBackUrl || !customer.selfieWithIdUrl ||
-      !customer.account?.phone
+      !customer.cccdFrontUrl ||
+      !customer.selfieWithIdUrl
     ) {
-      throw new ForbiddenException('Vui lòng hoàn tất xác minh căn cước, ảnh selfie cùng căn cước và chờ admin duyệt trước khi đặt đơn.');
+      throw new ForbiddenException('Vui lòng hoàn tất xác thực danh tính (CCCD và ảnh chân dung) trước khi đặt đơn.');
+    }
+    if (!customer.account?.phone) {
+      throw new ForbiddenException('Vui lòng cập nhật số điện thoại trong Hồ sơ cá nhân trước khi đặt đơn.');
     }
 
     // 2. Giờ hẹn lấy cây phải ở tương lai (mốc duy nhất của luật hủy).

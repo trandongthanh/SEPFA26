@@ -16,6 +16,7 @@ import {
   IdcardOutlined,
   InfoCircleOutlined,
   LoadingOutlined,
+  PhoneOutlined,
   SafetyCertificateOutlined,
   SaveOutlined,
   ShopOutlined,
@@ -40,6 +41,7 @@ import {
   Tag,
   Upload,
 } from 'antd';
+import { api } from '@/lib/api';
 import { useAuthStore } from '@/lib/auth.store';
 import {
   ProviderProfileResponse,
@@ -99,6 +101,8 @@ export default function ProviderProfilePage() {
       form.setFieldsValue({
         providerType: data.providerType || 'NURSERY',
         displayName: data.displayName || '',
+        phone: data.phone || data.account?.phone || '',
+        cccdNumber: data.cccdNumber || '',
         bio: data.bio || '',
         licenseInfo: data.licenseInfo || '',
         portfolioUrl: data.portfolioUrl || '',
@@ -114,11 +118,20 @@ export default function ProviderProfilePage() {
         bankHolder: data.bankHolder || '',
       });
     } catch {
-      // Chưa có profile (mới đăng ký)
+      // Chưa có profile (mới đăng ký) -> thử lấy SĐT từ tài khoản (/accounts/me)
       setProfile(null);
+      let accountPhone = '';
+      try {
+        const accRes = await api.get<{ phone?: string | null; fullName?: string }>('/api/v1/accounts/me');
+        accountPhone = accRes.data?.phone || '';
+      } catch {
+        // Ignore
+      }
       form.setFieldsValue({
         providerType: 'NURSERY',
         displayName: user?.fullName || '',
+        phone: accountPhone,
+        cccdNumber: '',
         gpsLat: 10.762622,
         gpsLng: 106.660172,
         address: '',
@@ -195,9 +208,12 @@ export default function ProviderProfilePage() {
   const onFinish = async (values: Record<string, any>) => {
     setSaving(true);
     try {
+      const cleanPhone = values.phone?.trim().replace(/[\s.()-]/g, '');
       const payload: UpsertProfilePayload = {
         providerType: values.providerType,
         displayName: values.displayName?.trim(),
+        phone: cleanPhone || undefined,
+        cccdNumber: values.cccdNumber?.trim() || undefined,
         bio: values.bio?.trim() || undefined,
         licenseInfo: values.licenseInfo?.trim() || undefined,
         portfolioUrl: values.portfolioUrl?.trim() || undefined,
@@ -225,7 +241,15 @@ export default function ProviderProfilePage() {
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { message?: string | string[] } }; message?: string };
       const rawMsg = axiosErr?.response?.data?.message || axiosErr?.message || 'Lỗi khi lưu hồ sơ.';
-      message.error(Array.isArray(rawMsg) ? rawMsg.join(', ') : rawMsg);
+      if (rawMsg === 'PHONE_EXISTS') {
+        message.error('Số điện thoại này đã được sử dụng bởi tài khoản khác.');
+      } else if (rawMsg === 'CCCD_NUMBER_EXISTS') {
+        message.error('Số Căn cước công dân này đã được đăng ký bởi nhà vườn khác.');
+      } else if (rawMsg === 'PROVIDER_PROFILE_FIELDS_REQUIRED') {
+        message.error('Vui lòng nhập đầy đủ Loại hình đối tác và Tên nhà vườn hiển thị.');
+      } else {
+        message.error(Array.isArray(rawMsg) ? rawMsg.join(', ') : rawMsg);
+      }
     } finally {
       setSaving(false);
     }
@@ -345,10 +369,24 @@ export default function ProviderProfilePage() {
                   message={<span className="font-semibold text-[#4C1D95]">Vui lòng hoàn tất hồ sơ nhà vườn</span>}
                   description={
                     <span className="text-xs text-[#5B21B6]">
-                      Bạn vừa đăng ký tài khoản thành công. Hãy điền Tên hiển thị, Địa chỉ và tải lên ảnh CCCD (mặt trước/mặt sau) để Admin tiến hành xét duyệt nhà vườn.
+                      Bạn vừa đăng ký tài khoản thành công. Hãy điền Tên hiển thị, Số điện thoại, Địa chỉ, Số CCCD (12 chữ số) và tải lên ảnh CCCD (mặt trước/mặt sau) cùng ảnh chân dung để Admin tiến hành xét duyệt nhà vườn.
                     </span>
                   }
                   className="!rounded-2xl !border-[#DDD6FE] !bg-[#F5F3FF]"
+                />
+              )}
+
+              {profile && (!profile.cccdNumber || !(profile.phone || profile.account?.phone)) && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={<span className="font-semibold text-[#92400E]">Hồ sơ thiếu thông tin định danh cho Hợp đồng điện tử</span>}
+                  description={
+                    <span className="text-xs text-[#B45309]">
+                      Vui lòng bổ sung đầy đủ <b>Số điện thoại liên hệ</b> và <b>Số Căn cước công dân (12 chữ số)</b> bên dưới để Admin xét duyệt hồ sơ và hệ thống có thể khởi tạo Hợp đồng dịch vụ khi bạn nhận đơn hàng.
+                    </span>
+                  }
+                  className="!rounded-2xl !border-[#FDE68A] !bg-[#FFFBEB]"
                 />
               )}
 
@@ -390,7 +428,7 @@ export default function ProviderProfilePage() {
                       </Form.Item>
                     </Col>
 
-                    <Col xs={24} md={16}>
+                    <Col xs={24} md={9}>
                       <Form.Item
                         name="displayName"
                         label={<span className="font-semibold text-xs text-[#4B4764]">Tên nhà vườn / Tên chuyên gia hiển thị <span className="text-red-500">*</span></span>}
@@ -403,6 +441,27 @@ export default function ProviderProfilePage() {
                         <Input
                           size="large"
                           placeholder="Ví dụ: Vườn Lan Thảo Mộc Sài Gòn"
+                          className="!rounded-xl"
+                        />
+                      </Form.Item>
+                    </Col>
+
+                    <Col xs={24} md={7}>
+                      <Form.Item
+                        name="phone"
+                        label={<span className="font-semibold text-xs text-[#4B4764]">Số điện thoại liên hệ <span className="text-red-500">*</span></span>}
+                        rules={[
+                          { required: true, message: 'Vui lòng nhập số điện thoại liên hệ' },
+                          {
+                            pattern: /^(?:\+84|84|0)(?:3|5|7|8|9)\d{8}$/,
+                            message: 'Số điện thoại Việt Nam chưa hợp lệ (VD: 0909123456)',
+                          },
+                        ]}
+                      >
+                        <Input
+                          size="large"
+                          prefix={<PhoneOutlined className="text-[#A098C2] mr-1" />}
+                          placeholder="Ví dụ: 0909123456"
                           className="!rounded-xl"
                         />
                       </Form.Item>
@@ -571,10 +630,36 @@ export default function ProviderProfilePage() {
                     <div>
                       <h2 className="text-base font-bold text-[#1E1B2E]">Giấy tờ xác minh danh tính & Pháp lý</h2>
                       <p className="text-xs text-[#6E6A8A]">
-                        Bắt buộc tải lên ảnh CCCD (2 mặt) và ảnh chân dung thật để Admin có căn cứ xét duyệt hồ sơ
+                        Bắt buộc nhập Số CCCD (12 chữ số), tải lên ảnh CCCD (2 mặt) và ảnh chân dung thật để Admin xét duyệt hồ sơ và ghi nhận vào Hợp đồng điện tử
                       </p>
                     </div>
                   </div>
+
+                  <Row gutter={16} className="mb-2">
+                    <Col xs={24} md={12}>
+                      <Form.Item
+                        name="cccdNumber"
+                        label={<span className="font-semibold text-xs text-[#4B4764]">Số Căn cước công dân (12 chữ số) <span className="text-red-500">*</span></span>}
+                        rules={[
+                          { required: true, message: 'Vui lòng nhập đủ 12 chữ số CCCD' },
+                          { pattern: /^\d{12}$/, message: 'Số Căn cước công dân phải gồm đúng 12 chữ số' },
+                        ]}
+                        extra={
+                          <span className="text-[11px] text-[#6E6A8A]">
+                            Lưu ý: Thay đổi số CCCD sau khi hồ sơ đã được duyệt sẽ chuyển trạng thái về Chờ Admin đối chiếu lại.
+                          </span>
+                        }
+                      >
+                        <Input
+                          size="large"
+                          maxLength={12}
+                          prefix={<IdcardOutlined className="text-[#A098C2] mr-1" />}
+                          placeholder="Ví dụ: 079099001234"
+                          className="!rounded-xl font-mono tracking-wider"
+                        />
+                      </Form.Item>
+                    </Col>
+                  </Row>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     {/* 1. Mặt trước CCCD */}

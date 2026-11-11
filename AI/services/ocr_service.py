@@ -1,4 +1,5 @@
 import re
+import unicodedata
 import cv2
 import numpy as np
 from typing import Optional, List, Dict, Any
@@ -15,6 +16,76 @@ except ImportError:
     logger.warning("EasyOCR not installed.")
 
 reader: Optional[object] = None
+
+def _fold_ascii(text: str) -> str:
+    """Normalize Vietnamese text to uppercase ASCII for resilient keyword matching."""
+    text = text.replace('đ', 'd').replace('Đ', 'D')
+    nfkd = unicodedata.normalize('NFKD', text)
+    return ''.join(c for c in nfkd if not unicodedata.combining(c)).upper()
+
+BACK_SIDE_KEYWORDS = (
+    'DAC DIEM NHAN DANG',
+    'PERSONAL IDENTIFICATION',
+    'NGON TRO',
+    'LEFT INDEX',
+    'RIGHT INDEX',
+    'CUC TRUONG',
+    'QUAN LY HANH CHINH',
+    'TRAT TU XA HOI',
+    'VAN TAY',
+    'DATE, MONTH, YEAR',
+    'NGAY, THANG, NAM',
+)
+
+FRONT_SIDE_KEYWORDS = (
+    'CONG HOA',
+    'CAN CUOC',
+    'CITIZEN',
+    'CHUNG MINH',
+    'HO VA TEN',
+    'FULL NAME',
+    'NGAY SINH',
+    'DATE OF BIRTH',
+    'GIOI TINH',
+    'QUOC TICH',
+    'NATIONALITY',
+    'QUE QUAN',
+    'PLACE OF ORIGIN',
+    'THUONG TRU',
+    'RESIDENCE',
+    'GIA TRI DEN',
+    'EXPIRY',
+)
+
+NON_PERSON_NAME_KEYWORDS = (
+    'CONG HOA',
+    'XA HOI',
+    'CHU NGHIA',
+    'VIET NAM',
+    'DOC LAP',
+    'TU DO',
+    'HANH PHUC',
+    'CAN CUOC',
+    'CITIZEN',
+    'IDENTITY',
+    'CHUNG MINH',
+    'CUC TRUONG',
+    'CANH SAT',
+    'QUAN LY',
+    'HANH CHINH',
+    'TRAT TU',
+    'DAC DIEM',
+    'NHAN DANG',
+    'NGON TRO',
+    'HO VA TEN',
+    'FULL NAME',
+    'NGAY SINH',
+    'DATE OF BIRTH',
+    'GIOI TINH',
+    'QUOC TICH',
+    'QUE QUAN',
+    'THUONG TRU',
+)
 
 def init_reader():
     """Pre-load EasyOCR model on startup."""
@@ -48,23 +119,57 @@ def _clean_text(text: str) -> str:
     text = re.sub(r'\s{2,}', ' ', text)
     return text.strip()
 
+def _validate_front_cccd(all_text: str) -> Optional[str]:
+    """Ensure the uploaded OCR image is the FRONT side of a Vietnamese ID card."""
+    folded = _fold_ascii(all_text)
+    has_mrz = bool(re.search(r'IDVNM|<{3,}', folded))
+    back_hits = sum(1 for kw in BACK_SIDE_KEYWORDS if kw in folded)
+    front_hits = sum(1 for kw in FRONT_SIDE_KEYWORDS if kw in folded)
+
+    if has_mrz or (back_hits >= 1 and front_hits < 3):
+        logger.warning(f"Rejected back-side CCCD uploaded to front OCR (mrz={has_mrz}, back_hits={back_hits}, front_hits={front_hits})")
+        return "Đây là ảnh mặt sau thẻ CCCD. Vui lòng chụp hoặc tải lên ảnh MẶT TRƯỚC thẻ CCCD (mặt có ảnh chân dung và họ tên)."
+
+    if front_hits < 3:
+        logger.warning(f"Rejected incomplete/non-front CCCD image (front_hits={front_hits})")
+        return "Ảnh mặt trước CCCD chưa đầy đủ hoặc quá mờ. Vui lòng chụp rõ toàn bộ 4 góc mặt trước thẻ CCCD."
+
+    return None
+
+def _has_clipped_text(text_lines: List[Dict], img_w: int, img_h: int) -> bool:
+    """Detect if card text boxes are clipped right against the right or bottom image edge."""
+    if img_w <= 0 or img_h <= 0:
+        return False
+    right_margin = img_w * 0.992
+    bottom_margin = img_h * 0.992
+    clipped_right = sum(1 for t in text_lines if t.get('x_max', 0) >= right_margin)
+    clipped_bottom = sum(1 for t in text_lines if t.get('y_max', 0) >= bottom_margin)
+    return clipped_right >= 2 or clipped_bottom >= 2
+
 def _extract_with_easyocr(image_bytes: bytes) -> dict:
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
-        return {"error": "Cannot decode image"}
+        return {"error": "Không thể đọc tệp ảnh. Vui lòng chụp lại hoặc chọn ảnh rõ nét định dạng JPG/PNG."}
 
+    img_h, img_w = img.shape[:2]
     results = reader.readtext(img, detail=1, paragraph=False)
     text_lines = []
     for (bbox, text, conf) in results:
-        y_center = (bbox[0][1] + bbox[2][1]) / 2
-        x_center = (bbox[0][0] + bbox[2][0]) / 2
+        xs = [p[0] for p in bbox]
+        ys = [p[1] for p in bbox]
+        y_center = (min(ys) + max(ys)) / 2
+        x_center = (min(xs) + max(xs)) / 2
         cleaned = _clean_text(text)
         if cleaned:
             text_lines.append({
                 'text': cleaned,
                 'y': y_center,
                 'x': x_center,
+                'x_min': min(xs),
+                'x_max': max(xs),
+                'y_min': min(ys),
+                'y_max': max(ys),
                 'confidence': float(conf)
             })
 
@@ -73,15 +178,44 @@ def _extract_with_easyocr(image_bytes: bytes) -> dict:
     all_text = ' '.join([t['text'] for t in text_lines])
     all_text_upper = all_text.upper()
 
+    # Validate front side vs back side / non-ID images before extracting fields
+    validation_err = _validate_front_cccd(all_text)
+    if validation_err:
+        return {"error": validation_err}
+
+    doc_type = _detect_doc_type(all_text_upper)
+
     # Extract fields with specialized logic for Vietnamese CCCD
-    id_number = _extract_id_number(text_lines, all_text)
+    id_number = _extract_id_number(text_lines, all_text, doc_type)
     full_name = _extract_name(text_lines)
     dob, expiry = _extract_dates(text_lines, all_text)
     gender = _extract_gender(all_text)
     nationality = 'Việt Nam'
     origin = _extract_origin(text_lines)
     residence = _extract_residence(text_lines)
-    doc_type = _detect_doc_type(all_text_upper)
+
+    # Bắt buộc ảnh phải đầy đủ: không bị mất góc/cắt mất số CCCD, ngày sinh, họ tên hoặc phần dưới thẻ
+    missing_fields = []
+    if not id_number:
+        missing_fields.append("đủ 12 số CCCD")
+    if not full_name:
+        missing_fields.append("họ và tên")
+    if not dob:
+        missing_fields.append("ngày sinh đầy đủ")
+
+    folded_all = _fold_ascii(all_text)
+    has_chip_bottom_labels = ('QUE QUAN' in folded_all or 'THUONG TRU' in folded_all or 'PLACE OF ORIGIN' in folded_all or 'PLACE OF RESIDENCE' in folded_all)
+    if has_chip_bottom_labels and not (origin or residence):
+        missing_fields.append("quê quán / nơi thường trú")
+
+    if missing_fields or _has_clipped_text(text_lines, img_w, img_h):
+        logger.warning(
+            f"Rejected incomplete/cropped front CCCD: missing={missing_fields}, "
+            f"clipped={_has_clipped_text(text_lines, img_w, img_h)}, id={bool(id_number)}, dob={dob}"
+        )
+        return {
+            "error": "Ảnh mặt trước CCCD bị mất góc, thiếu thông tin hoặc chưa đủ rõ (cần thấy rõ 4 góc thẻ, đủ 12 số CCCD, họ tên và ngày sinh). Vui lòng chụp lại toàn bộ thẻ."
+        }
 
     avg_conf = sum(t['confidence'] for t in text_lines) / max(len(text_lines), 1)
 
@@ -99,23 +233,23 @@ def _extract_with_easyocr(image_bytes: bytes) -> dict:
         'confidence': round(avg_conf, 2)
     }
 
-def _extract_id_number(text_lines: List[Dict], all_text: str) -> Optional[str]:
-    """Extract 12-digit CCCD or 9-digit CMND number."""
-    # Look for 12 digits directly
-    match = re.search(r'\b(\d{12})\b', all_text)
-    if match:
-        return match.group(1)
-    
-    # Check text lines near "Số" or "No"
+def _extract_id_number(text_lines: List[Dict], all_text: str, doc_type: str = 'CCCD') -> Optional[str]:
+    """Extract exact 12-digit CCCD number (or 9-digit CMND only if card is CMND)."""
+    # CCCD bắt buộc phải đủ 12 chữ số liên tiếp (không nhận số bị cắt còn 9-11 chữ số)
+    match12 = re.search(r'(?<!\d)(\d{12})(?!\d)', all_text)
+    if match12:
+        return match12.group(1)
+
     for line in text_lines:
-        t = line['text']
-        digits = re.findall(r'\d{9,12}', t)
+        digits = re.findall(r'(?<!\d)\d{12}(?!\d)', line['text'])
         if digits:
             return digits[0]
-            
-    match9 = re.search(r'\b(\d{9})\b', all_text)
-    if match9:
-        return match9.group(1)
+
+    if doc_type == 'CMND':
+        match9 = re.search(r'(?<!\d)(\d{9})(?!\d)', all_text)
+        if match9:
+            return match9.group(1)
+
     return None
 
 def _extract_name(text_lines: List[Dict]) -> Optional[str]:
@@ -137,9 +271,9 @@ def _extract_name(text_lines: List[Dict]) -> Optional[str]:
     candidates = []
     for line in text_lines:
         t = line['text']
-        # Filter out label lines
-        t_lower = t.lower()
-        if any(lbl in t_lower for lbl in ['cộng hòa', 'căn cước', 'citizen', 'quốc tịch', 'họ và tên', 'full name', 'ngày sinh', 'date of birth', 'giới tính', 'quê quán', 'thường trú', 'no.']):
+        # Filter out label lines and institutional header text
+        t_folded = _fold_ascii(t)
+        if any(lbl in t_folded for lbl in NON_PERSON_NAME_KEYWORDS):
             continue
 
         # Check if line is within the region between Name label and DOB label

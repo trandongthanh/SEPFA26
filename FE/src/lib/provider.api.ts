@@ -25,6 +25,8 @@ export interface ProviderProfileResponse {
   bankName?: string | null;
   bankAccount?: string | null;
   bankHolder?: string | null;
+  phone?: string | null;
+  cccdNumber?: string | null;
   account?: {
     id: string;
     fullName: string;
@@ -40,6 +42,8 @@ export interface UpsertProfilePayload {
   bio?: string;
   licenseInfo?: string;
   portfolioUrl?: string;
+  phone?: string;
+  cccdNumber?: string;
   selfieUrl?: string;
   cccdFrontUrl?: string;
   cccdBackUrl?: string;
@@ -56,13 +60,31 @@ export interface UpsertProfilePayload {
   bankHolder?: string;
 }
 
+export type OrderStatus =
+  | 'DRAFT'
+  | 'PENDING_PROVIDER'
+  | 'AGREEMENT_PENDING'
+  | 'AWAITING_PAYMENT'
+  | 'PAID'
+  | 'HANDOVER_IN_PROGRESS'
+  | 'HANDOVER_AWAITING_CONFIRM'
+  | 'IN_CARE'
+  | 'RETURN_IN_PROGRESS'
+  | 'RETURN_AWAITING_CONFIRM'
+  | 'COMPLETED'
+  | 'REJECTED'
+  | 'EXPIRED'
+  | 'CANCELLED'
+  | 'DISPUTED';
+
 export interface OrderItem {
   id: string;
   orderCode: string;
-  status: string;
+  status: OrderStatus | string;
   provisionalTotal: string;
   finalTotal?: string;
   scheduledPickupAt: string;
+  careDueAt?: string | null;
   customer?: {
     account?: {
       fullName?: string;

@@ -32,6 +32,8 @@ export interface AdminProviderItem {
   bankName: string | null;
   bankAccount: string | null;
   bankHolder: string | null;
+  phone?: string | null;
+  cccdNumber?: string | null;
   cccdFrontUrl: string | null;
   cccdBackUrl: string | null;
   selfieUrl: string | null;

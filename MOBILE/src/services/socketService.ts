@@ -1,7 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import axios from 'axios';
-import { BACKEND_WS_URL, API_BASE_URL } from '../config/api';
-import { storage } from '../utils/storage';
+import { BACKEND_WS_URL, refreshAccessToken } from '../config/api';
 import {
   VideoCallRingingPayload,
   VideoCallAcceptedPayload,
@@ -22,30 +20,31 @@ class SocketService {
   private acceptedListeners: Set<AcceptedListener> = new Set();
   private movedListeners: Set<MovedListener> = new Set();
   private endedListeners: Set<EndedListener> = new Set();
-  private isRefreshing: boolean = false;
+  private hasAttemptedRefreshForToken: boolean = false;
 
   /**
    * Kết nối WebSocket tới BE namespace /ws
    */
   connect(token: string) {
+    if (!token) return;
     if (this.socket && this.currentToken === token && this.socket.connected) {
       return;
     }
 
+    const isSameToken = this.currentToken === token;
     if (this.socket) {
       this.socket.disconnect();
       this.socket = null;
     }
 
+    if (!isSameToken) {
+      this.hasAttemptedRefreshForToken = false;
+    }
     this.currentToken = token;
 
-    // Handshake auth: { token } và extraHeaders origin: http://localhost:8081 để khớp với CORS_ORIGIN của BE
+    // App mobile gửi JWT qua handshake.auth.token (không giả mạo Origin header để tránh lệch CORS trên các môi trường)
     const s = io(BACKEND_WS_URL, {
       auth: { token },
-      extraHeaders: {
-        origin: 'http://localhost:8081',
-        Origin: 'http://localhost:8081',
-      },
       transports: ['websocket'],
       reconnectionAttempts: 5,
       reconnectionDelay: 3000,
@@ -54,31 +53,31 @@ class SocketService {
     this.socket = s;
 
     s.on('connect', () => {
+      this.hasAttemptedRefreshForToken = false;
       console.log('[SocketService] Connected to backend /ws');
     });
 
     s.on('connect_error', async (err: any) => {
-      // Nếu lỗi UNAUTHORIZED (token hỏng hoặc không khớp server):
+      // Nếu lỗi UNAUTHORIZED (access token hết hạn): thử refresh tối đa 1 lần, không tự xóa phiên đăng nhập của REST
       if (err?.message === 'UNAUTHORIZED' || err?.message?.includes('unauthorized')) {
-        s.disconnect(); // Ngắt kết nối ngay lập tức, tránh reconnect lặp đi lặp lại
-        this.socket = null;
+        s.disconnect();
+        if (this.socket === s) {
+          this.socket = null;
+        }
 
-        if (this.isRefreshing) return;
-        this.isRefreshing = true;
+        if (this.hasAttemptedRefreshForToken) {
+          console.warn('[SocketService] WebSocket unauthorized after refresh, stopping retry.');
+          return;
+        }
+        this.hasAttemptedRefreshForToken = true;
 
         try {
-          const refreshToken = await storage.getRefreshToken();
-          if (refreshToken) {
-            const res = await axios.post(`${API_BASE_URL}/auth/refresh`, { refreshToken });
-            const { accessToken, refreshToken: newRefresh } = res.data;
-            await storage.setToken(accessToken, newRefresh || refreshToken);
-            this.connect(accessToken);
+          const newAccessToken = await refreshAccessToken();
+          if (newAccessToken) {
+            this.connect(newAccessToken);
           }
         } catch (refreshErr) {
-          console.warn('[SocketService] Auto-refresh token failed, clearing dead token.');
-          await storage.clearAll();
-        } finally {
-          this.isRefreshing = false;
+          console.warn('[SocketService] Auto-refresh token for WebSocket failed.');
         }
         return;
       }

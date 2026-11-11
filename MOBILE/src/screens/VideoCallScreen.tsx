@@ -82,7 +82,7 @@ export const VideoCallScreen: React.FC<VideoCallScreenProps> = ({
           if (!camGranted || !micGranted) {
             Alert.alert(
               'Yêu cầu quyền Camera & Micro',
-              'Để đối phương nhìn và nghe thấy bạn, vui lòng vào Cài đặt -> Ứng dụng -> Expo Go -> Quyền ứng dụng và BẬT quyền Camera & Micro.',
+              'Để đối phương nhìn và nghe thấy bạn, vui lòng vào Cài đặt -> Ứng dụng -> Quyền ứng dụng và bật quyền Camera & Micro.',
               [{ text: 'Đã hiểu' }]
             );
           }
@@ -309,14 +309,14 @@ export const VideoCallScreen: React.FC<VideoCallScreenProps> = ({
                 setIsMuted(!data.isMicOn);
               } else if (data.type === 'NO_MEDIA_DEVICES') {
                 Alert.alert(
-                  'Thiết bị chặn Camera/Micro trên WebView',
-                  `Trình duyệt WebView không cấp quyền getUserMedia cho địa chỉ ${data.origin || ''} (isSecureContext: ${data.isSecureContext}).`
+                  'Không thể truy cập Camera/Micro',
+                  'Thiết bị chưa cấp quyền truy cập Camera hoặc Micro cho cuộc gọi. Vui lòng kiểm tra quyền ứng dụng trong Cài đặt.'
                 );
               } else if (data.type === 'INIT_MEDIA_ERROR' || data.type === 'TOGGLE_ERROR') {
                 const dev = data.device === 'camera' ? 'Camera' : 'Micro';
                 Alert.alert(
                   `Không thể bật ${dev}`,
-                  `Lỗi: ${data.name || ''} - ${data.message || ''}\n\nVui lòng vào Cài đặt -> Ứng dụng -> Expo Go -> Quyền ứng dụng và đảm bảo Camera/Micro đã được cho phép.`
+                  `Vui lòng vào Cài đặt -> Ứng dụng -> Quyền ứng dụng và đảm bảo quyền ${dev} đã được cho phép.`
                 );
               }
             } catch {

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
@@ -134,23 +134,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       if (err?.response?.status === 401) {
         setSessionExpired(true);
         Alert.alert(
-          'Phiên làm việc hết hạn',
-          'Token đăng nhập đã hết hạn (401). Vui lòng bấm Đăng xuất ở góc trên bên phải màn hình để đăng nhập lại.'
+          'Phiên đăng nhập hết hạn',
+          'Phiên đăng nhập của bạn đã hết hạn. Vui lòng đăng xuất và đăng nhập lại để tiếp tục.'
         );
       } else {
+        const msg = err?.response?.data?.message || 'Không thể tải thông tin hồ sơ lúc này. Vui lòng thử lại sau.';
         Alert.alert(
-          'Lỗi tải hồ sơ',
-          `Không thể tải thông tin hồ sơ: ${err?.response?.status || 'Lỗi mạng'}\n${JSON.stringify(err?.response?.data || err?.message || err)}`
+          'Không thể tải hồ sơ',
+          Array.isArray(msg) ? msg.join('\n') : msg
         );
       }
     } finally {
       setLoading(false);
     }
   };
-
-  useEffect(() => {
-    loadProfile();
-  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -356,23 +353,60 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
 
   // Save Modal 2: CCCD Images & Number
   const handleSaveCccdDocs = async () => {
+    const isAlreadyApproved = profile?.verificationStatus === 'APPROVED';
+
+    // Nếu đã xác thực (eKYC) và chỉ đang bổ sung ảnh mặt sau còn thiếu
+    if (isAlreadyApproved) {
+      if (profile?.cccdBackUrl) {
+        Alert.alert('Đã xác thực', 'Hồ sơ định danh của bạn đã được xác thực đầy đủ.');
+        setIsCccdModalVisible(false);
+        return;
+      }
+      if (!cccdBackUrl || !cccdBackUrl.startsWith('http')) {
+        Alert.alert('Chưa có ảnh mặt sau', 'Vui lòng tải lên ảnh mặt sau thẻ CCCD trước khi lưu.');
+        return;
+      }
+      setSaving(true);
+      try {
+        const updatedProfile = await customerService.updateMyProfile({
+          cccdBackUrl: cccdBackUrl.trim(),
+        });
+        setProfile(updatedProfile);
+        setIsCccdModalVisible(false);
+        Alert.alert('Thành công', 'Đã bổ sung ảnh mặt sau CCCD thành công!');
+        loadProfile();
+      } catch (err: any) {
+        const msg = err?.response?.data?.message || err?.message || 'Có lỗi xảy ra khi lưu ảnh mặt sau CCCD.';
+        Alert.alert('Lỗi xác minh', Array.isArray(msg) ? msg.join('\n') : msg);
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     const trimmedNumber = cccdNumber.trim();
     if (!trimmedNumber || !/^\d{12}$/.test(trimmedNumber)) {
       Alert.alert('Số CCCD không hợp lệ', 'Vui lòng nhập đúng 12 chữ số Căn cước công dân!');
       return;
     }
     if (!cccdFrontUrl || !cccdBackUrl || !selfieWithIdUrl) {
-      Alert.alert('Chưa đủ 3 ảnh', 'Vui lòng tải lên đầy đủ 3 ảnh (Mặt trước, Mặt sau và Selfie cầm CCCD) trước khi gửi xác minh!');
+      Alert.alert('Chưa đủ 3 ảnh', 'Vui lòng tải lên đầy đủ 3 ảnh (Mặt trước, Mặt sau và Ảnh chân dung) trước khi gửi xác minh!');
       return;
     }
     setSaving(true);
     try {
       const payload: UpdateCustomerProfilePayload = {
         cccdNumber: trimmedNumber,
-        cccdFrontUrl: cccdFrontUrl.trim(),
-        cccdBackUrl: cccdBackUrl.trim(),
-        selfieWithIdUrl: selfieWithIdUrl.trim(),
       };
+      if (cccdFrontUrl.trim().startsWith('http')) {
+        payload.cccdFrontUrl = cccdFrontUrl.trim();
+      }
+      if (cccdBackUrl.trim().startsWith('http')) {
+        payload.cccdBackUrl = cccdBackUrl.trim();
+      }
+      if (selfieWithIdUrl.trim().startsWith('http')) {
+        payload.selfieWithIdUrl = selfieWithIdUrl.trim();
+      }
 
       const updatedProfile = await customerService.updateMyProfile(payload);
       setProfile(updatedProfile);
@@ -640,7 +674,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               </View>
             </TouchableOpacity>
 
-            {/* Card 2: Định danh eKYC (AI) */}
+            {/* Card 2: Xác thực danh tính */}
             <TouchableOpacity
               style={[styles.cardContainerHalf, { justifyContent: 'space-between' }]}
               activeOpacity={0.9}
@@ -652,7 +686,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                     <Ionicons name="finger-print" size={16} color="#6027D2" />
                   </View>
                   <Text style={styles.cardTitleText} numberOfLines={1}>
-                    Định danh eKYC (AI)
+                    Xác thực danh tính
                   </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={16} color="#A0AEC0" />
@@ -686,21 +720,21 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
 
                 <Text style={styles.cccdStatusTitle}>
                   {isVerified
-                    ? 'Đã xác thực sinh trắc học'
+                    ? 'Đã xác thực'
                     : profile?.verificationStatus === 'REJECTED'
                       ? 'Xác thực thất bại'
                       : hasUploadedDocs
                         ? 'Đang xử lý hồ sơ'
-                        : 'Chưa xác thực eKYC'}
+                        : 'Chưa xác thực'}
                 </Text>
 
                 <Text style={styles.cccdStatusSubtitle}>
                   {profile?.cccdNumber
                     ? `Mã CCCD: ${profile.cccdNumber}`
                     : isVerified
-                      ? 'Hồ sơ đã được AI phê duyệt tự động'
+                      ? 'Tài khoản đã được xác minh thành công'
                       : profile?.verificationStatus === 'REJECTED'
-                        ? 'Bấm để chụp lại CCCD & Selfie'
+                        ? 'Bấm để chụp lại CCCD & chân dung'
                         : 'Quét CCCD & khuôn mặt chỉ 1 phút'}
                 </Text>
               </View>
@@ -710,7 +744,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                 onPress={() => navigation.navigate('Ekyc')}
               >
                 <Ionicons
-                  name={isVerified ? 'shield-checkmark' : 'sparkles'}
+                  name={isVerified ? 'shield-checkmark' : 'shield-checkmark-outline'}
                   size={14}
                   color={isVerified ? '#16A34A' : '#6027D2'}
                 />
@@ -720,7 +754,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                     { color: isVerified ? '#16A34A' : '#6027D2' },
                   ]}
                 >
-                  {isVerified ? 'Xem hồ sơ AI' : 'Xác thực AI ngay'}
+                  {isVerified ? 'Xem thông tin' : 'Xác thực ngay'}
                 </Text>
               </TouchableOpacity>
             </TouchableOpacity>
@@ -815,17 +849,37 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
             </View>
 
             {/* Full-width Action Button at bottom of Card 3 */}
-            <TouchableOpacity
-              style={styles.fullWidthUpdateBtn}
-              activeOpacity={0.85}
-              onPress={handleOpenCccdModal}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Ionicons name="create-outline" size={16} color="#6027D2" />
-                <Text style={styles.fullWidthUpdateBtnText}>Cập nhật thông tin CCCD</Text>
+            {isVerified && hasUploadedDocs ? (
+              <View
+                style={[
+                  styles.fullWidthUpdateBtn,
+                  { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' },
+                ]}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="shield-checkmark" size={16} color="#16A34A" />
+                  <Text style={[styles.fullWidthUpdateBtnText, { color: '#15803D' }]}>
+                    Đã xác thực đầy đủ giấy tờ định danh
+                  </Text>
+                </View>
               </View>
-              <Ionicons name="chevron-forward" size={16} color="#6027D2" />
-            </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.fullWidthUpdateBtn}
+                activeOpacity={0.85}
+                onPress={handleOpenCccdModal}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="create-outline" size={16} color="#6027D2" />
+                  <Text style={styles.fullWidthUpdateBtnText}>
+                    {isVerified && !profile?.cccdBackUrl
+                      ? 'Bổ sung ảnh mặt sau CCCD'
+                      : 'Cập nhật thông tin CCCD'}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color="#6027D2" />
+              </TouchableOpacity>
+            )}
           </View>
         </ScrollView>
       )}
@@ -986,15 +1040,17 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                 />
                 {profile?.verificationStatus === 'APPROVED' && !!profile?.cccdNumber && (
                   <Text style={{ fontSize: 11, color: '#2E7D32', marginTop: 4 }}>
-                    🔒 Hồ sơ đã được Admin phê duyệt, không thể thay đổi thông tin định danh.
+                    🔒 Hồ sơ đã được xác thực, không thể thay đổi thông tin định danh.
                   </Text>
                 )}
               </View>
 
               <View style={styles.uploadDocSection}>
-                <Text style={styles.docSectionTitle}>🪪 Ảnh xác minh Căn cước công dân (CCCD)</Text>
+                <Text style={styles.docSectionTitle}>🪪 Ảnh giấy tờ Căn cước công dân (CCCD)</Text>
                 <Text style={styles.docSectionSubtitle}>
-                  Tải lên ảnh chụp rõ nét để Admin xác minh tài khoản trước khi đặt dịch vụ.
+                  {isVerified
+                    ? 'Giấy tờ đã xác thực được khóa bảo mật. Bạn có thể bổ sung ảnh mặt sau nếu còn thiếu.'
+                    : 'Tải lên ảnh chụp rõ nét để Admin xác minh tài khoản trước khi đặt dịch vụ.'}
                 </Text>
 
                 {/* 1. CCCD Front */}
@@ -1011,22 +1067,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                       style={styles.uploadedImagePreview}
                     />
                   ) : null}
-                  <TouchableOpacity
-                    style={styles.selectImageBtn}
-                    onPress={() => handlePickDocument('front')}
-                    disabled={uploadingType === 'front'}
-                  >
-                    {uploadingType === 'front' ? (
-                      <ActivityIndicator size="small" color="#6027D2" />
-                    ) : (
-                      <>
-                        <Ionicons name="camera-outline" size={18} color="#6027D2" />
-                        <Text style={styles.selectImageBtnText}>
-                          {cccdFrontUrl ? 'Thay đổi ảnh mặt trước' : 'Chọn ảnh mặt trước CCCD'}
-                        </Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
+                  {isVerified && profile?.cccdFrontUrl ? (
+                    <Text style={{ fontSize: 12, color: '#16A34A', fontWeight: '600', marginTop: 4 }}>
+                      ✓ Đã xác thực
+                    </Text>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.selectImageBtn}
+                      onPress={() => handlePickDocument('front')}
+                      disabled={uploadingType === 'front'}
+                    >
+                      {uploadingType === 'front' ? (
+                        <ActivityIndicator size="small" color="#6027D2" />
+                      ) : (
+                        <>
+                          <Ionicons name="camera-outline" size={18} color="#6027D2" />
+                          <Text style={styles.selectImageBtnText}>
+                            {cccdFrontUrl ? 'Thay đổi ảnh mặt trước' : 'Chọn ảnh mặt trước CCCD'}
+                          </Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 {/* 2. CCCD Back */}
@@ -1043,27 +1105,33 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                       style={styles.uploadedImagePreview}
                     />
                   ) : null}
-                  <TouchableOpacity
-                    style={styles.selectImageBtn}
-                    onPress={() => handlePickDocument('back')}
-                    disabled={uploadingType === 'back'}
-                  >
-                    {uploadingType === 'back' ? (
-                      <ActivityIndicator size="small" color="#6027D2" />
-                    ) : (
-                      <>
-                        <Ionicons name="camera-outline" size={18} color="#6027D2" />
-                        <Text style={styles.selectImageBtnText}>
-                          {cccdBackUrl ? 'Thay đổi ảnh mặt sau' : 'Chọn ảnh mặt sau CCCD'}
-                        </Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
+                  {isVerified && profile?.cccdBackUrl ? (
+                    <Text style={{ fontSize: 12, color: '#16A34A', fontWeight: '600', marginTop: 4 }}>
+                      ✓ Đã xác thực
+                    </Text>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.selectImageBtn}
+                      onPress={() => handlePickDocument('back')}
+                      disabled={uploadingType === 'back'}
+                    >
+                      {uploadingType === 'back' ? (
+                        <ActivityIndicator size="small" color="#6027D2" />
+                      ) : (
+                        <>
+                          <Ionicons name="camera-outline" size={18} color="#6027D2" />
+                          <Text style={styles.selectImageBtnText}>
+                            {cccdBackUrl ? 'Thay đổi ảnh mặt sau' : 'Chọn ảnh mặt sau CCCD'}
+                          </Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  )}
                 </View>
 
                 {/* 3. Selfie with ID */}
                 <View style={styles.uploadCard}>
-                  <Text style={styles.uploadCardLabel}>3. Ảnh Selfie cầm CCCD</Text>
+                  <Text style={styles.uploadCardLabel}>3. Ảnh chân dung</Text>
                   {selfieWithIdUrl ? (
                     <Image
                       source={{
@@ -1075,22 +1143,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                       style={styles.uploadedImagePreview}
                     />
                   ) : null}
-                  <TouchableOpacity
-                    style={styles.selectImageBtn}
-                    onPress={() => handlePickDocument('selfie')}
-                    disabled={uploadingType === 'selfie'}
-                  >
-                    {uploadingType === 'selfie' ? (
-                      <ActivityIndicator size="small" color="#6027D2" />
-                    ) : (
-                      <>
-                        <Ionicons name="camera-outline" size={18} color="#6027D2" />
-                        <Text style={styles.selectImageBtnText}>
-                          {selfieWithIdUrl ? 'Thay đổi ảnh Selfie' : 'Chọn ảnh Selfie cầm CCCD'}
-                        </Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
+                  {isVerified && profile?.selfieWithIdUrl ? (
+                    <Text style={{ fontSize: 12, color: '#16A34A', fontWeight: '600', marginTop: 4 }}>
+                      ✓ Đã xác thực
+                    </Text>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.selectImageBtn}
+                      onPress={() => handlePickDocument('selfie')}
+                      disabled={uploadingType === 'selfie'}
+                    >
+                      {uploadingType === 'selfie' ? (
+                        <ActivityIndicator size="small" color="#6027D2" />
+                      ) : (
+                        <>
+                          <Ionicons name="camera-outline" size={18} color="#6027D2" />
+                          <Text style={styles.selectImageBtnText}>
+                            {selfieWithIdUrl ? 'Thay đổi ảnh chân dung' : 'Chọn ảnh chân dung'}
+                          </Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  )}
                 </View>
               </View>
             </ScrollView>
@@ -1100,21 +1174,27 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                 style={styles.cancelModalButton}
                 onPress={() => setIsCccdModalVisible(false)}
               >
-                <Text style={styles.cancelModalButtonText}>Hủy</Text>
+                <Text style={styles.cancelModalButtonText}>
+                  {isVerified && profile?.cccdBackUrl ? 'Đóng' : 'Hủy'}
+                </Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={styles.saveModalButton}
-                activeOpacity={0.8}
-                onPress={handleSaveCccdDocs}
-                disabled={saving}
-              >
-                {saving ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <Text style={styles.saveModalButtonText}>Lưu & Gửi xác minh</Text>
-                )}
-              </TouchableOpacity>
+              {(!isVerified || !profile?.cccdBackUrl) && (
+                <TouchableOpacity
+                  style={styles.saveModalButton}
+                  activeOpacity={0.8}
+                  onPress={handleSaveCccdDocs}
+                  disabled={saving}
+                >
+                  {saving ? (
+                    <ActivityIndicator color="#FFFFFF" size="small" />
+                  ) : (
+                    <Text style={styles.saveModalButtonText}>
+                      {isVerified ? 'Lưu ảnh mặt sau' : 'Lưu & Gửi xác minh'}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              )}
             </View>
           </View>
         </View>
@@ -1152,7 +1232,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               {loadingDocPreview ? (
                 <View style={styles.docPreviewCenter}>
                   <ActivityIndicator size="large" color="#6027D2" />
-                  <Text style={styles.docPreviewLoadingText}>Đang tải ảnh bảo mật từ Cloudinary...</Text>
+                  <Text style={styles.docPreviewLoadingText}>Đang tải ảnh giấy tờ...</Text>
                 </View>
               ) : previewDocUrl ? (
                 <Image

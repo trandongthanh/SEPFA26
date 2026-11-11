@@ -133,9 +133,19 @@ export default function ProviderDashboardPage() {
       );
       fetchData();
     } catch (err: any) {
-      const msg =
+      const rawMsg =
         err?.response?.data?.message || err?.message || 'Có lỗi xảy ra khi xử lý đơn hàng.';
-      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+      const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
+      if (msgText.includes('PROVIDER_IDENTITY_INCOMPLETE')) {
+        message.error(
+          'Vui lòng cập nhật đầy đủ Số điện thoại và Số CCCD (12 chữ số) tại mục Hồ sơ nhà vườn trước khi chấp nhận đơn!'
+        );
+      } else if (msgText.includes('INVALID_STATE_TRANSITION')) {
+        message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới dữ liệu...');
+        fetchData();
+      } else {
+        message.error(msgText);
+      }
     } finally {
       setActionLoading(null);
     }

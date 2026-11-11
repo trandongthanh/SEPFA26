@@ -113,8 +113,16 @@ export default function AdminProviderDetailPage() {
       message.success(decision === 'APPROVED' ? 'Đã phê duyệt thành công!' : 'Đã từ chối hồ sơ.');
       fetchDetail();
       setNote('');
-    } catch {
-      message.error('Thao tác thất bại. Vui lòng thử lại.');
+    } catch (err: any) {
+      const errMsg = err?.response?.data?.message || err?.message;
+      const errText = Array.isArray(errMsg) ? errMsg.join(', ') : String(errMsg || '');
+      if (errText.includes('PROVIDER_PROFILE_NOT_SUBMITTED')) {
+        message.error(
+          'Hồ sơ nhà vườn chưa đủ điều kiện phê duyệt (Cần đủ: Số điện thoại, Số CCCD 12 chữ số, ảnh CCCD 2 mặt và ảnh chân dung).'
+        );
+      } else {
+        message.error(errText || 'Thao tác thất bại. Vui lòng thử lại.');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -185,7 +193,8 @@ export default function AdminProviderDetailPage() {
                       </h3>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
                         <InfoRow icon={<UserOutlined />} label="Người đại diện" value={provider.account?.fullName} />
-                        <InfoRow icon={<PhoneOutlined />} label="Số điện thoại" value={provider.account?.phone} />
+                        <InfoRow icon={<PhoneOutlined />} label="Số điện thoại" value={provider.phone || provider.account?.phone} />
+                        <InfoRow icon={<IdcardOutlined />} label="Số CCCD (12 chữ số)" value={provider.cccdNumber} />
                         <InfoRow icon={<MailOutlined />} label="Email liên hệ" value={provider.account?.email} />
                         <InfoRow icon={<EnvironmentOutlined />} label="Khu vực kinh doanh" value={provider.serviceAreas || provider.address} />
                         <InfoRow icon={<ShopOutlined />} label="Loại hình" value={provider.providerType === 'NURSERY' ? 'Nhà vườn' : 'Chuyên gia'} />
@@ -290,12 +299,16 @@ export default function AdminProviderDetailPage() {
                       <div className="space-y-3">
                         <ChecklistItem
                           label="Xác minh Căn cước công dân"
-                          description="Khớp thông tin người đại diện"
-                          checked={Boolean(provider.cccdFrontUrl && provider.cccdBackUrl)}
+                          description={
+                            provider.cccdNumber
+                              ? `Số CCCD: ${provider.cccdNumber} · Đủ ảnh 2 mặt`
+                              : 'Cần đủ số CCCD 12 số và ảnh 2 mặt'
+                          }
+                          checked={Boolean(provider.cccdNumber && provider.cccdFrontUrl && provider.cccdBackUrl)}
                         />
                         <ChecklistItem
                           label="Kiểm tra Giấy phép kinh doanh"
-                          description="Còn hiệu lực, đúng ngành nghề"
+                          description="Còn hiệu lực, đúng ngành nghề (nếu có)"
                           checked={Boolean(provider.businessLicenseUrl)}
                         />
                         <ChecklistItem
@@ -304,19 +317,19 @@ export default function AdminProviderDetailPage() {
                           checked={Boolean(provider.selfieUrl)}
                         />
                         <ChecklistItem
-                          label="Thông tin kinh doanh"
-                          description="Địa chỉ, kinh nghiệm, lĩnh vực"
-                          checked={Boolean(provider.address && provider.experience)}
+                          label="Thông tin liên hệ & kinh doanh"
+                          description="Số điện thoại, địa chỉ, kinh nghiệm"
+                          checked={Boolean((provider.phone || provider.account?.phone) && provider.address)}
                         />
                       </div>
                       <div className="mt-4 pt-3 border-t border-[#ECE7FA] flex items-center justify-between">
                         <span className="text-xs text-[#6E6A8A]">Tiến độ kiểm tra</span>
                         <span className="text-xs font-semibold text-[#6027D2]">
                           {[
-                            provider.cccdFrontUrl && provider.cccdBackUrl,
+                            provider.cccdNumber && provider.cccdFrontUrl && provider.cccdBackUrl,
                             provider.businessLicenseUrl,
                             provider.selfieUrl,
-                            provider.address && provider.experience,
+                            (provider.phone || provider.account?.phone) && provider.address,
                           ].filter(Boolean).length}/4
                         </span>
                       </div>
