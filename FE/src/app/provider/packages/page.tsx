@@ -121,11 +121,18 @@ function PackagesPageContent() {
       form.resetFields();
       loadData();
     } catch (err: any) {
-      const msg =
+      const rawMsg =
         err?.response?.data?.message ||
         err?.message ||
         'Tạo gói dịch vụ thất bại. Vui lòng kiểm tra lại thông tin.';
-      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+      const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
+      if (msgText.includes('PROFILE_NOT_FOUND')) {
+        message.error('Vui lòng hoàn thiện và lưu Hồ sơ nhà vườn trước khi tạo gói dịch vụ.');
+      } else if (msgText.includes('PROFILE_NOT_APPROVED')) {
+        message.error('Chỉ nhà vườn đã được Admin phê duyệt hồ sơ mới có thể tạo gói dịch vụ mới.');
+      } else {
+        message.error(msgText);
+      }
     } finally {
       setSubmitting(false);
     }

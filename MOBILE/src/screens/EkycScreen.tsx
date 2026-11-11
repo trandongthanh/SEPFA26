@@ -19,6 +19,7 @@ import {
   EkycStatusResponse,
   EkycExtractedData,
 } from '../services/ekycService';
+import { toFriendlyUserMessage } from '../config/api';
 
 const { width } = Dimensions.get('window');
 
@@ -79,7 +80,7 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
           success: true,
           status: 'VERIFIED',
           similarity: res.faceSimilarity || 85,
-          message: 'Tài khoản của bạn đã được xác thực eKYC thành công!',
+          message: 'Tài khoản của bạn đã được xác thực danh tính thành công!',
         });
       } else if (res.status === 'REJECTED') {
         setCurrentStep(3);
@@ -87,8 +88,9 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
           success: false,
           status: 'REJECTED',
           similarity: res.faceSimilarity || 0,
-          rejectionReason:
-            res.rejectionReason || 'Thông tin khuôn mặt không khớp hoặc nghi ngờ thẻ giả mạo.',
+          rejectionReason: res.rejectionReason
+            ? toFriendlyUserMessage(res.rejectionReason)
+            : 'Thông tin khuôn mặt chưa khớp hoặc hình ảnh chưa rõ nét.',
         });
       } else if (res.status === 'PROCESSING') {
         // Đã OCR nhưng chưa Face Match
@@ -187,11 +189,11 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
         setOcrData(res.extracted);
         setAntiFraudInfo(res.antiFraud);
         Alert.alert(
-          'AI Bóc tách thành công 🎉',
-          `Họ tên: ${res.extracted.fullName || 'N/A'}\nSố CCCD: ${res.extracted.idNumber || 'N/A'}\nPhôi thẻ: ${res.antiFraud?.passed ? 'Hợp lệ' : 'Cần kiểm tra'}`
+          'Quét thẻ CCCD thành công',
+          `Họ tên: ${res.extracted.fullName || 'N/A'}\nSố CCCD: ${res.extracted.idNumber || 'N/A'}\nTình trạng thẻ: ${res.antiFraud?.passed ? 'Hợp lệ' : 'Cần kiểm tra lại'}`
         );
       } else {
-        Alert.alert('Thông báo', res.message || 'Không thể bóc tách dữ liệu từ thẻ CCCD.');
+        Alert.alert('Thông báo', res.message || 'Không thể đọc dữ liệu từ thẻ CCCD. Vui lòng chụp lại rõ nét hơn.');
       }
     } catch (err: any) {
       const msg =
@@ -225,15 +227,16 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
           success: true,
           status: 'VERIFIED',
           similarity: res.similarity,
-          message: 'Xác thực khuôn mặt sinh trắc học thành công!',
+          message: 'Xác thực danh tính thành công!',
         });
       } else {
         setVerificationResult({
           success: false,
           status: 'REJECTED',
           similarity: res.similarity,
-          rejectionReason:
-            res.message || 'Khuôn mặt selfie không khớp ảnh thẻ CCCD hoặc phát hiện ảnh giả mạo.',
+          rejectionReason: res.message
+            ? toFriendlyUserMessage(res.message)
+            : 'Ảnh chân dung chưa khớp với ảnh trên thẻ CCCD hoặc chưa đủ rõ nét.',
         });
       }
     } catch (err: any) {
@@ -252,7 +255,14 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
     }
   };
 
-  // Reset khi bị từ chối
+  // Chụp lại ảnh chân dung (giữ nguyên CCCD đã đọc thành công ở Bước 1)
+  const handleRetrySelfie = () => {
+    setSelfieUri(null);
+    setVerificationResult(null);
+    setCurrentStep(2);
+  };
+
+  // Reset toàn bộ từ Bước 1 (chụp lại CCCD từ đầu)
   const handleRetry = async () => {
     try {
       setInitialLoading(true);
@@ -280,7 +290,7 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
       const res = await ekycService.getDocumentUrl(field);
       setPreviewImageUrl(res.url);
     } catch (err: any) {
-      Alert.alert('Lỗi', 'Không thể lấy ảnh bảo mật từ Cloudinary.');
+      Alert.alert('Lỗi', 'Không thể tải hình ảnh lúc này. Vui lòng thử lại sau.');
       setPreviewModalVisible(false);
     } finally {
       setLoadingPreview(false);
@@ -291,7 +301,7 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
     return (
       <SafeAreaView style={styles.centerContainer}>
         <ActivityIndicator size="large" color="#6025D2" />
-        <Text style={styles.loadingText}>Đang tải trạng thái xác thực eKYC...</Text>
+        <Text style={styles.loadingText}>Đang tải thông tin xác thực...</Text>
       </SafeAreaView>
     );
   }
@@ -308,8 +318,8 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
           <Ionicons name="chevron-back" size={24} color="#1E1B2E" />
         </TouchableOpacity>
         <View style={styles.headerTitleBox}>
-          <Text style={styles.headerTitle}>Xác thực định danh AI</Text>
-          <Text style={styles.headerSubtitle}>Self-hosted eKYC (EasyOCR & DeepFace)</Text>
+          <Text style={styles.headerTitle}>Xác thực danh tính</Text>
+          <Text style={styles.headerSubtitle}>Xác minh thẻ CCCD và ảnh chân dung</Text>
         </View>
         <View style={{ width: 40 }} />
       </View>
@@ -366,7 +376,7 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
               )}
             </View>
             <Text style={[styles.stepLabel, currentStep >= 2 && styles.stepLabelActive]}>
-              So khớp mặt
+              Chân dung
             </Text>
           </View>
 
@@ -396,16 +406,15 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
           </View>
         </View>
 
-        {/* AI BADGE INFO BANNER */}
+        {/* INFO BANNER */}
         <View style={styles.aiBadgeBanner}>
           <View style={styles.aiIconWrapper}>
-            <Ionicons name="sparkles" size={18} color="#6025D2" />
+            <Ionicons name="shield-checkmark" size={18} color="#6025D2" />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.aiBadgeTitle}>Hệ thống AI eKYC bảo mật & tự động</Text>
+            <Text style={styles.aiBadgeTitle}>Xác thực nhanh chóng & bảo mật</Text>
             <Text style={styles.aiBadgeDesc}>
-              Bóc tách chữ EasyOCR, kiểm tra gian lận thẻ OpenCV & so khớp sinh trắc học DeepFace
-              ArcFace. Phê duyệt tức thì, không cần đợi duyệt thủ công!
+              Chụp ảnh CCCD rõ 4 góc và ảnh chân dung chính chủ để hoàn tất xác minh tài khoản chỉ trong vài bước.
             </Text>
           </View>
         </View>
@@ -441,7 +450,11 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
                   <Image source={{ uri: frontUri }} style={styles.idCardImagePreview} />
                   <TouchableOpacity
                     style={styles.retakeBtn}
-                    onPress={() => setFrontUri(null)}
+                    onPress={() => {
+                      setFrontUri(null);
+                      setOcrData(null);
+                      setAntiFraudInfo(null);
+                    }}
                     activeOpacity={0.8}
                   >
                     <Ionicons name="refresh-outline" size={14} color="#FFFFFF" />
@@ -502,7 +515,7 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
                 </View>
               ) : (
                 <View style={styles.emptyUploadBox}>
-                  <Text style={styles.emptyUploadText}>Bổ sung mặt sau để AI trích xuất đủ chip/quê quán</Text>
+                  <Text style={styles.emptyUploadText}>Chụp thêm mặt sau để bổ sung đầy đủ thông tin thẻ CCCD</Text>
                   <View style={styles.uploadActionButtonsRow}>
                     <TouchableOpacity
                       style={styles.actionBtnCameraSmall}
@@ -539,24 +552,24 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
                 {ocrLoading ? (
                   <View style={styles.btnLoadingRow}>
                     <ActivityIndicator size="small" color="#FFFFFF" />
-                    <Text style={styles.primarySubmitBtnText}>AI đang phân tích & bóc tách thẻ...</Text>
+                    <Text style={styles.primarySubmitBtnText}>Đang kiểm tra thông tin thẻ...</Text>
                   </View>
                 ) : (
                   <View style={styles.btnRow}>
                     <Ionicons name="scan-outline" size={18} color="#FFFFFF" />
-                    <Text style={styles.primarySubmitBtnText}>Bắt đầu quét AI EasyOCR</Text>
+                    <Text style={styles.primarySubmitBtnText}>Bắt đầu quét thẻ CCCD</Text>
                   </View>
                 )}
               </TouchableOpacity>
             ) : null}
 
-            {/* KẾT QUẢ BÓC TÁCH BỞI AI */}
+            {/* THÔNG TIN ĐỌC TỪ THẺ */}
             {ocrData && (
               <View style={styles.extractedCardContainer}>
                 <View style={styles.extractedHeader}>
                   <View style={styles.extractedHeaderLeft}>
                     <Ionicons name="checkmark-done-circle" size={20} color="#16A34A" />
-                    <Text style={styles.extractedTitle}>Dữ liệu bóc tách từ CCCD</Text>
+                    <Text style={styles.extractedTitle}>Thông tin trên thẻ CCCD</Text>
                   </View>
                   {antiFraudInfo?.passed && (
                     <View style={styles.antiFraudPill}>
@@ -592,7 +605,7 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
                   onPress={() => setCurrentStep(2)}
                   activeOpacity={0.85}
                 >
-                  <Text style={styles.continueToStep2BtnText}>Tiếp tục: So khớp khuôn mặt</Text>
+                  <Text style={styles.continueToStep2BtnText}>Tiếp tục: Chụp ảnh chân dung</Text>
                   <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
                 </TouchableOpacity>
               </View>
@@ -601,7 +614,7 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
         )}
 
         {/* ======================================================== */}
-        {/*  BƯỚC 2: SO KHỚP CHÂN DUNG & LIVENESS                  */}
+        {/*  BƯỚC 2: CHỤP ẢNH CHÂN DUNG                              */}
         {/* ======================================================== */}
         {currentStep === 2 && (
           <View style={styles.stepSection}>
@@ -610,8 +623,7 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
               <Text style={styles.sectionTitle}>Bước 2: Chụp ảnh khuôn mặt chân dung (Selfie)</Text>
             </View>
             <Text style={styles.sectionDesc}>
-              AI DeepFace ArcFace sẽ so khớp sinh trắc học giữa ảnh chân dung và ảnh trên thẻ CCCD.
-              Kiểm tra Liveness tự động ngăn chặn deepfake & ảnh chụp lại từ màn hình.
+              Vui lòng chụp ảnh khuôn mặt rõ nét tại nơi đủ ánh sáng để hoàn tất xác minh chính chủ.
             </Text>
 
             {/* OVAL GUIDE / CAMERA PREVIEW */}
@@ -671,12 +683,12 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
               {faceMatchLoading ? (
                 <View style={styles.btnLoadingRow}>
                   <ActivityIndicator size="small" color="#FFFFFF" />
-                  <Text style={styles.primarySubmitBtnText}>DeepFace & Liveness đang xác minh...</Text>
+                  <Text style={styles.primarySubmitBtnText}>Đang xác thực thông tin...</Text>
                 </View>
               ) : (
                 <View style={styles.btnRow}>
                   <Ionicons name="finger-print-outline" size={18} color="#FFFFFF" />
-                  <Text style={styles.primarySubmitBtnText}>Xác thực sinh trắc học AI</Text>
+                  <Text style={styles.primarySubmitBtnText}>Hoàn tất xác thực</Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -705,23 +717,20 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
                   </View>
                 </View>
 
-                <Text style={styles.resultTitleSuccess}>Xác thực eKYC thành công!</Text>
+                <Text style={styles.resultTitleSuccess}>Xác thực danh tính thành công!</Text>
                 <Text style={styles.resultDescSuccess}>
-                  Hồ sơ định danh của bạn đã được đối soát sinh trắc học và phê duyệt tự động. Giờ đây
-                  bạn có thể sử dụng trọn vẹn các dịch vụ của LanCare Hub!
+                  Hồ sơ của bạn đã được xác minh thành công. Giờ đây bạn có thể sử dụng đầy đủ các dịch vụ của LanCare Hub!
                 </Text>
 
                 <View style={styles.verifiedStatsBox}>
                   <View style={styles.statCol}>
-                    <Text style={styles.statLabel}>Độ khớp khuôn mặt</Text>
-                    <Text style={styles.statValue}>
-                      {verificationResult.similarity?.toFixed(1) || '88.5'}%
-                    </Text>
+                    <Text style={styles.statLabel}>Trạng thái hồ sơ</Text>
+                    <Text style={[styles.statValue, { color: '#16A34A' }]}>Đã xác thực</Text>
                   </View>
                   <View style={styles.statDivider} />
                   <View style={styles.statCol}>
-                    <Text style={styles.statLabel}>Kiểm tra người thật</Text>
-                    <Text style={[styles.statValue, { color: '#16A34A' }]}>REAL (Hợp lệ)</Text>
+                    <Text style={styles.statLabel}>Giấy tờ tùy thân</Text>
+                    <Text style={[styles.statValue, { color: '#16A34A' }]}>Hợp lệ</Text>
                   </View>
                 </View>
 
@@ -772,14 +781,36 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
                   <Text style={styles.tipsText}>• Đảm bảo khuôn mặt hướng thẳng vào máy ảnh.</Text>
                 </View>
 
-                <TouchableOpacity
-                  style={styles.retryBtn}
-                  onPress={handleRetry}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name="refresh" size={18} color="#FFFFFF" />
-                  <Text style={styles.retryBtnText}>Thử lại ngay</Text>
-                </TouchableOpacity>
+                {frontUri ? (
+                  <>
+                    <TouchableOpacity
+                      style={styles.retryBtn}
+                      onPress={handleRetrySelfie}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="camera-outline" size={18} color="#FFFFFF" />
+                      <Text style={styles.retryBtnText}>Chụp lại ảnh chân dung</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.retrySecondaryBtn}
+                      onPress={handleRetry}
+                      activeOpacity={0.85}
+                    >
+                      <Ionicons name="refresh" size={16} color="#6025D2" />
+                      <Text style={styles.retrySecondaryBtnText}>Quét lại thẻ CCCD từ đầu</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <TouchableOpacity
+                    style={styles.retryBtn}
+                    onPress={handleRetry}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="refresh" size={18} color="#FFFFFF" />
+                    <Text style={styles.retryBtnText}>Thử lại ngay</Text>
+                  </TouchableOpacity>
+                )}
 
                 <TouchableOpacity
                   style={styles.backHomeBtn}
@@ -812,7 +843,7 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
             {loadingPreview ? (
               <View style={styles.modalLoadingBox}>
                 <ActivityIndicator size="large" color="#6025D2" />
-                <Text style={styles.loadingText}>Đang tải ảnh bảo mật từ Cloudinary...</Text>
+                <Text style={styles.loadingText}>Đang tải ảnh giấy tờ...</Text>
               </View>
             ) : previewImageUrl ? (
               <Image source={{ uri: previewImageUrl }} style={styles.modalPreviewImage} resizeMode="contain" />
@@ -1486,6 +1517,24 @@ const styles = StyleSheet.create({
   retryBtnText: {
     color: '#FFFFFF',
     fontSize: 14,
+    fontWeight: '700',
+    marginLeft: 6,
+  },
+  retrySecondaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F5F3FF',
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+    borderRadius: 14,
+    height: 44,
+    width: '100%',
+    marginTop: 10,
+  },
+  retrySecondaryBtnText: {
+    color: '#6025D2',
+    fontSize: 13,
     fontWeight: '700',
     marginLeft: 6,
   },

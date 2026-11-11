@@ -39,8 +39,13 @@ const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> =
   HANDOVER_IN_PROGRESS: { label: 'Đang bàn giao', color: '#805AD5', bg: '#E9D8FD' },
   HANDOVER_AWAITING_CONFIRM: { label: 'Chờ xác nhận bàn giao', color: '#D97706', bg: '#FEF3C7' },
   IN_CARE: { label: 'Đang chăm sóc', color: '#6027D2', bg: '#F3E8FF' },
+  RETURN_IN_PROGRESS: { label: 'Đang bàn giao trả cây', color: '#805AD5', bg: '#E9D8FD' },
+  RETURN_AWAITING_CONFIRM: { label: 'Chờ nghiệm thu cây', color: '#D97706', bg: '#FEF3C7' },
+  COMPLETED: { label: 'Hoàn thành', color: '#2F855A', bg: '#C6F6D5' },
   REJECTED: { label: 'Nhà vườn từ chối', color: '#E53E3E', bg: '#FED7D7' },
+  EXPIRED: { label: 'Quá hạn phản hồi', color: '#718096', bg: '#EDF2F7' },
   CANCELLED: { label: 'Đã hủy', color: '#A0AEC0', bg: '#E2E8F0' },
+  DISPUTED: { label: 'Đang tranh chấp', color: '#C53030', bg: '#FED7D7' },
 };
 
 const CALL_END_REASON_MAP: Record<string, { label: string; color: string; bg: string }> = {
@@ -255,7 +260,7 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
             setConfirmingHandover(true);
             try {
               await orderService.confirmHandover(orderId);
-              Alert.alert('Thành công', 'Đã xác nhận bàn giao thành công! Cây của bạn đã chính thức chuyển sang giai đoạn chăm sóc (IN_CARE).');
+              Alert.alert('Thành công', 'Đã xác nhận bàn giao thành công! Cây của bạn đã chính thức chuyển sang giai đoạn chăm sóc.');
               fetchDetail();
             } catch (err: any) {
               console.error('Confirm handover failed:', err);
@@ -418,7 +423,7 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
         )}
 
         {/* View Contract Link if Contract exists */}
-        {['PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE'].includes(order.status) && (
+        {['PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM', 'COMPLETED', 'DISPUTED'].includes(order.status) && (
           <TouchableOpacity
             style={styles.viewContractRow}
             onPress={handleOpenContract}

@@ -108,9 +108,120 @@ api.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
   return config;
 });
 
-// ===== Response interceptor: silent-refresh khi nhận 401 =====
+// ===== Response interceptor: silent-refresh khi nhận 401 & chuẩn hóa thông báo lỗi người dùng =====
 
 type RetryableConfig = InternalAxiosRequestConfig & { _retry?: boolean };
+
+const FE_ERROR_CODE_MAP: Record<string, string> = {
+  Unauthorized: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
+  UNAUTHORIZED: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
+  INVALID_REFRESH_TOKEN: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
+  REFRESH_TOKEN_REUSED: 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
+  Forbidden: 'Bạn không có quyền thực hiện thao tác này.',
+  FORBIDDEN: 'Bạn không có quyền thực hiện thao tác này.',
+  INVALID_CREDENTIALS: 'Email hoặc mật khẩu không chính xác.',
+  ACCOUNT_SUSPENDED: 'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên.',
+  ACCOUNT_INACTIVE: 'Tài khoản của bạn đang chờ phê duyệt.',
+  ACCOUNT_NOT_FOUND: 'Không tìm thấy thông tin tài khoản.',
+  CURRENT_PASSWORD_INCORRECT: 'Mật khẩu hiện tại không chính xác.',
+  EMAIL_EXISTS: 'Email này đã được sử dụng bởi tài khoản khác.',
+  PHONE_EXISTS: 'Số điện thoại này đã được sử dụng bởi tài khoản khác.',
+  CCCD_NUMBER_EXISTS: 'Số Căn cước công dân này đã được đăng ký bởi nhà vườn khác.',
+  IDENTITY_LOCKED_AFTER_APPROVAL: 'Thông tin định danh đã được phê duyệt nên không thể chỉnh sửa.',
+  CUSTOMER_IDENTITY_DOCUMENTS_REQUIRED: 'Hồ sơ khách hàng chưa đủ số CCCD và 3 ảnh xác minh.',
+  PROVIDER_PROFILE_NOT_SUBMITTED: 'Hồ sơ nhà vườn chưa đủ điều kiện phê duyệt (Cần đủ: Số điện thoại, Số CCCD 12 chữ số, ảnh CCCD 2 mặt và ảnh chân dung).',
+  PROVIDER_PROFILE_FIELDS_REQUIRED: 'Vui lòng nhập đầy đủ Loại hình đối tác và Tên nhà vườn hiển thị.',
+  PROVIDER_IDENTITY_INCOMPLETE: 'Vui lòng cập nhật đầy đủ Số điện thoại và Số CCCD (12 chữ số) tại mục Hồ sơ nhà vườn trước khi chấp nhận đơn và tạo hợp đồng!',
+  PROFILE_NOT_FOUND: 'Vui lòng hoàn thiện và lưu Hồ sơ nhà vườn trước khi thực hiện thao tác này.',
+  PROFILE_NOT_APPROVED: 'Chỉ nhà vườn đã được Admin phê duyệt hồ sơ mới có thể thực hiện thao tác này.',
+  GPS_PAIR_REQUIRED: 'Vui lòng nhập đầy đủ cả Vĩ độ (Latitude) và Kinh độ (Longitude).',
+  DECLARED_VALUE_RANGE_INVALID: 'Giá trị khai báo tối thiểu phải nhỏ hơn hoặc bằng giá trị tối đa.',
+  UNASSESSED_PLANTS: 'Vui lòng thẩm định đầy đủ tất cả các chậu cây trước khi hoàn tất bàn giao.',
+  ALL_PLANTS_REJECTED: 'Không thể hoàn tất bàn giao khi tất cả chậu cây đều bị từ chối.',
+  FINAL_TOTAL_REQUIRED: 'Vui lòng nhập tổng chi phí điều chỉnh cuối cùng.',
+  FINAL_TOTAL_EXCEEDS_CAP: 'Chi phí điều chỉnh vượt quá mức trần cho phép.',
+  ORDER_NOT_FOUND: 'Không tìm thấy thông tin đơn hàng.',
+  ORDER_NOT_IN_CARE: 'Chỉ có thể gửi báo cáo cho đơn hàng đang trong giai đoạn chăm sóc.',
+  ORDER_NOT_CALLABLE: 'Đơn hàng ở trạng thái hiện tại không hỗ trợ gọi video.',
+  VIDEO_CALL_IN_PROGRESS: 'Đang có một cuộc gọi video khác diễn ra trên đơn hàng này.',
+  VIDEO_CALL_ENDED: 'Cuộc gọi video này đã kết thúc.',
+  VIDEO_PROVIDER_UNAVAILABLE: 'Dịch vụ gọi video đang tạm bận. Vui lòng thử lại sau.',
+  IMAGE_FILE_REQUIRED: 'Vui lòng chọn tệp hình ảnh.',
+  IMAGE_FILE_INVALID: 'Định dạng ảnh không hợp lệ (chỉ hỗ trợ JPG, PNG, WEBP).',
+  IMAGE_FILE_TOO_LARGE: 'Kích thước ảnh vượt quá giới hạn 5MB.',
+  CLOUDINARY_NOT_CONFIGURED: 'Dịch vụ lưu trữ hình ảnh đang bảo trì. Vui lòng thử lại sau.',
+};
+
+function sanitizeFeErrorMessage(raw: unknown): string {
+  if (!raw) return 'Hệ thống đang bận, vui lòng thử lại sau.';
+  const text = Array.isArray(raw) ? raw.join(', ') : String(raw).trim();
+
+  // Giữ nguyên các mã cần xử lý nhánh riêng ở UI (như GOOGLE_ACCOUNT_NOT_REGISTERED, INVALID_STATE_TRANSITION)
+  if (text === 'GOOGLE_ACCOUNT_NOT_REGISTERED' || text === 'INVALID_STATE_TRANSITION') {
+    return text;
+  }
+
+  if (FE_ERROR_CODE_MAP[text]) return FE_ERROR_CODE_MAP[text];
+
+  const ocrHttp400Match = text.match(/^AI Service OCR lỗi HTTP 400:\s*(.+)$/i);
+  if (ocrHttp400Match) {
+    let detail = ocrHttp400Match[1].trim();
+    try {
+      const parsed = JSON.parse(detail);
+      if (parsed && typeof parsed.detail === 'string') {
+        detail = parsed.detail.trim();
+      }
+    } catch (_) {}
+    if (/[\u00C0-\u1EF9]/.test(detail) && !/DeepFace|EasyOCR|OpenCV|Traceback|Exception/i.test(detail)) {
+      return detail;
+    }
+    return 'Không nhận diện được ảnh mặt trước thẻ CCCD hợp lệ. Vui lòng chụp rõ nét mặt trước thẻ CCCD.';
+  }
+
+  if (/^AI Service FaceMatch:\s*/i.test(text)) {
+    const cleaned = text.replace(/^AI Service FaceMatch:\s*/i, '').trim();
+    if (/[\u00C0-\u1EF9]/.test(cleaned) && !/DeepFace|OpenCV|HTTP\s+\d+|Traceback|Exception/i.test(cleaned)) {
+      return cleaned;
+    }
+    return 'Không thể nhận diện khuôn mặt rõ nét để đối chiếu. Vui lòng chụp lại rõ mặt và đủ ánh sáng.';
+  }
+  if (/Khuôn mặt không khớp.*similarity=|không trùng khớp.*độ tương đồng:/i.test(text)) {
+    return 'Khuôn mặt trên ảnh chân dung chưa khớp với ảnh trên thẻ CCCD. Vui lòng chụp lại rõ mặt nơi đủ ánh sáng.';
+  }
+  if (/thẻ giả mạo.*fraud_score=|chụp lại từ màn hình.*điểm rủi ro:/i.test(text)) {
+    return 'Ảnh thẻ CCCD chưa đạt yêu cầu (có thể bị mờ, chói sáng hoặc chụp qua màn hình). Vui lòng chụp trực tiếp thẻ CCCD gốc rõ nét.';
+  }
+  if (/selfie giả mạo|liveness_score=|kiểm tra người thật.*liveness=/i.test(text)) {
+    return 'Ảnh chân dung chưa rõ nét hoặc chưa chụp trực tiếp. Vui lòng tự chụp lại khuôn mặt thật tại nơi đủ ánh sáng.';
+  }
+
+  if (/localhost|127\.0\.0\.1|python\s+main\.py|AI Service|AI_SERVICE_URL|ECONNREFUSED|fetch failed/i.test(text)) {
+    return 'Dịch vụ xử lý tự động đang tạm bảo trì. Vui lòng thử lại sau.';
+  }
+  if (/Request failed with status code|Network Error|timeout of|Internal server error|Bad Gateway|Service Unavailable/i.test(text)) {
+    return 'Kết nối đến máy chủ bị gián đoạn hoặc hệ thống đang bận. Vui lòng thử lại sau.';
+  }
+  if (/^[A-Z0-9_]{5,}$/.test(text)) {
+    return 'Không thể thực hiện thao tác lúc này. Vui lòng kiểm tra lại thông tin và thử lại.';
+  }
+
+  return text;
+}
+
+function attachFriendlyError(error: AxiosError): AxiosError {
+  const data = error.response?.data as Record<string, any> | undefined;
+  if (data && typeof data === 'object' && data.message) {
+    const rawMsg = data.message;
+    if (rawMsg !== 'GOOGLE_ACCOUNT_NOT_REGISTERED' && rawMsg !== 'INVALID_STATE_TRANSITION') {
+      data.rawCode = rawMsg;
+      data.message = sanitizeFeErrorMessage(rawMsg);
+    }
+  }
+  if (error.message && error.message !== 'GOOGLE_ACCOUNT_NOT_REGISTERED') {
+    error.message = sanitizeFeErrorMessage(error.message);
+  }
+  return error;
+}
 
 api.interceptors.response.use(
   (response) => response,
@@ -125,7 +236,7 @@ api.interceptors.response.use(
       originalRequest.url?.includes('/auth/refresh') ||
       originalRequest.url?.includes('/auth/login')
     ) {
-      return Promise.reject(error);
+      return Promise.reject(attachFriendlyError(error));
     }
 
     const { refreshToken, setTokens, clearAuth } = useAuthStore.getState();

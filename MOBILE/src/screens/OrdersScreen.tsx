@@ -26,6 +26,7 @@ const TABS = [
   { key: 'ALL', label: 'Tất cả' },
   { key: 'PENDING_PROVIDER', label: 'Chờ duyệt' },
   { key: 'IN_CARE', label: 'Đang chăm sóc' },
+  { key: 'COMPLETED', label: 'Hoàn thành' },
   { key: 'PAID', label: 'Đã thanh toán' },
 ];
 
@@ -36,9 +37,15 @@ const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> =
   AWAITING_PAYMENT: { label: 'Chờ thanh toán', color: '#3182CE', bg: '#EBF8FF' },
   PAID: { label: 'Đã thanh toán', color: '#38A169', bg: '#C6F6D5' },
   HANDOVER_IN_PROGRESS: { label: 'Bàn giao', color: '#805AD5', bg: '#E9D8FD' },
+  HANDOVER_AWAITING_CONFIRM: { label: 'Chờ xác nhận bàn giao', color: '#D97706', bg: '#FEF3C7' },
   IN_CARE: { label: 'Đang chăm sóc', color: '#6027D2', bg: '#F3E8FF' },
+  RETURN_IN_PROGRESS: { label: 'Đang trả cây', color: '#805AD5', bg: '#E9D8FD' },
+  RETURN_AWAITING_CONFIRM: { label: 'Chờ nghiệm thu cây', color: '#D97706', bg: '#FEF3C7' },
+  COMPLETED: { label: 'Hoàn thành', color: '#2F855A', bg: '#C6F6D5' },
   REJECTED: { label: 'Từ chối', color: '#E53E3E', bg: '#FED7D7' },
+  EXPIRED: { label: 'Quá hạn', color: '#718096', bg: '#EDF2F7' },
   CANCELLED: { label: 'Đã hủy', color: '#A0AEC0', bg: '#E2E8F0' },
+  DISPUTED: { label: 'Tranh chấp', color: '#C53030', bg: '#FED7D7' },
 };
 
 export const OrdersScreen: React.FC<OrdersScreenProps> = ({ navigation }) => {

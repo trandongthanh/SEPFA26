@@ -81,7 +81,9 @@ export default function AdminVerifyProvidersPage() {
       !keyword ||
       p.displayName.toLowerCase().includes(keyword) ||
       p.account?.email?.toLowerCase().includes(keyword) ||
-      p.account?.fullName?.toLowerCase().includes(keyword);
+      p.account?.fullName?.toLowerCase().includes(keyword) ||
+      (p.phone || p.account?.phone || '').toLowerCase().includes(keyword) ||
+      (p.cccdNumber || '').toLowerCase().includes(keyword);
     return matchTab && matchSearch;
   });
 
@@ -93,7 +95,7 @@ export default function AdminVerifyProvidersPage() {
   ];
 
   const hasDocument = (p: AdminProviderItem) =>
-    Boolean(p.cccdFrontUrl || p.cccdBackUrl || p.selfieUrl || p.businessLicenseUrl);
+    Boolean(p.cccdNumber || p.cccdFrontUrl || p.cccdBackUrl || p.selfieUrl || p.businessLicenseUrl);
 
   const columns: ColumnsType<AdminProviderItem> = [
     {
@@ -107,7 +109,10 @@ export default function AdminVerifyProvidersPage() {
           </div>
           <div className="min-w-0">
             <div className="font-medium text-[#1E1B2E] text-sm truncate">{record.displayName}</div>
-            <div className="text-xs text-[#6E6A8A] truncate">{record.account?.email}</div>
+            <div className="text-xs text-[#6E6A8A] truncate">
+              {record.account?.email}
+              {(record.phone || record.account?.phone) ? ` · ${record.phone || record.account?.phone}` : ''}
+            </div>
           </div>
         </div>
       ),
