@@ -4,15 +4,27 @@ import {
   Alert,
   Image,
   Modal,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { OrderItem, orderService } from '../services/orderService';
+import * as ImagePicker from 'expo-image-picker';
+import { DisputeReason, OrderDisputeItem, OrderItem, orderService } from '../services/orderService';
+import { uploadService } from '../services/uploadService';
+import {
+  CareEvidenceType,
+  CareReportItem,
+  OverallHealth,
+  PartCondition,
+  SubstrateMoisture,
+  careReportService,
+} from '../services/careReportService';
 import { providerService } from '../services/providerService';
 import { calculateRoadDistanceKm } from '../utils/distance';
 import {
@@ -90,29 +102,121 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
 
   // Handover confirmation state
   const [confirmingHandover, setConfirmingHandover] = useState<boolean>(false);
+  const [confirmingReturn, setConfirmingReturn] = useState<boolean>(false);
 
   // Provider coordinates for transparent distance calculation
   const [providerCoords, setProviderCoords] = useState<{ lat: number; lng: number } | null>(null);
 
-  const fetchDetail = async () => {
-    setLoading(true);
+  // Care reports v2 (2-tier)
+  const [careReports, setCareReports] = useState<CareReportItem[]>([]);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<'overview' | 'care' | 'support'>('overview');
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+
+  // Dispute state
+  const [disputeModalVisible, setDisputeModalVisible] = useState<boolean>(false);
+  const [disputes, setDisputes] = useState<OrderDisputeItem[]>([]);
+  const [disputesLoading, setDisputesLoading] = useState<boolean>(false);
+  const [disputeSubmitting, setDisputeSubmitting] = useState<boolean>(false);
+  const [disputeUploading, setDisputeUploading] = useState<boolean>(false);
+  const [disputeReason, setDisputeReason] = useState<DisputeReason>('MISMATCHED_PLANT');
+  const [disputeDescription, setDisputeDescription] = useState<string>('');
+  const [disputeEvidence, setDisputeEvidence] = useState<Array<{ photoUrl: string; caption?: string }>>([]);
+
+  const handleOpenDisputeModal = async () => {
+    setDisputeModalVisible(true);
+    setDisputeReason('MISMATCHED_PLANT');
+    setDisputeDescription('');
+    setDisputeEvidence([]);
+    setDisputesLoading(true);
+    try {
+      const list = await orderService.listDisputes(orderId);
+      setDisputes(list);
+    } catch (err: any) {
+      Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể tải danh sách tranh chấp.');
+      setDisputes([]);
+    } finally {
+      setDisputesLoading(false);
+    }
+  };
+
+  const handlePickDisputePhoto = async () => {
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Thiếu quyền', 'Vui lòng cấp quyền sử dụng camera để chụp ảnh bằng chứng.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        quality: 0.8,
+      });
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+      setDisputeUploading(true);
+      const url = await uploadService.uploadDocumentImage(result.assets[0].uri);
+      setDisputeEvidence((prev) => [...prev, { photoUrl: url }]);
+    } catch (err: any) {
+      Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể tải ảnh bằng chứng.');
+    } finally {
+      setDisputeUploading(false);
+    }
+  };
+
+  const handleSubmitDispute = async () => {
+    if (!disputeDescription.trim()) {
+      Alert.alert('Thiếu thông tin', 'Vui lòng nhập mô tả chi tiết vấn đề tranh chấp.');
+      return;
+    }
+    if (disputeEvidence.length === 0) {
+      Alert.alert('Thiếu bằng chứng', 'Vui lòng tải lên ít nhất 1 ảnh bằng chứng.');
+      return;
+    }
+    setDisputeSubmitting(true);
+    try {
+      await orderService.openDispute(orderId, {
+        reason: disputeReason,
+        description: disputeDescription.trim(),
+        evidence: disputeEvidence,
+      });
+      Alert.alert('Thành công', 'Đã gửi khiếu nại / mở tranh chấp thành công.');
+      setDisputeDescription('');
+      setDisputeEvidence([]);
+      const list = await orderService.listDisputes(orderId);
+      setDisputes(list);
+    } catch (err: any) {
+      Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể gửi tranh chấp.');
+    } finally {
+      setDisputeSubmitting(false);
+    }
+  };
+
+  const fetchDetail = async (silent = false) => {
+    if (!silent) setLoading(true);
     setErrorMsg(null);
     try {
-      const [orderData, historyData, activeData] = await Promise.all([
+      const [orderData, historyData, activeData, reportsData] = await Promise.all([
         orderService.getOrderDetail(orderId),
         videoCallService.listHistory(orderId).catch(() => []),
         videoCallService.getActive(orderId).catch(() => ({ call: null })),
+        careReportService.listByOrder(orderId).catch(() => []),
       ]);
 
       setOrder(orderData);
       setCallHistory(historyData || []);
       setActiveCall(activeData?.call || null);
+      setCareReports(reportsData || []);
     } catch (err: any) {
       console.error('Failed to load order detail:', err);
       setErrorMsg('Không thể tải thông tin đơn hàng.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchDetail(true);
+    setRefreshing(false);
   };
 
   useEffect(() => {
@@ -275,6 +379,34 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
     );
   };
 
+  // Xác nhận đã nhận lại cây (RETURN_AWAITING_CONFIRM -> COMPLETED)
+  const handleConfirmReturn = () => {
+    Alert.alert(
+      'Xác nhận đã nhận lại cây',
+      'Bạn xác nhận đã nhận lại đầy đủ cây lan từ nhà vườn và hoàn tất đơn hàng?',
+      [
+        { text: 'Kiểm tra lại', style: 'cancel' },
+        {
+          text: 'Xác nhận đã nhận cây',
+          onPress: async () => {
+            setConfirmingReturn(true);
+            try {
+              await orderService.confirmReturn(orderId);
+              Alert.alert('Hoàn tất', 'Cảm ơn bạn đã xác nhận nhận lại cây! Đơn hàng đã hoàn thành.');
+              fetchDetail();
+            } catch (err: any) {
+              console.error('Confirm return failed:', err);
+              const msg = err?.response?.data?.message || 'Xác nhận nhận lại cây thất bại.';
+              Alert.alert('Lỗi', Array.isArray(msg) ? msg.join('\n') : msg);
+            } finally {
+              setConfirmingReturn(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.loadingArea}>
@@ -289,7 +421,7 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
       <SafeAreaView style={styles.errorArea}>
         <Ionicons name="alert-circle-outline" size={48} color="#E53E3E" />
         <Text style={styles.errorText}>{errorMsg || 'Không tìm thấy đơn hàng.'}</Text>
-        <TouchableOpacity style={styles.retryButton} onPress={fetchDetail}>
+        <TouchableOpacity style={styles.retryButton} onPress={() => fetchDetail()}>
           <Text style={styles.retryButtonText}>Thử lại</Text>
         </TouchableOpacity>
       </SafeAreaView>
@@ -327,7 +459,13 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
         <View style={{ width: 40 }} />
       </View>
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#6027D2']} />
+        }
+      >
         {/* Status Banner */}
         <View style={[styles.statusBanner, { backgroundColor: statusInfo.bg }]}>
           <Ionicons name="information-circle-outline" size={20} color={statusInfo.color} />
@@ -422,65 +560,218 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
           </View>
         )}
 
-        {/* View Contract Link if Contract exists */}
-        {['PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM', 'COMPLETED', 'DISPUTED'].includes(order.status) && (
-          <TouchableOpacity
-            style={styles.viewContractRow}
-            onPress={handleOpenContract}
-            activeOpacity={0.7}
-          >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-              <Ionicons name="document-text-outline" size={18} color="#6027D2" />
-              <Text style={styles.viewContractRowText}>Xem chi tiết hợp đồng điện tử đã ký</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color="#A0AEC0" />
-          </TouchableOpacity>
-        )}
-
-        {/* Video Call Action Section */}
-        {isCallable && (
-          <View style={styles.callCard}>
-            <View style={styles.callCardHeader}>
-              <View style={styles.callIconBg}>
-                <Ionicons name="videocam" size={22} color="#6027D2" />
+        {order.status === 'RETURN_AWAITING_CONFIRM' && (
+          <View style={[styles.actionBannerCard, { borderColor: '#10B981', backgroundColor: '#ECFDF5' }]}>
+            <View style={styles.actionBannerHeader}>
+              <View style={[styles.actionIconCircle, { backgroundColor: '#D1FAE5' }]}>
+                <Ionicons name="leaf" size={22} color="#059669" />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.callCardTitle}>Video Call với Nhà vườn</Text>
-                <Text style={styles.callCardSub}>
-                  {activeCall
-                    ? 'Cuộc gọi đang diễn ra, bạn có thể tham gia ngay'
-                    : 'Trao đổi trực tiếp tình trạng cây qua video call'}
+                <Text style={[styles.actionBannerTitle, { color: '#065F46' }]}>
+                  Xác nhận đã nhận lại cây
                 </Text>
+                <Text style={styles.actionBannerSub}>
+                  Nhà vườn đã hoàn tất bàn giao trả cây. Vui lòng kiểm tra cây và bấm xác nhận hoàn tất đơn hàng.
+                </Text>
+                {order.returnHandover?.customerConfirmDueAt && (
+                  <Text style={{ fontSize: 11, color: '#047857', marginTop: 4, fontWeight: '600' }}>
+                    Hạn xác nhận:{' '}
+                    {new Date(order.returnHandover.customerConfirmDueAt).toLocaleString('vi-VN')}
+                  </Text>
+                )}
               </View>
             </View>
 
+            {order.returnHandover?.assessments && order.returnHandover.assessments.length > 0 && (
+              <View style={{ marginTop: 8, marginBottom: 8 }}>
+                {order.returnHandover.assessments.map((a, idx) => (
+                  <View
+                    key={a.id || idx}
+                    style={{
+                      backgroundColor: '#FFFFFF',
+                      borderRadius: 10,
+                      padding: 10,
+                      marginBottom: 6,
+                      borderWidth: 1,
+                      borderColor: '#A7F3D0',
+                    }}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#065F46' }}>
+                      Tình trạng trả cây #{idx + 1}
+                    </Text>
+                    {a.note ? (
+                      <Text style={{ fontSize: 11, color: '#374151', marginTop: 2 }}>{a.note}</Text>
+                    ) : null}
+                    {a.photos && a.photos.length > 0 && (
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 6 }}>
+                        {a.photos.map((ph, pIdx) => (
+                          <TouchableOpacity
+                            key={ph.id || pIdx}
+                            activeOpacity={0.85}
+                            onPress={() => setPreviewImageUrl(ph.photoUrl)}
+                          >
+                            <Image source={{ uri: ph.photoUrl }} style={styles.photoThumb} />
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    )}
+                  </View>
+                ))}
+              </View>
+            )}
+
             <TouchableOpacity
-              style={[
-                styles.videoCallBtn,
-                activeCall ? styles.videoCallBtnActive : null,
-              ]}
-              onPress={handleStartVideoCall}
-              disabled={callLoading}
+              style={[styles.primaryActionBtn, { backgroundColor: '#059669' }]}
+              onPress={handleConfirmReturn}
+              disabled={confirmingReturn}
               activeOpacity={0.85}
             >
-              {callLoading ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
+              {confirmingReturn ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
                 <>
-                  <Ionicons
-                    name={activeCall ? 'enter-outline' : 'videocam'}
-                    size={20}
-                    color="#FFFFFF"
-                  />
-                  <Text style={styles.videoCallBtnText}>
-                    {activeCall ? 'Tham gia cuộc gọi đang diễn ra' : 'Gọi video cho nhà vườn'}
-                  </Text>
+                  <Ionicons name="checkmark-circle" size={18} color="#FFFFFF" />
+                  <Text style={styles.primaryActionBtnText}>Xác nhận đã nhận lại cây</Text>
                 </>
               )}
             </TouchableOpacity>
           </View>
         )}
 
+        {/* Compact Quick Action Bar */}
+        {(isCallable ||
+          ['PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM', 'COMPLETED', 'DISPUTED'].includes(order.status)) && (
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+            {isCallable && (
+              <TouchableOpacity
+                onPress={handleStartVideoCall}
+                disabled={callLoading}
+                activeOpacity={0.85}
+                style={{
+                  flex: 1,
+                  minWidth: 110,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  backgroundColor: activeCall ? '#059669' : '#6027D2',
+                  paddingVertical: 10,
+                  paddingHorizontal: 12,
+                  borderRadius: 10,
+                }}
+              >
+                {callLoading ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <>
+                    <Ionicons name={activeCall ? 'enter-outline' : 'videocam'} size={16} color="#FFFFFF" />
+                    <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 12 }}>
+                      {activeCall ? 'Vào cuộc gọi' : 'Gọi Video'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {['PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM', 'COMPLETED', 'DISPUTED'].includes(order.status) && (
+              <TouchableOpacity
+                onPress={handleOpenContract}
+                activeOpacity={0.8}
+                style={{
+                  flex: 1,
+                  minWidth: 105,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  backgroundColor: '#FFFFFF',
+                  borderWidth: 1,
+                  borderColor: '#DDD6FE',
+                  paddingVertical: 10,
+                  paddingHorizontal: 12,
+                  borderRadius: 10,
+                }}
+              >
+                <Ionicons name="document-text-outline" size={16} color="#6027D2" />
+                <Text style={{ color: '#6027D2', fontWeight: '700', fontSize: 12 }}>Hợp đồng</Text>
+              </TouchableOpacity>
+            )}
+
+            {['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'DISPUTED'].includes(order.status) && (
+              <TouchableOpacity
+                onPress={handleOpenDisputeModal}
+                activeOpacity={0.8}
+                style={{
+                  flex: 1,
+                  minWidth: 105,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  backgroundColor: '#FFFFFF',
+                  borderWidth: 1,
+                  borderColor: '#DDD6FE',
+                  paddingVertical: 10,
+                  paddingHorizontal: 12,
+                  borderRadius: 10,
+                }}
+              >
+                <Ionicons name="alert-circle-outline" size={16} color="#6027D2" />
+                <Text style={{ color: '#6027D2', fontWeight: '700', fontSize: 12 }}>Tranh chấp</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {/* Segmented Tabs */}
+        <View
+          style={{
+            flexDirection: 'row',
+            backgroundColor: '#EDF2F7',
+            borderRadius: 12,
+            padding: 4,
+            marginBottom: 14,
+          }}
+        >
+          {(
+            [
+              { key: 'overview', label: 'Thông tin' },
+              {
+                key: 'care',
+                label: careReports.length > 0 ? `Cây & Báo cáo (${careReports.length})` : 'Cây & Báo cáo',
+              },
+              { key: 'support', label: 'Lịch sử & Hỗ trợ' },
+            ] as Array<{ key: 'overview' | 'care' | 'support'; label: string }>
+          ).map((tab) => {
+            const active = activeTab === tab.key;
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                onPress={() => setActiveTab(tab.key)}
+                style={{
+                  flex: 1,
+                  paddingVertical: 9,
+                  borderRadius: 9,
+                  backgroundColor: active ? '#FFFFFF' : 'transparent',
+                  alignItems: 'center',
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 12,
+                    fontWeight: active ? '700' : '600',
+                    color: active ? '#6027D2' : '#4A5568',
+                  }}
+                >
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {activeTab === 'overview' && (
+          <>
         {/* Package Info */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Thông tin gói dịch vụ</Text>
@@ -528,6 +819,44 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
           ) : null}
         </View>
 
+        {/* Pricing Summary */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Chi tiết giá</Text>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Giá gói snapshot:</Text>
+            <Text style={styles.infoValue}>
+              {Number(order.basePriceSnapshot || 0).toLocaleString('vi-VN')} VNĐ
+            </Text>
+          </View>
+          <View style={styles.infoRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.infoLabel}>Phí vận chuyển lấy cây:</Text>
+              {orderDistanceKm !== null ? (
+                <Text style={{ fontSize: 11, color: '#6027D2', marginTop: 2, fontWeight: '600' }}>
+                  📍 Quãng đường định vị: ~{orderDistanceKm} km
+                </Text>
+              ) : null}
+            </View>
+            <Text style={styles.infoValue}>
+              {Number(order.pickupFeeSnapshot || 0).toLocaleString('vi-VN')} VNĐ
+            </Text>
+          </View>
+          <View style={styles.divider} />
+          <View style={styles.infoRow}>
+            <Text style={styles.totalLabel}>Tổng cộng:</Text>
+            <Text style={styles.totalValue}>
+              {(
+                Number(order.provisionalTotal || 0) +
+                Number(order.pickupFeeSnapshot || 0)
+              ).toLocaleString('vi-VN')} VNĐ
+            </Text>
+          </View>
+        </View>
+          </>
+        )}
+
+        {activeTab === 'care' && (
+          <>
         {/* Plants List */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Danh sách cây lan ({order.plantCount || 0})</Text>
@@ -550,7 +879,13 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                     style={styles.photosScroll}
                   >
                     {plant.initialPhotos.map((p) => (
-                      <Image key={p.id} source={{ uri: p.photoUrl }} style={styles.photoThumb} />
+                      <TouchableOpacity
+                        key={p.id}
+                        activeOpacity={0.85}
+                        onPress={() => setPreviewImageUrl(p.photoUrl)}
+                      >
+                        <Image source={{ uri: p.photoUrl }} style={styles.photoThumb} />
+                      </TouchableOpacity>
                     ))}
                   </ScrollView>
                 ) : (
@@ -563,6 +898,171 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
           )}
         </View>
 
+        {/* Care Progress & 2-Tier Care Reports */}
+        {(order.careReportSchedule ||
+          careReports.length > 0 ||
+          ['IN_CARE', 'RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM', 'COMPLETED', 'DISPUTED'].includes(order.status)) && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Nhật ký & Tiến độ chăm sóc</Text>
+
+            {order.careReportSchedule && (
+              <View
+                style={[
+                  styles.careScheduleBox,
+                  order.careReportSchedule.isReportOverdue && styles.careScheduleBoxOverdue,
+                ]}
+              >
+                <View style={styles.careScheduleHeader}>
+                  <Text style={styles.careScheduleTitle}>
+                    Đã nộp {order.careReportSchedule.submittedCount}/{order.careReportSchedule.totalPeriods} kỳ báo cáo
+                  </Text>
+                  <View
+                    style={[
+                      styles.careScheduleBadge,
+                      {
+                        backgroundColor: order.careReportSchedule.isReportOverdue
+                          ? '#FEE2E2'
+                          : '#DCFCE7',
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: '700',
+                        color: order.careReportSchedule.isReportOverdue ? '#DC2626' : '#16A34A',
+                      }}
+                    >
+                      {order.careReportSchedule.isReportOverdue ? 'Trễ hạn kỳ' : 'Đúng tiến độ'}
+                    </Text>
+                  </View>
+                </View>
+                {order.careReportSchedule.nextReportDueAt && (
+                  <Text style={styles.careScheduleSub}>
+                    Hạn kỳ tiếp theo:{' '}
+                    {new Date(order.careReportSchedule.nextReportDueAt).toLocaleDateString('vi-VN')}
+                  </Text>
+                )}
+              </View>
+            )}
+
+            {careReports.length === 0 ? (
+              <Text style={styles.emptyText}>Chưa có báo cáo chăm sóc nào cho đơn này.</Text>
+            ) : (
+              careReports.map((rpt) => {
+                const SUBSTRATE_MAP: Record<SubstrateMoisture, string> = {
+                  LOW: 'Thấp',
+                  MEDIUM: 'Vừa',
+                  HIGH: 'Cao',
+                };
+                const PART_MAP: Record<PartCondition, string> = {
+                  GOOD: 'Tốt',
+                  NORMAL: 'Bình thường',
+                  POOR: 'Xấu',
+                };
+                const HEALTH_MAP: Record<OverallHealth, string> = {
+                  GOOD: 'Tốt',
+                  AVERAGE: 'Trung bình',
+                  POOR: 'Kém',
+                };
+                const EVIDENCE_MAP: Record<CareEvidenceType, string> = {
+                  OVERVIEW: 'Toàn cảnh',
+                  LEAF: 'Lá',
+                  STEM: 'Thân',
+                  ROOT: 'Rễ',
+                };
+
+                return (
+                  <View key={rpt.id} style={styles.careReportCard}>
+                    <View style={styles.careReportHeader}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <View style={styles.periodPill}>
+                          <Text style={styles.periodPillText}>Kỳ {rpt.periodIndex}</Text>
+                        </View>
+                        <Text
+                          style={{
+                            fontSize: 11,
+                            fontWeight: '700',
+                            color: rpt.isLate ? '#D97706' : '#16A34A',
+                          }}
+                        >
+                          {rpt.isLate ? 'Nộp trễ' : 'Đúng hạn'}
+                        </Text>
+                      </View>
+                      <Text style={styles.careReportDate}>
+                        {new Date(rpt.submittedAt).toLocaleDateString('vi-VN')}
+                      </Text>
+                    </View>
+
+                    <Text style={styles.careEnvText}>
+                      Môi trường: {rpt.airTemperature}°C · {rpt.airHumidity}% · {rpt.lightIntensity} Lux
+                    </Text>
+                    <Text style={styles.careActivityText}>
+                      Tưới: {rpt.watered ? `${rpt.waterAmountMl} ml` : 'Không'} · Bón:{' '}
+                      {rpt.fertilized ? rpt.fertilizerType : 'Không'}
+                      {rpt.waterPh != null ? ` · pH ${rpt.waterPh}` : ''}
+                      {rpt.waterEc != null ? ` · EC ${rpt.waterEc}` : ''}
+                    </Text>
+                    {rpt.otherCareNote ? (
+                      <Text style={styles.careNoteText}>Ghi chú: {rpt.otherCareNote}</Text>
+                    ) : null}
+
+                    {(rpt.plants ?? []).map((entry, pIdx) => (
+                      <View key={entry.id || pIdx} style={styles.carePlantItem}>
+                        <View style={styles.carePlantHeader}>
+                          <Text style={styles.carePlantName}>
+                            {entry.plant?.name || `Chậu cây #${pIdx + 1}`}
+                          </Text>
+                          <Text style={styles.carePlantHealth}>
+                            Tổng thể: {HEALTH_MAP[entry.overallHealth] || entry.overallHealth}
+                            {entry.hasPestDisease ? ' · Có sâu bệnh' : ''}
+                          </Text>
+                        </View>
+                        <Text style={styles.carePlantMeta}>
+                          Giá thể: {SUBSTRATE_MAP[entry.substrateMoisture]} · Lá:{' '}
+                          {PART_MAP[entry.leafCondition]} · Thân: {PART_MAP[entry.stemCondition]} · Rễ:{' '}
+                          {PART_MAP[entry.rootCondition]}
+                        </Text>
+                        {entry.note ? (
+                          <Text style={styles.careNoteText}>{entry.note}</Text>
+                        ) : null}
+                        {(entry.photos ?? []).length > 0 && (
+                          <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            style={styles.photosScroll}
+                          >
+                            {entry.photos.map((photo, phIdx) => (
+                              <View key={photo.id || phIdx} style={{ marginRight: 8, alignItems: 'center' }}>
+                                <TouchableOpacity
+                                  activeOpacity={0.85}
+                                  onPress={() => setPreviewImageUrl(photo.photoUrl)}
+                                >
+                                  <Image
+                                    source={{ uri: photo.photoUrl }}
+                                    style={styles.photoThumb}
+                                  />
+                                </TouchableOpacity>
+                                <Text style={{ fontSize: 10, color: '#64748B', marginTop: 2 }}>
+                                  {EVIDENCE_MAP[photo.evidenceType] || photo.evidenceType}
+                                </Text>
+                              </View>
+                            ))}
+                          </ScrollView>
+                        )}
+                      </View>
+                    ))}
+                  </View>
+                );
+              })
+            )}
+          </View>
+        )}
+          </>
+        )}
+
+        {activeTab === 'support' && (
+          <>
         {/* Call History Section */}
         {callHistory.length > 0 && (
           <View style={styles.card}>
@@ -619,39 +1119,44 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
           </View>
         )}
 
-        {/* Pricing Summary */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Chi tiết giá</Text>
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Giá gói snapshot:</Text>
-            <Text style={styles.infoValue}>
-              {Number(order.basePriceSnapshot || 0).toLocaleString('vi-VN')} VNĐ
+        {['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'DISPUTED'].includes(order.status) && (
+          <View style={[styles.card, { borderColor: '#DDD6FE', borderWidth: 1, backgroundColor: '#FAF8FE' }]}>
+            <Text style={[styles.cardTitle, { color: '#1A202C', marginBottom: 6 }]}>
+              Khiếu nại / Tranh chấp
             </Text>
+            <Text style={{ fontSize: 13, color: '#4A5568', marginBottom: 12, lineHeight: 18 }}>
+              Nếu cây bàn giao không đúng mô tả hoặc có hư hại trong quá trình giao nhận/chăm sóc, bạn có thể mở tranh chấp kèm ảnh bằng chứng.
+            </Text>
+            <TouchableOpacity
+              onPress={handleOpenDisputeModal}
+              style={{
+                backgroundColor: '#FFFFFF',
+                borderWidth: 1,
+                borderColor: '#DDD6FE',
+                paddingVertical: 11,
+                borderRadius: 10,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+              }}
+            >
+              <Ionicons name="alert-circle-outline" size={18} color="#6027D2" />
+              <Text style={{ color: '#6027D2', fontWeight: '700', fontSize: 14 }}>
+                Xem / Mở tranh chấp
+              </Text>
+            </TouchableOpacity>
           </View>
-          <View style={styles.infoRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.infoLabel}>Phí vận chuyển lấy cây:</Text>
-              {orderDistanceKm !== null ? (
-                <Text style={{ fontSize: 11, color: '#6027D2', marginTop: 2, fontWeight: '600' }}>
-                  📍 Quãng đường định vị: ~{orderDistanceKm} km
-                </Text>
-              ) : null}
+        )}
+
+        {callHistory.length === 0 &&
+          !['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'DISPUTED'].includes(order.status) && (
+            <View style={styles.card}>
+              <Text style={styles.emptyText}>Chưa có lịch sử cuộc gọi hoặc khiếu nại nào.</Text>
             </View>
-            <Text style={styles.infoValue}>
-              {Number(order.pickupFeeSnapshot || 0).toLocaleString('vi-VN')} VNĐ
-            </Text>
-          </View>
-          <View style={styles.divider} />
-          <View style={styles.infoRow}>
-            <Text style={styles.totalLabel}>Tổng cộng:</Text>
-            <Text style={styles.totalValue}>
-              {(
-                Number(order.provisionalTotal || 0) +
-                Number(order.pickupFeeSnapshot || 0)
-              ).toLocaleString('vi-VN')} VNĐ
-            </Text>
-          </View>
-        </View>
+          )}
+          </>
+        )}
       </ScrollView>
 
       {/* Contract Modal */}
@@ -725,16 +1230,36 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                 contractData.agreement?.createdAt ||
                 order.createdAt;
 
-              const isCustomerSigned = contractData.signatures?.some(
-                (s: any) =>
-                  (s.role === 'CUSTOMER' || s.signerRole === 'CUSTOMER') &&
-                  (s.signedAt || s.signatureHash)
-              );
-              const isProviderSigned = contractData.signatures?.some(
-                (s: any) =>
-                  (s.role === 'PROVIDER' || s.signerRole === 'PROVIDER') &&
-                  (s.signedAt || s.signatureHash)
-              );
+              // BE getContractDetail ưu tiên trả chữ ký HANDOVER (chỉ có Customer ký lúc bàn giao),
+              // nên khi đơn đã qua giai đoạn AGREEMENT_PENDING thì cả 2 bên đều đã ký hợp đồng điện tử trước đó.
+              const isPastAgreementPending = [
+                'AWAITING_PAYMENT',
+                'PAID',
+                'HANDOVER_IN_PROGRESS',
+                'HANDOVER_AWAITING_CONFIRM',
+                'IN_CARE',
+                'RETURN_IN_PROGRESS',
+                'RETURN_AWAITING_CONFIRM',
+                'COMPLETED',
+                'DISPUTED',
+              ].includes(order.status);
+
+              const isCustomerSigned =
+                Boolean(
+                  contractData.signatures?.some(
+                    (s: any) =>
+                      (s.role === 'CUSTOMER' || s.signerRole === 'CUSTOMER') &&
+                      (s.signedAt || s.signatureHash)
+                  )
+                ) || isPastAgreementPending;
+              const isProviderSigned =
+                Boolean(
+                  contractData.signatures?.some(
+                    (s: any) =>
+                      (s.role === 'PROVIDER' || s.signerRole === 'PROVIDER') &&
+                      (s.signedAt || s.signatureHash)
+                  )
+                ) || isPastAgreementPending;
 
               const customerSig = contractData.signatures?.find(
                 (s: any) => s.role === 'CUSTOMER' || s.signerRole === 'CUSTOMER'
@@ -1231,6 +1756,284 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
             </View>
           )}
         </SafeAreaView>
+      </Modal>
+
+      {/* Dispute Modal */}
+      <Modal
+        visible={disputeModalVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          if (!disputeSubmitting) setDisputeModalVisible(false);
+        }}
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#F7FAFC' }}>
+          <View style={styles.modalHeader}>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: '#1A202C' }}>
+              Tranh chấp đơn #{order.orderCode || '---'}
+            </Text>
+            <TouchableOpacity
+              onPress={() => !disputeSubmitting && setDisputeModalVisible(false)}
+              style={{ padding: 6 }}
+            >
+              <Ionicons name="close" size={24} color="#4A5568" />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#4A5568', marginBottom: 10 }}>
+              LỊCH SỬ TRANH CHẤP CỦA ĐƠN
+            </Text>
+
+            {disputesLoading ? (
+              <ActivityIndicator color="#6027D2" style={{ marginVertical: 20 }} />
+            ) : disputes.length === 0 ? (
+              <View style={{ padding: 16, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 }}>
+                <Text style={{ fontSize: 13, color: '#718096', textAlign: 'center' }}>
+                  Chưa có tranh chấp nào cho đơn hàng này.
+                </Text>
+              </View>
+            ) : (
+              disputes.map((d) => {
+                const reasonLabel =
+                  d.reason === 'MISMATCHED_PLANT'
+                    ? 'Sai cây / Không đúng mô tả'
+                    : d.reason === 'DAMAGE'
+                      ? 'Cây hư hại'
+                      : d.reason === 'PICKUP'
+                        ? 'Vấn đề giao nhận'
+                        : 'Khác';
+                return (
+                  <View
+                    key={d.id}
+                    style={{
+                      backgroundColor: '#FFFFFF',
+                      borderRadius: 12,
+                      padding: 14,
+                      marginBottom: 12,
+                      borderWidth: 1,
+                      borderColor: '#E2E8F0',
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C' }}>{reasonLabel}</Text>
+                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#D97706' }}>{d.status}</Text>
+                    </View>
+                    <Text style={{ fontSize: 13, color: '#4A5568', lineHeight: 19 }}>{d.description}</Text>
+                    {Array.isArray(d.evidence) && d.evidence.length > 0 && (
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 10 }}>
+                        {d.evidence.map((ev, idx) => (
+                          <TouchableOpacity
+                            key={`${d.id}-ev-${idx}`}
+                            activeOpacity={0.85}
+                            onPress={() => setPreviewImageUrl(ev.photoUrl)}
+                          >
+                            <Image
+                              source={{ uri: ev.photoUrl }}
+                              style={{ width: 72, height: 72, borderRadius: 8, marginRight: 8, backgroundColor: '#EDF2F7' }}
+                            />
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    )}
+                    {d.resolution ? (
+                      <View style={{ marginTop: 10, padding: 10, borderRadius: 8, backgroundColor: '#ECFDF5', borderWidth: 1, borderColor: '#A7F3D0' }}>
+                        <Text style={{ fontSize: 12, color: '#065F46', fontWeight: '600' }}>
+                          Kết luận của Admin: {d.resolution}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })
+            )}
+
+            {['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE'].includes(order.status) && (
+              <View style={{ backgroundColor: '#FFFFFF', borderRadius: 12, padding: 14, marginTop: 8, borderWidth: 1, borderColor: '#E2E8F0' }}>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: '#1A202C', marginBottom: 10 }}>
+                  Mở tranh chấp mới
+                </Text>
+
+                <Text style={{ fontSize: 12, fontWeight: '600', color: '#4A5568', marginBottom: 6 }}>
+                  Lý do tranh chấp
+                </Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                  {(
+                    [
+                      { value: 'MISMATCHED_PLANT', label: 'Sai cây' },
+                      { value: 'DAMAGE', label: 'Hư hại' },
+                      { value: 'PICKUP', label: 'Giao nhận' },
+                      { value: 'OTHER', label: 'Khác' },
+                    ] as Array<{ value: DisputeReason; label: string }>
+                  ).map((opt) => {
+                    const selected = disputeReason === opt.value;
+                    return (
+                      <TouchableOpacity
+                        key={opt.value}
+                        onPress={() => setDisputeReason(opt.value)}
+                        style={{
+                          paddingHorizontal: 12,
+                          paddingVertical: 7,
+                          borderRadius: 20,
+                          backgroundColor: selected ? '#6027D2' : '#EDF2F7',
+                        }}
+                      >
+                        <Text style={{ fontSize: 12, fontWeight: '600', color: selected ? '#FFFFFF' : '#4A5568' }}>
+                          {opt.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                <Text style={{ fontSize: 12, fontWeight: '600', color: '#4A5568', marginBottom: 6 }}>
+                  Mô tả chi tiết
+                </Text>
+                <TextInput
+                  multiline
+                  numberOfLines={4}
+                  value={disputeDescription}
+                  onChangeText={setDisputeDescription}
+                  placeholder="Mô tả rõ tình trạng sai lệch, hư hại hoặc vấn đề gặp phải..."
+                  style={{
+                    borderWidth: 1,
+                    borderColor: '#CBD5E0',
+                    borderRadius: 10,
+                    padding: 10,
+                    minHeight: 90,
+                    textAlignVertical: 'top',
+                    fontSize: 13,
+                    color: '#1A202C',
+                    marginBottom: 12,
+                  }}
+                />
+
+                <Text style={{ fontSize: 12, fontWeight: '600', color: '#4A5568', marginBottom: 6 }}>
+                  Ảnh bằng chứng (tối thiểu 1 ảnh)
+                </Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+                  {disputeEvidence.map((ev, idx) => (
+                    <View key={`new-ev-${idx}`} style={{ position: 'relative' }}>
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={() => setPreviewImageUrl(ev.photoUrl)}
+                      >
+                        <Image
+                          source={{ uri: ev.photoUrl }}
+                          style={{ width: 68, height: 68, borderRadius: 8, backgroundColor: '#EDF2F7' }}
+                        />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setDisputeEvidence((prev) => prev.filter((_, i) => i !== idx))}
+                        style={{
+                          position: 'absolute',
+                          top: -6,
+                          right: -6,
+                          width: 20,
+                          height: 20,
+                          borderRadius: 10,
+                          backgroundColor: '#DC2626',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>×</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+
+                  <TouchableOpacity
+                    onPress={handlePickDisputePhoto}
+                    disabled={disputeUploading}
+                    style={{
+                      width: 68,
+                      height: 68,
+                      borderRadius: 8,
+                      borderWidth: 1,
+                      borderStyle: 'dashed',
+                      borderColor: '#6027D2',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: '#FAF8FE',
+                    }}
+                  >
+                    {disputeUploading ? (
+                      <ActivityIndicator size="small" color="#6027D2" />
+                    ) : (
+                      <>
+                        <Ionicons name="camera-outline" size={20} color="#6027D2" />
+                        <Text style={{ fontSize: 10, color: '#6027D2', fontWeight: '600', marginTop: 2 }}>
+                          Chụp ảnh
+                        </Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity
+                  onPress={handleSubmitDispute}
+                  disabled={disputeSubmitting}
+                  style={{
+                    backgroundColor: '#DC2626',
+                    paddingVertical: 12,
+                    borderRadius: 10,
+                    alignItems: 'center',
+                  }}
+                >
+                  {disputeSubmitting ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>
+                      Gửi tranh chấp
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Fullscreen Image Preview Modal */}
+      <Modal
+        visible={Boolean(previewImageUrl)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewImageUrl(null)}
+      >
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.92)',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+        >
+          <TouchableOpacity
+            onPress={() => setPreviewImageUrl(null)}
+            style={{
+              position: 'absolute',
+              top: 48,
+              right: 20,
+              zIndex: 10,
+              width: 40,
+              height: 40,
+              borderRadius: 20,
+              backgroundColor: 'rgba(255,255,255,0.18)',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Ionicons name="close" size={24} color="#FFFFFF" />
+          </TouchableOpacity>
+          {previewImageUrl ? (
+            <Image
+              source={{ uri: previewImageUrl }}
+              resizeMode="contain"
+              style={{ width: '94%', height: '78%' }}
+            />
+          ) : null}
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -2085,6 +2888,112 @@ const styles = StyleSheet.create({
     color: '#6027D2',
     fontWeight: '600',
     flex: 1,
+  },
+  careScheduleBox: {
+    backgroundColor: '#F5F3FF',
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+    borderRadius: 12,
+    padding: 10,
+    marginBottom: 12,
+  },
+  careScheduleBoxOverdue: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  careScheduleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  careScheduleTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E1B2E',
+  },
+  careScheduleBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  careScheduleSub: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 4,
+  },
+  careReportCard: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    backgroundColor: '#FAFAFC',
+  },
+  careReportHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  periodPill: {
+    backgroundColor: '#EDE9FE',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  periodPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#6027D2',
+  },
+  careReportDate: {
+    fontSize: 11,
+    color: '#64748B',
+  },
+  careEnvText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E1B2E',
+    marginBottom: 2,
+  },
+  careActivityText: {
+    fontSize: 12,
+    color: '#475569',
+    marginBottom: 4,
+  },
+  careNoteText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontStyle: 'italic',
+    marginBottom: 4,
+  },
+  carePlantItem: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+  },
+  carePlantHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  carePlantName: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1E1B2E',
+  },
+  carePlantHealth: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#6027D2',
+  },
+  carePlantMeta: {
+    fontSize: 11,
+    color: '#475569',
+    marginBottom: 4,
   },
 });
 

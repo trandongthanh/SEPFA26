@@ -82,8 +82,23 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({ navigation }) => {
 
   const fetchOrders = async (statusTab = activeTab) => {
     try {
-      const res = await orderService.listOrders(statusTab);
-      setOrders(res.items || []);
+      if (statusTab === 'PAID') {
+        const res = await orderService.listOrders('ALL');
+        const paidStatuses = new Set([
+          'PAID',
+          'HANDOVER_IN_PROGRESS',
+          'HANDOVER_AWAITING_CONFIRM',
+          'IN_CARE',
+          'RETURN_IN_PROGRESS',
+          'RETURN_AWAITING_CONFIRM',
+          'COMPLETED',
+          'DISPUTED',
+        ]);
+        setOrders((res.items || []).filter((o) => paidStatuses.has(o.status)));
+      } else {
+        const res = await orderService.listOrders(statusTab);
+        setOrders(res.items || []);
+      }
     } catch (err: any) {
       console.error('Error fetching orders:', err);
       setOrders([]);
@@ -157,6 +172,42 @@ export const OrdersScreen: React.FC<OrdersScreenProps> = ({ navigation }) => {
             ) : null}
           </View>
         </View>
+
+        {item.status === 'RETURN_AWAITING_CONFIRM' && (
+          <View
+            style={{
+              backgroundColor: '#ECFDF5',
+              borderWidth: 1,
+              borderColor: '#6EE7B7',
+              borderRadius: 10,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              marginBottom: 10,
+            }}
+          >
+            <Text style={{ fontSize: 12, fontWeight: '700', color: '#047857' }}>
+              Nhà vườn đã tải thông tin trả cây — Bấm vào đơn để kiểm tra & xác nhận nhận lại cây
+            </Text>
+          </View>
+        )}
+
+        {item.status === 'HANDOVER_AWAITING_CONFIRM' && (
+          <View
+            style={{
+              backgroundColor: '#ECFDF5',
+              borderWidth: 1,
+              borderColor: '#6EE7B7',
+              borderRadius: 10,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              marginBottom: 10,
+            }}
+          >
+            <Text style={{ fontSize: 12, fontWeight: '700', color: '#047857' }}>
+              Nhà vườn đã tải biên bản bàn giao — Bấm vào đơn để kiểm tra & xác nhận bàn giao cây
+            </Text>
+          </View>
+        )}
 
         <View style={styles.cardFooter}>
           <View>

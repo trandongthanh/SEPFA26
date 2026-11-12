@@ -514,11 +514,12 @@ export default function ProviderDashboardPage() {
                           >
                             <div>
                               <p className="text-xs font-semibold text-[#1E1B2E]">
-                                {rpt.notes || rpt.plantNameSnapshot || 'Báo cáo chăm sóc định kỳ'}
+                                {`Kỳ ${rpt.periodIndex ?? idx + 1} · ${rpt.plants?.length ?? 0} chậu cây (${rpt.airTemperature}°C, ${rpt.airHumidity}%)`}
                               </p>
-                              {rpt.createdAt && (
+                              {(rpt.submittedAt || rpt.periodStart) && (
                                 <p className="text-[11px] text-[#6E6A8A] mt-0.5">
-                                  Ngày nộp: {new Date(rpt.createdAt).toLocaleDateString('vi-VN')}
+                                  Ngày nộp: {new Date(rpt.submittedAt || rpt.periodStart).toLocaleDateString('vi-VN')}
+                                  {rpt.isLate ? ' (Trễ hạn)' : ''}
                                 </p>
                               )}
                             </div>

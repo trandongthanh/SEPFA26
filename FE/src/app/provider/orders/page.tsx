@@ -9,8 +9,10 @@ import {
   ClockCircleOutlined,
   CloseCircleOutlined,
   ContainerOutlined,
+  CopyOutlined,
   DollarOutlined,
   EnvironmentOutlined,
+  ExclamationCircleOutlined,
   EyeOutlined,
   FileProtectOutlined,
   FileTextOutlined,
@@ -21,12 +23,13 @@ import {
   PrinterOutlined,
   SafetyCertificateFilled,
   SafetyCertificateOutlined,
+  UploadOutlined,
   UserOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
 import { Avatar, Button, Checkbox, Image, Input, Modal, Radio, Segmented, Select, Spin, Tag, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
-import { OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
+import { DisputeReason, OrderDisputeItem, OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
 import { videoCallApi } from '@/lib/video-call.api';
 import ProviderHeader from '../components/ProviderHeader';
 import ProviderSidebar from '../components/ProviderSidebar';
@@ -41,7 +44,7 @@ function OrdersPageContent() {
 
   const [profile, setProfile] = useState<ProviderProfileResponse | null>(null);
   const [orders, setOrders] = useState<OrderItem[]>([]);
-  const [activeTab, setActiveTab] = useState<string>('PENDING_PROVIDER');
+  const [activeTab, setActiveTab] = useState<string>('ALL');
 
   // State for Order Detail Modal
   const [detailModalOpen, setDetailModalOpen] = useState(false);
@@ -66,7 +69,31 @@ function OrdersPageContent() {
     >
   >({});
   const [savingPlantId, setSavingPlantId] = useState<string | null>(null);
+  const [uploadingPlantId, setUploadingPlantId] = useState<string | null>(null);
   const [completingHandover, setCompletingHandover] = useState(false);
+
+  // State for Return Handover Modal (IN_CARE -> RETURN_IN_PROGRESS -> RETURN_AWAITING_CONFIRM)
+  const [returnModalOpen, setReturnModalOpen] = useState(false);
+  const [returnLoading, setReturnLoading] = useState(false);
+  const [returnOrder, setReturnOrder] = useState<any | null>(null);
+  const [returnPlantForms, setReturnPlantForms] = useState<
+    Record<
+      string,
+      {
+        leafCondition: string;
+        rootCondition: string;
+        hasPest: boolean;
+        note: string;
+        photoUrl: string;
+        saved?: boolean;
+      }
+    >
+  >({});
+  const [savingReturnPlantId, setSavingReturnPlantId] = useState<string | null>(null);
+  const [uploadingReturnPlantId, setUploadingReturnPlantId] = useState<string | null>(null);
+  const [completingReturn, setCompletingReturn] = useState(false);
+  const [cancellingReturn, setCancellingReturn] = useState(false);
+  const [cancelReturnReason, setCancelReturnReason] = useState('');
 
   // State for Contract Modal
   const [contractModalOpen, setContractModalOpen] = useState(false);
@@ -78,6 +105,80 @@ function OrdersPageContent() {
   const [signConfirmModalOpen, setSignConfirmModalOpen] = useState(false);
   const [orderToSign, setOrderToSign] = useState<{ id: string; agreementNo?: string; orderCode?: string } | null>(null);
   const [hasAgreedTerms, setHasAgreedTerms] = useState(false);
+
+  // State for Dispute Modal
+  const [disputeModalOpen, setDisputeModalOpen] = useState(false);
+  const [disputeOrder, setDisputeOrder] = useState<OrderItem | null>(null);
+  const [disputes, setDisputes] = useState<OrderDisputeItem[]>([]);
+  const [disputesLoading, setDisputesLoading] = useState(false);
+  const [disputeSubmitting, setDisputeSubmitting] = useState(false);
+  const [disputeUploading, setDisputeUploading] = useState(false);
+  const [disputeReason, setDisputeReason] = useState<DisputeReason>('MISMATCHED_PLANT');
+  const [disputeDescription, setDisputeDescription] = useState('');
+  const [disputeEvidence, setDisputeEvidence] = useState<Array<{ photoUrl: string; caption?: string }>>([]);
+
+  const handleOpenDisputeModal = async (order: OrderItem) => {
+    setDisputeOrder(order);
+    setDisputeModalOpen(true);
+    setDisputeReason('MISMATCHED_PLANT');
+    setDisputeDescription('');
+    setDisputeEvidence([]);
+    setDisputesLoading(true);
+    try {
+      const list = await providerApi.listDisputes(order.id);
+      setDisputes(list);
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || 'Không thể tải danh sách tranh chấp.');
+      setDisputes([]);
+    } finally {
+      setDisputesLoading(false);
+    }
+  };
+
+  const handleUploadDisputePhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setDisputeUploading(true);
+    try {
+      const uploaded = await providerApi.uploadDocument(file);
+      setDisputeEvidence((prev) => [...prev, { photoUrl: uploaded.url }]);
+      message.success('Đã tải ảnh bằng chứng lên.');
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || 'Tải ảnh thất bại.');
+    } finally {
+      setDisputeUploading(false);
+    }
+  };
+
+  const handleSubmitDispute = async () => {
+    if (!disputeOrder) return;
+    if (!disputeDescription.trim()) {
+      message.warning('Vui lòng nhập mô tả chi tiết vấn đề tranh chấp.');
+      return;
+    }
+    if (disputeEvidence.length === 0) {
+      message.warning('Vui lòng tải lên ít nhất 1 ảnh bằng chứng.');
+      return;
+    }
+    setDisputeSubmitting(true);
+    try {
+      await providerApi.openDispute(disputeOrder.id, {
+        reason: disputeReason,
+        description: disputeDescription.trim(),
+        evidence: disputeEvidence,
+      });
+      message.success('Đã gửi khiếu nại / mở tranh chấp thành công.');
+      setDisputeDescription('');
+      setDisputeEvidence([]);
+      const list = await providerApi.listDisputes(disputeOrder.id);
+      setDisputes(list);
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || 'Không thể gửi tranh chấp.');
+    } finally {
+      setDisputeSubmitting(false);
+    }
+  };
 
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
 
@@ -244,13 +345,36 @@ function OrdersPageContent() {
     }
   };
 
+  // Tải ảnh thẩm định lên Cloudinary (không hiển thị URL thô cho người dùng)
+  const handleUploadAssessmentPhoto = async (plantId: string, file?: File) => {
+    if (!file) return;
+    setUploadingPlantId(plantId);
+    try {
+      const uploaded = await providerApi.uploadDocument(file);
+      setPlantForms((prev) => ({
+        ...prev,
+        [plantId]: {
+          ...prev[plantId],
+          photoUrl: uploaded.url,
+          saved: false,
+        },
+      }));
+      message.success('Đã tải ảnh thẩm định thành công!');
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || 'Không thể tải ảnh lên.';
+      message.error(msg);
+    } finally {
+      setUploadingPlantId(null);
+    }
+  };
+
   // Lưu thẩm định cho 1 cây
   const handleSavePlantAssessment = async (plantId: string) => {
     if (!handoverOrder) return;
     const form = plantForms[plantId];
     if (!form) return;
     if (!form.photoUrl || !form.photoUrl.trim()) {
-      message.warning('Vui lòng cung cấp link ảnh hiện trạng thẩm định.');
+      message.warning('Vui lòng tải lên ảnh hiện trạng thẩm định.');
       return;
     }
 
@@ -308,6 +432,150 @@ function OrdersPageContent() {
     }
   };
 
+  // === Trả cây (IN_CARE -> RETURN_IN_PROGRESS -> RETURN_AWAITING_CONFIRM) ===
+  const handleStartReturn = async (orderId: string) => {
+    setActionLoading(orderId);
+    try {
+      await providerApi.startReturn(orderId);
+      message.success('Đã bắt đầu phiên bàn giao trả cây! Vui lòng ghi nhận tình trạng từng cây.');
+      await loadData(activeTab);
+      handleOpenReturnModal(orderId);
+    } catch (err: any) {
+      const rawCode = err?.response?.data?.rawCode;
+      const msg = err?.response?.data?.message || err?.message || 'Không thể bắt đầu trả cây lúc này.';
+      const displayMsg = Array.isArray(msg) ? msg.join(', ') : String(msg);
+      message.error(displayMsg);
+      Modal.warning({
+        title: rawCode === 'CARE_NOT_DUE' ? 'Chưa đến hạn trả cây' : 'Không thể bắt đầu trả cây',
+        content: displayMsg,
+        okText: 'Đã hiểu',
+      });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleOpenReturnModal = async (orderId: string) => {
+    setReturnModalOpen(true);
+    setReturnLoading(true);
+    setCancelReturnReason('');
+    try {
+      const data = await providerApi.getOrderDetail(orderId);
+      setReturnOrder(data);
+      const existingAssessments: any[] = data?.returnHandover?.assessments || [];
+      const assessedSet = new Set(existingAssessments.map((a: any) => a.plantId));
+      const forms: Record<string, any> = {};
+      (data?.plants || [])
+        .filter((p: any) => p.handoverDecision !== 'REJECT')
+        .forEach((p: any) => {
+          const prev = existingAssessments.find((a: any) => a.plantId === p.id);
+          forms[p.id] = {
+            leafCondition: prev?.checklist?.leaf || 'Tốt',
+            rootCondition: prev?.checklist?.root || 'Chắc khỏe',
+            hasPest: Boolean(prev?.checklist?.pest),
+            note: prev?.note || '',
+            photoUrl: prev?.photos?.[0]?.photoUrl || '',
+            saved: assessedSet.has(p.id),
+          };
+        });
+      setReturnPlantForms(forms);
+    } catch {
+      message.error('Không thể tải chi tiết đơn hàng để trả cây.');
+      setReturnModalOpen(false);
+    } finally {
+      setReturnLoading(false);
+    }
+  };
+
+  const handleUploadReturnPhoto = async (plantId: string, file?: File) => {
+    if (!file) return;
+    setUploadingReturnPlantId(plantId);
+    try {
+      const uploaded = await providerApi.uploadDocument(file);
+      setReturnPlantForms((prev) => ({
+        ...prev,
+        [plantId]: { ...prev[plantId], photoUrl: uploaded.url, saved: false },
+      }));
+      message.success('Đã tải ảnh trả cây thành công!');
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || err?.message || 'Không thể tải ảnh lên.');
+    } finally {
+      setUploadingReturnPlantId(null);
+    }
+  };
+
+  const handleSaveReturnPlantAssessment = async (plantId: string) => {
+    if (!returnOrder) return;
+    const form = returnPlantForms[plantId];
+    if (!form || !form.photoUrl?.trim()) {
+      message.warning('Vui lòng tải lên ảnh tình trạng cây lúc trả.');
+      return;
+    }
+    setSavingReturnPlantId(plantId);
+    try {
+      await providerApi.assessReturnPlant(returnOrder.id, plantId, {
+        checklist: {
+          leaf: form.leafCondition,
+          root: form.rootCondition,
+          pest: form.hasPest,
+        },
+        note: form.note.trim() || undefined,
+        photos: [
+          {
+            photoUrl: form.photoUrl.trim(),
+            caption: 'Ảnh tình trạng cây lúc bàn giao trả',
+          },
+        ],
+      });
+      message.success('Đã lưu tình trạng trả cho chậu cây này!');
+      setReturnPlantForms((prev) => ({
+        ...prev,
+        [plantId]: { ...prev[plantId], saved: true },
+      }));
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || 'Không thể lưu tình trạng trả cây.';
+      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+    } finally {
+      setSavingReturnPlantId(null);
+    }
+  };
+
+  const handleCompleteReturn = async () => {
+    if (!returnOrder) return;
+    setCompletingReturn(true);
+    try {
+      await providerApi.completeReturn(returnOrder.id);
+      message.success('Đã hoàn tất bàn giao trả cây! Đơn hàng đang chờ khách hàng xác nhận nhận lại.');
+      setReturnModalOpen(false);
+      loadData(activeTab);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || 'Vui lòng đánh giá đủ tất cả cây đang chăm trước khi hoàn tất.';
+      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+    } finally {
+      setCompletingReturn(false);
+    }
+  };
+
+  const handleCancelReturn = async () => {
+    if (!returnOrder) return;
+    if (!cancelReturnReason.trim()) {
+      message.warning('Vui lòng nhập lý do hủy phiên trả để hẹn lại khách.');
+      return;
+    }
+    setCancellingReturn(true);
+    try {
+      await providerApi.cancelReturn(returnOrder.id, cancelReturnReason.trim());
+      message.info('Đã hủy phiên trả và đưa đơn về trạng thái Đang chăm sóc để hẹn lại.');
+      setReturnModalOpen(false);
+      loadData(activeTab);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || 'Không thể hủy phiên trả.';
+      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+    } finally {
+      setCancellingReturn(false);
+    }
+  };
+
   // Mở modal xem chi tiết hợp đồng điện tử
   const handleOpenContractModal = async (orderId: string) => {
     setCurrentContractOrderId(orderId);
@@ -332,6 +600,8 @@ function OrdersPageContent() {
     'HANDOVER_IN_PROGRESS',
     'HANDOVER_AWAITING_CONFIRM',
     'IN_CARE',
+    'RETURN_IN_PROGRESS',
+    'RETURN_AWAITING_CONFIRM',
   ]);
 
   const handleStartVideoCall = async (orderId: string) => {
@@ -509,6 +779,7 @@ function OrdersPageContent() {
               value={activeTab}
               onChange={(val) => setActiveTab(val as string)}
               options={[
+                { label: 'Tất cả đơn', value: 'ALL' },
                 { label: 'Chờ duyệt đặt lịch', value: 'PENDING_PROVIDER' },
                 { label: 'Chờ ký hợp đồng', value: 'AGREEMENT_PENDING' },
                 { label: 'Đã thanh toán', value: 'PAID' },
@@ -516,7 +787,6 @@ function OrdersPageContent() {
                 { label: 'Chờ khách xác nhận', value: 'HANDOVER_AWAITING_CONFIRM' },
                 { label: 'Đang chăm sóc', value: 'IN_CARE' },
                 { label: 'Hoàn thành', value: 'COMPLETED' },
-                { label: 'Tất cả đơn', value: 'ALL' },
               ]}
               className="!bg-[#F6F4FC] font-semibold text-xs text-[#1E1B2E]"
             />
@@ -541,168 +811,267 @@ function OrdersPageContent() {
             </div>
           ) : (
             <div className="space-y-4">
-              {orders.map((order) => (
-                <div
-                  key={order.id}
-                  className="bg-white rounded-2xl p-5 border border-[#ECE7FA] hover:border-[#6027D2] shadow-[0_4px_16px_rgba(96,39,210,0.04)] transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
-                >
-                  <div className="flex items-start gap-4">
-                    <Avatar
-                      size={44}
-                      icon={<UserOutlined />}
-                      className="!bg-[#6027D2] shrink-0 mt-1"
-                    />
-                    <div>
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <h3 className="font-bold text-base text-[#1E1B2E]">
-                          Mã đơn: <span className="text-[#6027D2]">{order.orderCode}</span>
-                        </h3>
-                        {getStatusBadge(order.status)}
-                      </div>
+              {orders.map((order) => {
+                const firstPlantPhoto =
+                  (order as any).plants?.[0]?.initialPhotos?.[0]?.photoUrl ||
+                  (order as any).plants?.[0]?.photos?.[0]?.photoUrl ||
+                  '';
 
-                      <div className="mt-2 space-y-1 text-xs text-[#6E6A8A]">
-                        <p>
-                          Khách hàng:{' '}
-                          <strong className="text-[#1E1B2E]">
-                            {order.customer?.account?.fullName || 'Khách hàng ẩn danh'}
-                          </strong>
-                        </p>
-                        <p>
-                          Gói dịch vụ:{' '}
-                          <strong className="text-[#6027D2]">
-                            {order.servicePackage?.name || 'Gói chăm sóc lan tiêu chuẩn'}
-                          </strong>
-                        </p>
-                        {order.scheduledPickupAt && (
-                          <p className="flex items-center gap-1.5 text-[#8B86A4]">
-                            <CalendarOutlined /> Hẹn tiếp nhận:{' '}
-                            {new Date(order.scheduledPickupAt).toLocaleDateString('vi-VN')}
-                          </p>
+                return (
+                  <div
+                    key={order.id}
+                    className="bg-white rounded-2xl p-5 border border-[#ECE7FA] hover:border-[#C4B5FD] shadow-[0_4px_20px_rgba(96,39,210,0.04)] transition-all"
+                  >
+                    <div className="flex flex-col lg:flex-row lg:items-start gap-5">
+                      {/* Left: Plant Thumbnail + User Badge */}
+                      <div className="relative w-24 h-24 rounded-2xl bg-[#F5F3FF] border border-[#ECE7FA] overflow-hidden shrink-0 flex items-center justify-center">
+                        {firstPlantPhoto ? (
+                          <Image
+                            src={firstPlantPhoto}
+                            alt={order.orderCode}
+                            width={96}
+                            height={96}
+                            className="w-full h-full object-cover cursor-pointer"
+                          />
+                        ) : (
+                          <PictureOutlined className="text-3xl text-[#A78BFA]" />
                         )}
+                        <div className="absolute bottom-1.5 right-1.5 w-6 h-6 rounded-full bg-[#6027D2] border-2 border-white flex items-center justify-center text-white text-[11px] shadow-xs pointer-events-none">
+                          <UserOutlined />
+                        </div>
+                      </div>
+
+                      {/* Right Content */}
+                      <div className="flex-1 min-w-0">
+                        {/* Top Row: Order Code + Status + Price */}
+                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
+                          <div className="flex items-center gap-2.5 flex-wrap">
+                            <h3 className="font-bold text-base text-[#1E1B2E] flex items-center gap-1.5">
+                              <span>Mã đơn:</span>
+                              <span className="text-[#6027D2] font-extrabold tracking-tight">
+                                {order.orderCode}
+                              </span>
+                            </h3>
+                            <button
+                              type="button"
+                              title="Sao chép mã đơn"
+                              onClick={() => {
+                                navigator.clipboard?.writeText(order.orderCode);
+                                message.success('Đã sao chép mã đơn');
+                              }}
+                              className="text-[#8B86A4] hover:text-[#6027D2] p-1 rounded-md hover:bg-[#F5F3FF] transition-colors"
+                            >
+                              <CopyOutlined className="text-xs" />
+                            </button>
+                            {getStatusBadge(order.status)}
+                          </div>
+
+                          <div className="sm:text-right shrink-0">
+                            <span className="block text-[10px] text-[#8B86A4] uppercase font-bold tracking-wider">
+                              TẠM TÍNH
+                            </span>
+                            <p className="text-xl font-extrabold text-[#4E1BA8] leading-tight">
+                              {Number(order.finalTotal || order.provisionalTotal || 0).toLocaleString(
+                                'vi-VN'
+                              )}{' '}
+                              VNĐ
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Middle Row: 3 Info Pills */}
+                        <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                          <div className="bg-[#F6F4FC] rounded-xl px-3.5 py-2.5 flex items-center gap-2.5">
+                            <UserOutlined className="text-[#7C3AED] text-base shrink-0" />
+                            <div className="min-w-0">
+                              <span className="block text-[11px] text-[#8B86A4] leading-tight">
+                                Khách hàng
+                              </span>
+                              <span className="block text-xs font-bold text-[#1E1B2E] truncate mt-0.5">
+                                {order.customer?.account?.fullName || 'Khách hàng ẩn danh'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="bg-[#F6F4FC] rounded-xl px-3.5 py-2.5 flex items-center gap-2.5">
+                            <CalendarOutlined className="text-[#7C3AED] text-base shrink-0" />
+                            <div className="min-w-0">
+                              <span className="block text-[11px] text-[#8B86A4] leading-tight">
+                                Gói dịch vụ
+                              </span>
+                              <span className="block text-xs font-bold text-[#6027D2] truncate mt-0.5">
+                                {order.servicePackage?.name || 'Gói chăm sóc lan tiêu chuẩn'}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="bg-[#F6F4FC] rounded-xl px-3.5 py-2.5 flex items-center gap-2.5">
+                            <CalendarOutlined className="text-[#7C3AED] text-base shrink-0" />
+                            <div className="min-w-0">
+                              <span className="block text-[11px] text-[#8B86A4] leading-tight">
+                                Hẹn tiếp nhận
+                              </span>
+                              <span className="block text-xs font-bold text-[#1E1B2E] truncate mt-0.5">
+                                {order.scheduledPickupAt
+                                  ? new Date(order.scheduledPickupAt).toLocaleDateString('vi-VN')
+                                  : 'Chưa hẹn'}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Bottom Row: Action Buttons */}
+                        <div className="mt-4 pt-3 border-t border-[#F3EFFA] flex items-center gap-2 flex-wrap">
+                          <Button
+                            icon={<EyeOutlined />}
+                            onClick={() => handleOpenDetail(order.id)}
+                            className="!h-9 !px-4 !rounded-xl !bg-[#F3EFFF] !border-none !text-[#5B21B6] hover:!bg-[#E9D8FD] !font-semibold text-xs flex items-center gap-1.5"
+                          >
+                            Xem chi tiết
+                          </Button>
+
+                          {['AGREEMENT_PENDING', 'AWAITING_PAYMENT', 'PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM', 'COMPLETED', 'DISPUTED'].includes(order.status) && (
+                            <Button
+                              icon={<FileProtectOutlined />}
+                              onClick={() => handleOpenContractModal(order.id)}
+                              className="!h-9 !px-4 !rounded-xl !bg-[#F6F4FC] !border-none !text-[#1E1B2E] hover:!bg-[#ECE7FA] !font-semibold text-xs flex items-center gap-1.5"
+                            >
+                              Xem Hợp đồng
+                            </Button>
+                          )}
+
+                          <span className="hidden sm:inline-block w-px h-6 bg-[#ECE7FA] mx-1" />
+
+                          {order.status === 'PENDING_PROVIDER' && (
+                            <Button
+                              onClick={() => handleRespondOrder(order.id, 'REJECT')}
+                              loading={actionLoading === order.id}
+                              className="!h-9 !px-4 !rounded-xl !bg-white !border !border-red-200 !text-red-600 hover:!bg-red-50 !font-semibold text-xs flex items-center gap-1"
+                            >
+                              <CloseCircleOutlined />
+                              Từ chối
+                            </Button>
+                          )}
+
+                          {['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'DISPUTED'].includes(order.status) && (
+                            <Button
+                              icon={<ExclamationCircleOutlined />}
+                              onClick={() => handleOpenDisputeModal(order)}
+                              className="!h-9 !px-4 !rounded-xl !bg-white !border !border-red-200 !text-red-600 hover:!bg-red-50 !font-semibold text-xs flex items-center gap-1"
+                            >
+                              Tranh chấp
+                            </Button>
+                          )}
+
+                          {CALL_ELIGIBLE_STATUSES.has(order.status) && (
+                            <Button
+                              icon={<VideoCameraOutlined />}
+                              loading={videoCallLoading === order.id}
+                              onClick={() => handleStartVideoCall(order.id)}
+                              className="!h-9 !px-4 !rounded-xl !bg-emerald-50/80 !border !border-emerald-200 !text-emerald-700 hover:!bg-emerald-100 !font-semibold text-xs flex items-center gap-1"
+                            >
+                              Gọi Video
+                            </Button>
+                          )}
+
+                          {order.status === 'IN_CARE' && (
+                            <Button
+                              icon={<EnvironmentOutlined />}
+                              loading={actionLoading === order.id}
+                              onClick={() => handleStartReturn(order.id)}
+                              className="!h-9 !px-4 !rounded-xl !bg-[#F3EFFF] !border !border-[#DDD6FE] !text-[#6027D2] hover:!bg-[#E9D8FD] !font-semibold text-xs"
+                            >
+                              Bắt đầu trả cây
+                            </Button>
+                          )}
+
+                          {order.status === 'HANDOVER_AWAITING_CONFIRM' && (
+                            <Tag color="volcano" className="!h-9 !px-3 !rounded-xl flex items-center font-semibold text-xs sm:ml-auto">
+                              Chờ khách xác nhận bàn giao
+                            </Tag>
+                          )}
+
+                          {order.status === 'RETURN_AWAITING_CONFIRM' && (
+                            <Tag color="gold" className="!h-9 !px-3 !rounded-xl flex items-center font-semibold text-xs sm:ml-auto">
+                              Chờ khách xác nhận nhận lại cây
+                            </Tag>
+                          )}
+
+                          {/* Primary Right-aligned CTA */}
+                          {order.status === 'PENDING_PROVIDER' && (
+                            <Button
+                              type="primary"
+                              icon={<CheckCircleOutlined />}
+                              onClick={() => handleRespondOrder(order.id, 'ACCEPT')}
+                              loading={actionLoading === order.id}
+                              className="!h-9 !px-5 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !border-none !font-semibold text-xs shadow-sm sm:ml-auto"
+                            >
+                              Duyệt đặt lịch
+                            </Button>
+                          )}
+
+                          {order.status === 'AGREEMENT_PENDING' && (
+                            <Button
+                              type="primary"
+                              icon={<FileProtectOutlined />}
+                              onClick={() => handleOpenContractModal(order.id)}
+                              loading={actionLoading === order.id}
+                              className="!h-9 !px-5 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !border-none !font-semibold text-xs shadow-sm sm:ml-auto text-white"
+                            >
+                              Ký hợp đồng ngay
+                            </Button>
+                          )}
+
+                          {order.status === 'PAID' && (
+                            <Button
+                              type="primary"
+                              icon={<EnvironmentOutlined />}
+                              onClick={() => handleStartHandover(order.id)}
+                              loading={actionLoading === order.id}
+                              className="!h-9 !px-5 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !border-none !font-semibold text-xs shadow-sm sm:ml-auto text-white"
+                            >
+                              Bắt đầu bàn giao cây
+                            </Button>
+                          )}
+
+                          {order.status === 'HANDOVER_IN_PROGRESS' && (
+                            <Button
+                              type="primary"
+                              icon={<AuditOutlined />}
+                              onClick={() => handleOpenHandoverModal(order.id)}
+                              className="!h-9 !px-5 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !border-none !font-semibold text-xs shadow-sm sm:ml-auto text-white"
+                            >
+                              Thẩm định & Bàn giao cây
+                            </Button>
+                          )}
+
+                          {order.status === 'IN_CARE' && (
+                            <Button
+                              type="primary"
+                              icon={<FileTextOutlined />}
+                              onClick={() => router.push(`/provider/reports/new?orderId=${order.id}`)}
+                              className="!h-9 !px-5 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !border-none !font-semibold text-xs shadow-sm sm:ml-auto"
+                            >
+                              Nộp báo cáo chăm sóc
+                            </Button>
+                          )}
+
+                          {order.status === 'RETURN_IN_PROGRESS' && (
+                            <Button
+                              type="primary"
+                              icon={<AuditOutlined />}
+                              onClick={() => handleOpenReturnModal(order.id)}
+                              className="!h-9 !px-5 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !border-none !font-semibold text-xs shadow-sm sm:ml-auto text-white"
+                            >
+                              Ghi nhận & Hoàn tất trả cây
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
-
-                  {/* Right side: Price & Action Buttons */}
-                  <div className="flex flex-col md:items-end justify-between border-t md:border-t-0 pt-3 md:pt-0 border-[#ECE7FA] gap-3">
-                    <div className="md:text-right">
-                      <span className="text-[10px] text-[#8B86A4] uppercase font-semibold">
-                        Tạm tính
-                      </span>
-                      <p className="text-lg font-bold text-[#6027D2] leading-tight">
-                        {Number(order.finalTotal || order.provisionalTotal || 0).toLocaleString(
-                          'vi-VN'
-                        )}{' '}
-                        VNĐ
-                      </p>
-                    </div>
-
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <Button
-                        icon={<EyeOutlined />}
-                        onClick={() => handleOpenDetail(order.id)}
-                        className="!h-9 !px-4 !rounded-xl !bg-[#F3E8FF] !border-none !text-[#6027D2] hover:!bg-[#E9D8FD] !font-semibold text-xs flex items-center gap-1"
-                      >
-                        Xem chi tiết
-                      </Button>
-
-                      {order.status === 'PENDING_PROVIDER' && (
-                        <>
-                          <Button
-                            onClick={() => handleRespondOrder(order.id, 'REJECT')}
-                            loading={actionLoading === order.id}
-                            className="!h-9 !px-4 !rounded-xl !bg-[#F6F4FC] !border-none !text-[#4B4764] hover:!bg-[#ECE7FA] !font-medium text-xs"
-                          >
-                            Từ chối
-                          </Button>
-                          <Button
-                            type="primary"
-                            onClick={() => handleRespondOrder(order.id, 'ACCEPT')}
-                            loading={actionLoading === order.id}
-                            className="!h-9 !px-5 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !font-semibold text-xs shadow-sm"
-                          >
-                            Chấp nhận đơn
-                          </Button>
-                        </>
-                      )}
-
-                      {order.status === 'AGREEMENT_PENDING' && (
-                        <Button
-                          type="primary"
-                          icon={<FileProtectOutlined />}
-                          onClick={() => handleOpenContractModal(order.id)}
-                          loading={actionLoading === order.id}
-                          className="!h-9 !px-4 !rounded-xl !bg-[#D97706] hover:!bg-[#B45309] !font-semibold text-xs shadow-sm flex items-center gap-1 text-white"
-                        >
-                          Xem & Ký hợp đồng
-                        </Button>
-                      )}
-
-                      {order.status === 'PAID' && (
-                        <Button
-                          type="primary"
-                          icon={<EnvironmentOutlined />}
-                          onClick={() => handleStartHandover(order.id)}
-                          loading={actionLoading === order.id}
-                          className="!h-9 !px-4 !rounded-xl !bg-[#805AD5] hover:!bg-[#6B46C1] !font-semibold text-xs shadow-sm flex items-center gap-1 text-white"
-                        >
-                          Bắt đầu bàn giao cây
-                        </Button>
-                      )}
-
-                      {order.status === 'HANDOVER_IN_PROGRESS' && (
-                        <Button
-                          type="primary"
-                          icon={<AuditOutlined />}
-                          onClick={() => handleOpenHandoverModal(order.id)}
-                          className="!h-9 !px-4 !rounded-xl !bg-[#2563EB] hover:!bg-[#1D4ED8] !font-semibold text-xs shadow-sm flex items-center gap-1 text-white"
-                        >
-                          Thẩm định & Bàn giao cây
-                        </Button>
-                      )}
-
-                      {order.status === 'HANDOVER_AWAITING_CONFIRM' && (
-                        <Tag color="volcano" className="!h-9 !px-3 !rounded-xl flex items-center font-semibold text-xs">
-                          Chờ khách xác nhận bàn giao
-                        </Tag>
-                      )}
-
-                      {['AGREEMENT_PENDING', 'AWAITING_PAYMENT', 'PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM', 'COMPLETED', 'DISPUTED'].includes(order.status) && (
-                        <Button
-                          icon={<FileProtectOutlined />}
-                          onClick={() => handleOpenContractModal(order.id)}
-                          className="!h-9 !px-3 !rounded-xl text-xs flex items-center gap-1 !border-[#ECE7FA] text-[#6E6A8A] hover:!text-[#6027D2]"
-                        >
-                          Xem Hợp đồng
-                        </Button>
-                      )}
-
-                      {order.status === 'IN_CARE' && (
-                        <Button
-                          type="primary"
-                          icon={<FileTextOutlined />}
-                          onClick={() => router.push(`/provider/reports?orderId=${order.id}`)}
-                          className="!h-9 !px-4 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !font-semibold text-xs"
-                        >
-                          Nộp báo cáo chăm sóc
-                        </Button>
-                      )}
-
-                      {/* Nút Gọi Video cho các trạng thái eligible */}
-                      {CALL_ELIGIBLE_STATUSES.has(order.status) && (
-                        <Button
-                          icon={<VideoCameraOutlined />}
-                          loading={videoCallLoading === order.id}
-                          onClick={() => handleStartVideoCall(order.id)}
-                          className="!h-9 !px-4 !rounded-xl !bg-emerald-50 !border-emerald-200 !text-emerald-700 hover:!bg-emerald-100 !font-semibold text-xs flex items-center gap-1"
-                        >
-                          Gọi Video
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </main>
@@ -1027,39 +1396,58 @@ function OrdersPageContent() {
                         </Radio.Group>
                       </div>
 
-                      {/* Photo URL */}
+                      {/* Ảnh chụp thẩm định hiện trạng (chỉ upload & xem trước, không hiện URL thô) */}
                       <div>
-                        <label className="block text-xs font-bold text-[#4B4764] mb-1">
-                          Link ảnh chụp thẩm định hiện trạng (bắt buộc):
+                        <label className="block text-xs font-bold text-[#4B4764] mb-1.5">
+                          Ảnh chụp thẩm định hiện trạng (bắt buộc):
                         </label>
-                        <Input
-                          value={form.photoUrl}
-                          onChange={(e) =>
-                            setPlantForms((prev) => ({
-                              ...prev,
-                              [plant.id]: {
-                                ...prev[plant.id],
-                                photoUrl: e.target.value,
-                                saved: false,
-                              },
-                            }))
-                          }
-                          placeholder="https://res.cloudinary.com/... hoặc link ảnh hiện trạng tiếp nhận"
-                          className="!rounded-xl text-xs"
-                        />
                         {form.photoUrl ? (
-                          <div className="mt-2 flex items-center gap-3">
+                          <div className="flex items-center gap-3 flex-wrap">
                             <Image
                               src={form.photoUrl}
                               alt="Ảnh thẩm định"
-                              width={70}
-                              height={70}
-                              className="rounded-lg object-cover border border-[#ECE7FA]"
-                              fallback="https://placehold.co/70x70?text=Ảnh+lỗi"
+                              width={84}
+                              height={84}
+                              className="rounded-xl object-cover border border-[#ECE7FA]"
+                              fallback="https://placehold.co/84x84?text=Ảnh+lỗi"
                             />
-                            <span className="text-[11px] text-[#6E6A8A]">Xem trước ảnh hiện trạng bàn giao</span>
+                            <div className="flex items-center gap-2">
+                              <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-[#DDD6FE] text-xs font-semibold text-[#6027D2] hover:bg-[#EDE9FE]">
+                                {uploadingPlantId === plant.id ? <Spin size="small" /> : <UploadOutlined />}
+                                <span>Đổi ảnh khác</span>
+                                <input
+                                  type="file"
+                                  accept="image/jpeg,image/png,image/webp"
+                                  style={{ display: 'none' }}
+                                  onChange={(e) => handleUploadAssessmentPhoto(plant.id, e.target.files?.[0])}
+                                />
+                              </label>
+                              <Button
+                                size="small"
+                                danger
+                                onClick={() =>
+                                  setPlantForms((prev) => ({
+                                    ...prev,
+                                    [plant.id]: { ...prev[plant.id], photoUrl: '', saved: false },
+                                  }))
+                                }
+                              >
+                                Xóa ảnh
+                              </Button>
+                            </div>
                           </div>
-                        ) : null}
+                        ) : (
+                          <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-dashed border-[#C4B5FD] text-xs font-semibold text-[#6027D2] hover:bg-[#F5F3FF]">
+                            {uploadingPlantId === plant.id ? <Spin size="small" /> : <UploadOutlined />}
+                            <span>Chọn & tải ảnh hiện trạng lên</span>
+                            <input
+                              type="file"
+                              accept="image/jpeg,image/png,image/webp"
+                              className="hidden"
+                              onChange={(e) => handleUploadAssessmentPhoto(plant.id, e.target.files?.[0])}
+                            />
+                          </label>
+                        )}
                       </div>
 
                       {/* Note */}
@@ -1132,11 +1520,13 @@ function OrdersPageContent() {
         styles={{ body: { maxHeight: '78vh', overflowY: 'auto', paddingRight: '6px' } }}
         footer={
           (() => {
+            const contractOrderStatus = orders.find((o) => o.id === currentContractOrderId)?.status || '';
             const isProviderSigned = contractData?.signatures?.some(
               (s: any) =>
                 (s.role === 'PROVIDER' || s.signerRole === 'PROVIDER') &&
                 (s.signedAt || s.signatureHash)
             );
+            const canProviderSign = contractOrderStatus === 'AGREEMENT_PENDING' && !isProviderSigned;
             const agreementNumber =
               contractData?.agreementNo ||
               contractData?.agreement?.agreementNo ||
@@ -1156,7 +1546,7 @@ function OrdersPageContent() {
                   <Button onClick={() => setContractModalOpen(false)} className="!rounded-xl">
                     Đóng
                   </Button>
-                  {contractData && !isProviderSigned && (
+                  {contractData && canProviderSign && (
                     <Button
                       type="primary"
                       icon={<FormOutlined />}
@@ -1236,16 +1626,31 @@ function OrdersPageContent() {
               contractData.agreement?.createdAt ||
               new Date().toISOString();
 
-            const isCustomerSigned = contractData.signatures?.some(
-              (s: any) =>
-                (s.role === 'CUSTOMER' || s.signerRole === 'CUSTOMER') &&
-                (s.signedAt || s.signatureHash)
-            );
-            const isProviderSigned = contractData.signatures?.some(
-              (s: any) =>
-                (s.role === 'PROVIDER' || s.signerRole === 'PROVIDER') &&
-                (s.signedAt || s.signatureHash)
-            );
+            const contractOrderStatus = orders.find((o) => o.id === currentContractOrderId)?.status || '';
+            const isPastAgreementPending = [
+              'AWAITING_PAYMENT',
+              'PAID',
+              'HANDOVER_IN_PROGRESS',
+              'HANDOVER_AWAITING_CONFIRM',
+              'IN_CARE',
+              'RETURN_IN_PROGRESS',
+              'RETURN_AWAITING_CONFIRM',
+              'COMPLETED',
+              'DISPUTED',
+            ].includes(contractOrderStatus);
+
+            const isCustomerSigned =
+              contractData.signatures?.some(
+                (s: any) =>
+                  (s.role === 'CUSTOMER' || s.signerRole === 'CUSTOMER') &&
+                  (s.signedAt || s.signatureHash)
+              ) || isPastAgreementPending;
+            const isProviderSigned =
+              contractData.signatures?.some(
+                (s: any) =>
+                  (s.role === 'PROVIDER' || s.signerRole === 'PROVIDER') &&
+                  (s.signedAt || s.signatureHash)
+              ) || isPastAgreementPending;
 
             const customerSig = contractData.signatures?.find(
               (s: any) => s.role === 'CUSTOMER' || s.signerRole === 'CUSTOMER'
@@ -1477,28 +1882,30 @@ function OrdersPageContent() {
                 </div>
 
                 {/* V. CHÍNH SÁCH BỒI THƯỜNG 120% */}
-                <div className="p-4 bg-[#FEF2F2] border border-[#FECACA] rounded-xl">
-                  <h4 className="font-bold text-xs text-[#991B1B] flex items-center gap-1.5 mb-2 uppercase tracking-wide">
-                    <SafetyCertificateFilled className="text-[#DC2626]" /> V. CHÍNH SÁCH BỒI THƯỜNG THIỆT HẠI (CAM KẾT 120%)
+                <div>
+                  <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#6027D2] mb-3 flex items-center gap-1.5">
+                    <SafetyCertificateFilled /> V. CHÍNH SÁCH BỒI THƯỜNG THIỆT HẠI (CAM KẾT 120%)
                   </h4>
-                  <p className="text-xs text-[#B91C1C] font-semibold mb-2">
-                    Mức bồi thường: 120% giá trị định giá của cây đã được hai bên thống nhất tại thời điểm ký hợp đồng.
-                  </p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-[#7F1D1D]">
-                    <div className="bg-white/70 p-2.5 rounded-lg border border-[#FEE2E2]">
-                      <p className="font-bold mb-1">Trong quá trình chăm sóc:</p>
-                      <ul className="list-disc list-inside space-y-0.5 text-[11px]">
-                        <li>Cây suy yếu nghiêm trọng so với biên bản bàn giao ban đầu</li>
-                        <li>Cây chết do lỗi kỹ thuật chăm sóc của Nhà vườn</li>
-                        <li>Cây bị thất lạc trong thời gian lưu giữ tại vườn</li>
-                      </ul>
-                    </div>
-                    <div className="bg-white/70 p-2.5 rounded-lg border border-[#FEE2E2]">
-                      <p className="font-bold mb-1">Trong quá trình vận chuyển:</p>
-                      <ul className="list-disc list-inside space-y-0.5 text-[11px]">
-                        <li>Cây bị dập gãy ngọn, hư hỏng nặng khi giao nhận</li>
-                        <li>Cây bị thất lạc trong quá trình vận chuyển</li>
-                      </ul>
+                  <div className="p-4 bg-[#FAF8FE] border border-[#ECE7FA] rounded-xl space-y-3">
+                    <p className="text-xs text-[#1E1B2E] font-semibold">
+                      Mức bồi thường: <span className="text-[#6027D2]">120% giá trị định giá của cây</span> đã được hai bên thống nhất tại thời điểm ký hợp đồng.
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-[#4B4764]">
+                      <div className="bg-white p-3 rounded-lg border border-[#ECE7FA]">
+                        <p className="font-bold text-[#1E1B2E] mb-1">Trong quá trình chăm sóc:</p>
+                        <ul className="list-disc list-inside space-y-0.5 text-[11.5px]">
+                          <li>Cây suy yếu nghiêm trọng so với biên bản bàn giao ban đầu</li>
+                          <li>Cây chết do lỗi kỹ thuật chăm sóc của Nhà vườn</li>
+                          <li>Cây bị thất lạc trong thời gian lưu giữ tại vườn</li>
+                        </ul>
+                      </div>
+                      <div className="bg-white p-3 rounded-lg border border-[#ECE7FA]">
+                        <p className="font-bold text-[#1E1B2E] mb-1">Trong quá trình vận chuyển:</p>
+                        <ul className="list-disc list-inside space-y-0.5 text-[11.5px]">
+                          <li>Cây bị dập gãy ngọn, hư hỏng nặng khi giao nhận</li>
+                          <li>Cây bị thất lạc trong quá trình vận chuyển</li>
+                        </ul>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1561,7 +1968,9 @@ function OrdersPageContent() {
                             ✓ ĐÃ KÝ ĐIỆN TỬ
                           </Tag>
                           <p className="text-[10px] text-gray-400 mt-1">
-                            Ký lúc: {providerSig?.signedAt ? new Date(providerSig.signedAt).toLocaleString('vi-VN') : 'Đã ghi nhận'}
+                            {providerSig?.signedAt
+                              ? `Ký lúc: ${new Date(providerSig.signedAt).toLocaleString('vi-VN')}`
+                              : 'Đã ký hợp đồng điện tử'}
                           </p>
                         </div>
                       ) : (
@@ -1668,6 +2077,413 @@ function OrdersPageContent() {
               Tôi xác nhận là đại diện Nhà vườn, đã đọc kỹ toàn bộ điều khoản và đồng ý ký kết hợp đồng dịch vụ điện tử này.
             </Checkbox>
           </div>
+        </div>
+      </Modal>
+
+      {/* Return Handover Assessment Modal */}
+      <Modal
+        title={
+          <div className="flex items-center gap-2 text-base font-bold text-[#1E1B2E]">
+            <AuditOutlined className="text-[#6027D2]" />
+            <span>
+              Ghi nhận & Bàn giao trả cây{' '}
+              {returnOrder?.orderCode ? `- ${returnOrder.orderCode}` : ''}
+            </span>
+          </div>
+        }
+        open={returnModalOpen}
+        onCancel={() => setReturnModalOpen(false)}
+        footer={
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <Button
+              onClick={() => setReturnModalOpen(false)}
+              className="!rounded-xl"
+            >
+              Đóng
+            </Button>
+            <Button
+              type="primary"
+              loading={completingReturn}
+              onClick={handleCompleteReturn}
+              className="!rounded-xl !bg-[#10B981] hover:!bg-[#059669] !font-semibold text-white"
+            >
+              Hoàn tất bàn giao trả cây
+            </Button>
+          </div>
+        }
+        width={760}
+      >
+        {returnLoading ? (
+          <div className="py-12 text-center">
+            <Spin size="large" />
+            <p className="mt-3 text-xs text-[#6E6A8A]">Đang tải danh sách cây đang chăm...</p>
+          </div>
+        ) : returnOrder ? (
+          <div className="space-y-4 max-h-[72vh] overflow-y-auto pr-1 pt-2">
+            <div className="p-3 rounded-xl bg-[#F6F4FC] border border-[#ECE7FA] text-xs text-[#4B4764]">
+              Ghi nhận tình trạng thực tế và tải ít nhất 1 ảnh cho mỗi chậu cây đang chăm trước khi bấm <strong>Hoàn tất bàn giao trả cây</strong>.
+            </div>
+
+            {(returnOrder.plants || [])
+              .filter((p: any) => p.handoverDecision !== 'REJECT')
+              .map((plant: any, idx: number) => {
+                const form = returnPlantForms[plant.id] || {
+                  leafCondition: 'Tốt',
+                  rootCondition: 'Chắc khỏe',
+                  hasPest: false,
+                  note: '',
+                  photoUrl: '',
+                  saved: false,
+                };
+
+                return (
+                  <div
+                    key={plant.id}
+                    className="p-4 rounded-2xl border border-[#ECE7FA] bg-white space-y-3"
+                  >
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <p className="font-bold text-sm text-[#1E1B2E]">
+                          #{idx + 1}. {plant.name}
+                        </p>
+                        {plant.speciesName && (
+                          <p className="text-xs text-[#6E6A8A]">Giống: {plant.speciesName}</p>
+                        )}
+                      </div>
+                      {form.saved ? (
+                        <Tag color="green">Đã lưu tình trạng trả</Tag>
+                      ) : (
+                        <Tag color="orange">Chưa lưu</Tag>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-[#4B4764] mb-1">
+                          Tình trạng lá:
+                        </label>
+                        <Input
+                          value={form.leafCondition}
+                          onChange={(e) =>
+                            setReturnPlantForms((prev) => ({
+                              ...prev,
+                              [plant.id]: { ...prev[plant.id], leafCondition: e.target.value, saved: false },
+                            }))
+                          }
+                          placeholder="VD: Xanh tốt"
+                          className="!rounded-xl text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-[#4B4764] mb-1">
+                          Tình trạng rễ:
+                        </label>
+                        <Input
+                          value={form.rootCondition}
+                          onChange={(e) =>
+                            setReturnPlantForms((prev) => ({
+                              ...prev,
+                              [plant.id]: { ...prev[plant.id], rootCondition: e.target.value, saved: false },
+                            }))
+                          }
+                          placeholder="VD: Chắc khỏe"
+                          className="!rounded-xl text-xs"
+                        />
+                      </div>
+                      <div className="flex items-end pb-1">
+                        <Checkbox
+                          checked={form.hasPest}
+                          onChange={(e) =>
+                            setReturnPlantForms((prev) => ({
+                              ...prev,
+                              [plant.id]: { ...prev[plant.id], hasPest: e.target.checked, saved: false },
+                            }))
+                          }
+                          className="text-xs font-semibold text-[#4B4764]"
+                        >
+                          Có dấu hiệu sâu bệnh
+                        </Checkbox>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-[#4B4764] mb-1.5">
+                        Ảnh chụp tình trạng lúc trả (bắt buộc):
+                      </label>
+                      {form.photoUrl ? (
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <Image
+                            src={form.photoUrl}
+                            alt="Ảnh trả cây"
+                            width={84}
+                            height={84}
+                            className="rounded-xl object-cover border border-[#ECE7FA]"
+                            fallback="https://placehold.co/84x84?text=Ảnh+lỗi"
+                          />
+                          <div className="flex items-center gap-2">
+                            <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-[#DDD6FE] text-xs font-semibold text-[#6027D2] hover:bg-[#EDE9FE]">
+                              {uploadingReturnPlantId === plant.id ? <Spin size="small" /> : <UploadOutlined />}
+                              <span>Đổi ảnh khác</span>
+                              <input
+                                type="file"
+                                accept="image/jpeg,image/png,image/webp"
+                                style={{ display: 'none' }}
+                                onChange={(e) => handleUploadReturnPhoto(plant.id, e.target.files?.[0])}
+                              />
+                            </label>
+                            <Button
+                              size="small"
+                              danger
+                              onClick={() =>
+                                setReturnPlantForms((prev) => ({
+                                  ...prev,
+                                  [plant.id]: { ...prev[plant.id], photoUrl: '', saved: false },
+                                }))
+                              }
+                            >
+                              Xóa ảnh
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <label className="cursor-pointer inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-dashed border-[#C4B5FD] text-xs font-semibold text-[#6027D2] hover:bg-[#F5F3FF]">
+                          {uploadingReturnPlantId === plant.id ? <Spin size="small" /> : <UploadOutlined />}
+                          <span>Chọn & tải ảnh trả cây lên</span>
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            style={{ display: 'none' }}
+                            onChange={(e) => handleUploadReturnPhoto(plant.id, e.target.files?.[0])}
+                          />
+                        </label>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-[#4B4764] mb-1">
+                        Ghi chú bàn giao trả (tuỳ chọn):
+                      </label>
+                      <Input.TextArea
+                        rows={2}
+                        value={form.note}
+                        onChange={(e) =>
+                          setReturnPlantForms((prev) => ({
+                            ...prev,
+                            [plant.id]: { ...prev[plant.id], note: e.target.value, saved: false },
+                          }))
+                        }
+                        placeholder="VD: Cây khỏe mạnh, đã ra thêm ngồng hoa mới..."
+                        className="!rounded-xl text-xs"
+                      />
+                    </div>
+
+                    <div className="flex justify-end">
+                      <Button
+                        type="primary"
+                        size="small"
+                        loading={savingReturnPlantId === plant.id}
+                        onClick={() => handleSaveReturnPlantAssessment(plant.id)}
+                        className="!rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !font-semibold text-xs"
+                      >
+                        Lưu tình trạng trả cây này
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+
+            {/* Hủy phiên trả để hẹn lại */}
+            <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 space-y-2">
+              <p className="text-xs font-bold text-amber-800">
+                Khách vắng nhà hoặc chưa giao trả được?
+              </p>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={cancelReturnReason}
+                  onChange={(e) => setCancelReturnReason(e.target.value)}
+                  placeholder="Nhập lý do hủy phiên trả để hẹn lại..."
+                  className="!rounded-xl text-xs bg-white"
+                />
+                <Button
+                  danger
+                  loading={cancellingReturn}
+                  onClick={handleCancelReturn}
+                  className="!rounded-xl text-xs font-semibold shrink-0"
+                >
+                  Hủy phiên trả
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      {/* Dispute Modal */}
+      <Modal
+        title={
+          <div className="flex items-center gap-2.5">
+            <ExclamationCircleOutlined className="text-red-500 text-lg" />
+            <span>Tranh chấp đơn hàng #{disputeOrder?.orderCode || '---'}</span>
+          </div>
+        }
+        open={disputeModalOpen}
+        onCancel={() => {
+          if (!disputeSubmitting) setDisputeModalOpen(false);
+        }}
+        footer={null}
+        width={680}
+        centered
+      >
+        <div className="space-y-5 pt-2">
+          <div>
+            <h5 className="text-xs font-bold uppercase tracking-wider text-[#6E6A8A] mb-2">
+              Lịch sử khiếu nại / Tranh chấp của đơn
+            </h5>
+            {disputesLoading ? (
+              <div className="py-6 text-center">
+                <Spin size="small" />
+              </div>
+            ) : disputes.length === 0 ? (
+              <div className="p-4 rounded-xl bg-gray-50 border border-gray-100 text-xs text-gray-500 text-center">
+                Chưa có tranh chấp nào cho đơn hàng này.
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
+                {disputes.map((d) => {
+                  const reasonLabel =
+                    d.reason === 'MISMATCHED_PLANT'
+                      ? 'Sai cây / Không đúng mô tả'
+                      : d.reason === 'DAMAGE'
+                        ? 'Cây hư hại'
+                        : d.reason === 'PICKUP'
+                          ? 'Vấn đề giao nhận'
+                          : 'Khác';
+                  const statusColor =
+                    d.status === 'RESOLVED'
+                      ? 'green'
+                      : d.status === 'REJECTED'
+                        ? 'red'
+                        : d.status === 'UNDER_REVIEW'
+                          ? 'blue'
+                          : 'orange';
+                  return (
+                    <div key={d.id} className="p-3 rounded-xl border border-[#ECE7FA] bg-[#FAF8FE] space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-[#1E1B2E]">{reasonLabel}</span>
+                        <Tag color={statusColor}>{d.status}</Tag>
+                      </div>
+                      <p className="text-xs text-[#4B4764] whitespace-pre-wrap">{d.description}</p>
+                      {Array.isArray(d.evidence) && d.evidence.length > 0 && (
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {d.evidence.map((ev, idx) => (
+                            <Image
+                              key={`${d.id}-ev-${idx}`}
+                              src={ev.photoUrl}
+                              alt={ev.caption || 'Bằng chứng tranh chấp'}
+                              width={64}
+                              height={64}
+                              className="rounded-lg object-cover border border-gray-200"
+                            />
+                          ))}
+                        </div>
+                      )}
+                      {d.resolution && (
+                        <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
+                          <strong>Kết luận của Admin:</strong> {d.resolution}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {disputeOrder && ['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE'].includes(disputeOrder.status) && (
+            <div className="pt-4 border-t border-gray-100 space-y-3">
+              <h5 className="text-xs font-bold uppercase tracking-wider text-[#6E6A8A]">
+                Mở tranh chấp mới
+              </h5>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">Lý do</label>
+                <Select
+                  value={disputeReason}
+                  onChange={(val) => setDisputeReason(val)}
+                  className="w-full"
+                  options={[
+                    { value: 'MISMATCHED_PLANT', label: 'Sai cây / Không đúng mô tả' },
+                    { value: 'DAMAGE', label: 'Cây bị hư hại' },
+                    { value: 'PICKUP', label: 'Vấn đề giao nhận' },
+                    { value: 'OTHER', label: 'Lý do khác' },
+                  ]}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">Mô tả chi tiết</label>
+                <Input.TextArea
+                  rows={3}
+                  maxLength={4000}
+                  value={disputeDescription}
+                  onChange={(e) => setDisputeDescription(e.target.value)}
+                  placeholder="Mô tả rõ tình trạng sai lệch, hư hại hoặc vấn đề gặp phải..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">
+                  Ảnh bằng chứng (tối thiểu 1 ảnh)
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  {disputeEvidence.map((ev, idx) => (
+                    <div key={`new-ev-${idx}`} className="relative">
+                      <Image
+                        src={ev.photoUrl}
+                        alt="Bằng chứng"
+                        width={68}
+                        height={68}
+                        className="rounded-lg object-cover border border-gray-200"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setDisputeEvidence((prev) => prev.filter((_, i) => i !== idx))}
+                        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center shadow"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-[#6027D2] text-[#6027D2] text-xs font-semibold cursor-pointer hover:bg-[#F8F6FC]">
+                    <UploadOutlined />
+                    <span>{disputeUploading ? 'Đang tải...' : 'Tải ảnh bằng chứng'}</span>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      disabled={disputeUploading}
+                      onChange={handleUploadDisputePhoto}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button onClick={() => setDisputeModalOpen(false)} disabled={disputeSubmitting}>
+                  Đóng
+                </Button>
+                <Button
+                  type="primary"
+                  danger
+                  loading={disputeSubmitting}
+                  onClick={handleSubmitDispute}
+                  className="!rounded-xl !font-semibold"
+                >
+                  Gửi tranh chấp
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       </Modal>
     </div>
