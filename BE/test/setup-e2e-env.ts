@@ -33,5 +33,11 @@ for (const [key, value] of Object.entries(defaults)) {
   const override = process.env[`E2E_${key}`];
   process.env[key] = override ?? value;
 }
-// Không kế thừa DATABASE_URL (Neon/prod) từ shell — e2e luôn dùng DB_* ở trên.
-delete process.env.DATABASE_URL;
+// Không kế thừa DATABASE_URL (Render/Neon/prod) — e2e luôn dùng DB_* ở trên.
+// KHÔNG được chỉ `delete`: ConfigModule nạp lại DATABASE_URL từ file .env → TypeORM nối DB deploy
+// rồi synchronize(true) xoá sạch bảng, trong khi chốt `_test` chỉ kiểm DB_NAME (12/11/2026).
+process.env.DATABASE_URL =
+  `postgresql://${encodeURIComponent(process.env.DB_USERNAME ?? '')}:` +
+  `${encodeURIComponent(process.env.DB_PASSWORD ?? '')}@${process.env.DB_HOST}:` +
+  `${process.env.DB_PORT}/${process.env.DB_NAME}`;
+process.env.DB_SSL = process.env.E2E_DB_SSL ?? 'false';
