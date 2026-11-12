@@ -14,7 +14,10 @@ import { CareReport } from '../care-reports/entities/care-report.entity';
 import { CryptoService } from '../crypto/crypto.service';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
+import { loadCustomerSettlement } from '../payments/customer-settlement';
+import { Disbursement } from '../payments/entities/disbursement.entity';
 import { PaymentComponent } from '../payments/entities/payment-component.entity';
+import { customerFeeFor } from '../payments/settlement';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { ServicePackage } from '../providers/entities/service-package.entity';
 import { DistanceService } from './distance.service';
@@ -513,9 +516,11 @@ export class OrdersService {
     const assessmentsByHandover = await this.loadAssessments(
       [handover?.id, returnHandover?.id].filter((id): id is string => !!id),
     );
+    const settlement = await this.loadSettlement(order, role);
 
     return {
       ...order,
+      settlement,
       plants: order.plants.map((plant) => {
         const plantPhotos = photos.filter((photo) => photo.plantId === plant.id);
         return {
@@ -580,6 +585,44 @@ export class OrdersService {
         reportFrequencyDays: order.reportFrequencySnapshot,
         submittedCount: submittedReports,
       }),
+    };
+  }
+
+  /**
+   * Khối tiền của đơn cho màn chi tiết — ĐỌC số đã lưu (hoá đơn, sổ ký quỹ, lệnh chi), không tính lại.
+   * Phần khách thấy: `loadCustomerSettlement` (chưa có hoá đơn → null).
+   * Phần của vườn chỉ vườn thấy, và chỉ khi đơn COMPLETED.
+   * Đơn mẫu 2 cây × 200.000, phí lấy cây 60.000: khách 484.000; vườn bị trừ 48.000, nhận 412.000.
+   */
+  private async loadSettlement(order: ServiceOrder, role: string) {
+    const customerPart = await loadCustomerSettlement(
+      this.dataSource.manager,
+      order.id,
+    );
+    if (!customerPart || role !== 'PROVIDER' || order.status !== 'COMPLETED') {
+      return customerPart;
+    }
+
+    const [packagePrice, payout] = await Promise.all([
+      this.dataSource.getRepository(PaymentComponent).findOne({
+        where: { serviceOrderId: order.id, componentType: 'PACKAGE_PRICE' },
+      }),
+      this.dataSource.getRepository(Disbursement).findOne({
+        where: { serviceOrderId: order.id, type: 'PAYOUT' },
+      }),
+    ]);
+    return {
+      ...customerPart,
+      serviceAmount: order.finalTotal ?? order.provisionalTotal,
+      providerFee: packagePrice?.providerFee ?? '0',
+      providerReceives: payout?.amount ?? '0',
+      payout: payout
+        ? {
+            status: payout.status,
+            eligibleAt: payout.eligibleAt,
+            paidAt: payout.paidAt,
+          }
+        : null,
     };
   }
 
@@ -973,11 +1016,15 @@ export class OrdersService {
       agreement.status = 'SIGNED';
       await manager.save(agreement);
 
+      // Phí dịch vụ 6% khách trả thêm, chỉ tính trên giá gói (không trên phí lấy cây).
+      // Chốt vào component lúc ký → QR/webhook đọc lại đúng số này, đổi tỷ lệ sau không ảnh hưởng đơn đã ký.
+      const customerFee = customerFeeFor(BigInt(locked.provisionalTotal));
       const components = [
         manager.create(PaymentComponent, {
           serviceOrderId: locked.id,
           componentType: 'PACKAGE_PRICE' as const,
           amount: locked.provisionalTotal,
+          customerFee: customerFee.toString(),
           status: 'PENDING' as const,
         }),
       ];
@@ -998,9 +1045,15 @@ export class OrdersService {
       await manager.save(locked);
 
       const amountDue = (
-        BigInt(locked.provisionalTotal) + BigInt(locked.pickupFeeSnapshot)
+        BigInt(locked.provisionalTotal) +
+        customerFee +
+        BigInt(locked.pickupFeeSnapshot)
       ).toString();
-      return { status: locked.status, amountDue };
+      return {
+        status: locked.status,
+        amountDue,
+        customerFee: customerFee.toString(),
+      };
     });
   }
 
@@ -1129,11 +1182,11 @@ const ORDER_VISIBLE_TO_PROVIDER = [
   'HANDOVER_IN_PROGRESS',
   'HANDOVER_AWAITING_CONFIRM',
   'IN_CARE',
-  'REJECTED',
-  'CANCELLED',
-] as const;
   'RETURN_IN_PROGRESS',
   'RETURN_AWAITING_CONFIRM',
   'COMPLETED',
+  'REJECTED',
   'EXPIRED',
+  'CANCELLED',
   'DISPUTED',
+] as const;

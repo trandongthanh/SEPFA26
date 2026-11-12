@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CustomersModule } from '../customers/customers.module';
+import { Disbursement } from '../payments/entities/disbursement.entity';
 import { EscrowLedger } from '../payments/entities/escrow-ledger.entity';
 import { PaymentComponent } from '../payments/entities/payment-component.entity';
 import { ProvidersModule } from '../providers/providers.module';
@@ -31,7 +32,8 @@ import { ContractTemplateService } from './contract-template.service';
 // Import Customers/Providers module để lấy repo profile + package (2 module đó export TypeOrmModule).
 // PaymentComponent/EscrowLedger đăng ký thẳng ở đây (sinh khoản phải trả lúc ký + bút toán REFUND
 // lúc confirm bàn giao đều phải CÙNG transaction với đơn) — không import PaymentsModule để tránh
-// phụ thuộc vòng (PaymentsModule đã import OrdersModule).
+// phụ thuộc vòng (PaymentsModule đã import OrdersModule). Disbursement cũng vậy: lệnh chi tạo
+// cùng transaction khách xác nhận nhận lại cây (settle-order.ts).
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -47,6 +49,7 @@ import { ContractTemplateService } from './contract-template.service';
       AssessmentPhoto,
       PaymentComponent,
       EscrowLedger,
+      Disbursement,
       ShippingRate,
       OrderDispute,
     ]),

@@ -2,6 +2,9 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CustomersModule } from '../customers/customers.module';
 import { OrdersModule } from '../orders/orders.module';
+import { AdminDisbursementsController } from './admin-disbursements.controller';
+import { DisbursementsService } from './disbursements.service';
+import { Disbursement } from './entities/disbursement.entity';
 import { EscrowLedger } from './entities/escrow-ledger.entity';
 import { PaymentComponent } from './entities/payment-component.entity';
 import { PaymentTransaction } from './entities/payment-transaction.entity';
@@ -19,12 +22,17 @@ import { WebhooksController } from './webhooks.controller';
       PaymentTransaction,
       EscrowLedger,
       PaymentWebhookLog,
+      Disbursement,
     ]),
     OrdersModule,
     CustomersModule,
   ],
-  controllers: [PaymentsController, WebhooksController],
-  providers: [PaymentsService],
+  controllers: [
+    PaymentsController,
+    WebhooksController,
+    AdminDisbursementsController,
+  ],
+  providers: [PaymentsService, DisbursementsService],
   exports: [TypeOrmModule],
 })
 export class PaymentsModule {}

@@ -20,6 +20,7 @@ import { EscrowLedger } from './entities/escrow-ledger.entity';
 import { PaymentComponent } from './entities/payment-component.entity';
 import { PaymentTransaction } from './entities/payment-transaction.entity';
 import { PaymentWebhookLog } from './entities/payment-webhook-log.entity';
+import { escrowBalance } from './escrow-balance';
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -246,7 +247,7 @@ export class PaymentsService {
       }
 
       // DEPOSIT toàn bộ tiền thật nhận (kể cả chuyển dư) — sổ phản ánh tiền thật.
-      const lastBalance = await this.lastEscrowBalance(manager, order.id);
+      const lastBalance = await escrowBalance(manager, order.id);
       await manager.save(
         manager.create(EscrowLedger, {
           serviceOrderId: order.id,
@@ -310,26 +311,19 @@ export class PaymentsService {
     }
   }
 
-  // "Còn phải trả" = Σ component PENDING — một nguồn sự thật duy nhất.
+  // "Còn phải trả" = Σ (amount + customer_fee) của component PENDING — một nguồn sự thật duy nhất,
+  // QR và webhook dùng chung. Phí 6% đã chốt vào component lúc ký (đơn ký trước CP2 có customer_fee = 0).
   private async sumPendingComponents(orderId: string): Promise<string> {
     const components = await this.componentRepo.find({
       where: { serviceOrderId: orderId, status: 'PENDING' },
     });
     return components
-      .reduce((sum, component) => sum + BigInt(component.amount), 0n)
+      .reduce(
+        (sum, component) =>
+          sum + BigInt(component.amount) + BigInt(component.customerFee),
+        0n,
+      )
       .toString();
-  }
-
-  // Số dư escrow hiện tại của đơn = balance_after của bút toán mới nhất.
-  private async lastEscrowBalance(
-    manager: { getRepository: DataSource['getRepository'] },
-    orderId: string,
-  ): Promise<bigint> {
-    const last = await manager.getRepository(EscrowLedger).findOne({
-      where: { serviceOrderId: orderId },
-      order: { createdAt: 'DESC' },
-    });
-    return last ? BigInt(last.balanceAfter) : 0n;
   }
 
   // So sánh constant-time (chống timing attack dò key) — format SePay: "Apikey <key>".
