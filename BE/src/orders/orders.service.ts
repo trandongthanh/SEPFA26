@@ -1119,7 +1119,8 @@ export class OrdersService {
   }
 }
 
-// Vườn chỉ thấy đơn từ PENDING_PROVIDER trở đi (DRAFT là của riêng khách).
+// Vườn thấy mọi đơn từ PENDING_PROVIDER trở đi (DRAFT là của riêng khách).
+// Thiếu trạng thái ở đây = đơn biến mất khỏi danh sách của vườn (B19: trả cây, COMPLETED).
 const ORDER_VISIBLE_TO_PROVIDER = [
   'PENDING_PROVIDER',
   'AGREEMENT_PENDING',
@@ -1131,3 +1132,8 @@ const ORDER_VISIBLE_TO_PROVIDER = [
   'REJECTED',
   'CANCELLED',
 ] as const;
+  'RETURN_IN_PROGRESS',
+  'RETURN_AWAITING_CONFIRM',
+  'COMPLETED',
+  'EXPIRED',
+  'DISPUTED',
