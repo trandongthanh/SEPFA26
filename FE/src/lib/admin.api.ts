@@ -137,4 +137,57 @@ export const adminApi = {
     const res = await api.patch(`/api/v1/admin/users/${userId}/status`, { status });
     return res.data;
   },
+
+  // --- Giải ngân cho nhà vườn (Disbursements) ---
+  listDisbursements: async (params?: {
+    status?: 'PENDING' | 'PAID';
+    page?: number;
+    limit?: number;
+  }) => {
+    const res = await api.get<DisbursementListResponse>('/api/v1/admin/disbursements', {
+      params,
+    });
+    return res.data;
+  },
+
+  markDisbursementPaid: async (
+    id: string,
+    payload: { transferCode: string; note?: string },
+  ) => {
+    const res = await api.post<DisbursementItem>(
+      `/api/v1/admin/disbursements/${id}/mark-paid`,
+      payload,
+    );
+    return res.data;
+  },
 };
+
+export type DisbursementStatus = 'PENDING' | 'PAID';
+
+export interface DisbursementItem {
+  id: string;
+  orderId: string;
+  orderCode: string;
+  providerId: string;
+  providerName: string;
+  type: 'PAYOUT' | 'REFUND';
+  amount: string | number;
+  eligibleAt: string;
+  isEligible: boolean;
+  status: DisbursementStatus;
+  bank: {
+    bankName: string;
+    bankAccount: string;
+    bankHolder: string;
+  } | null;
+  transferCode: string | null;
+  paidAt: string | null;
+  note: string | null;
+}
+
+export interface DisbursementListResponse {
+  data: DisbursementItem[];
+  total: number;
+  page: number;
+  limit: number;
+}

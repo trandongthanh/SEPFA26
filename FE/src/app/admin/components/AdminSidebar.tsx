@@ -85,10 +85,10 @@ export default function AdminSidebar() {
       onClick: comingSoon,
     },
     {
-      key: '/admin/transactions',
+      key: '/admin/disbursements',
       icon: <ShoppingOutlined />,
-      label: 'Giao dịch',
-      onClick: comingSoon,
+      label: 'Giải ngân',
+      onClick: () => router.push('/admin/disbursements'),
     },
     {
       key: '/admin/categories',
