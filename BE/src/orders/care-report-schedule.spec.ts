@@ -43,7 +43,7 @@ describe('computeCareReportSchedule', () => {
     expect(r.isReportOverdue).toBe(false);
   });
 
-  it('quá hạn chăm: số kỳ chỉ tính tới care_due_at, kỳ tới không vượt care_due_at', () => {
+  it('quá hạn chăm: tính cả kỳ cuối ngắn (30 ngày / 7 → 5 kỳ), kỳ tới không vượt care_due_at', () => {
     const r = computeCareReportSchedule({
       status: 'IN_CARE',
       careStartedAt: start,
@@ -52,8 +52,23 @@ describe('computeCareReportSchedule', () => {
       submittedCount: 4,
       now: new Date(start.getTime() + 40 * DAY),
     })!;
-    expect(r.expectedCount).toBe(4);
+    expect(r.expectedCount).toBe(5);
+    expect(r.totalPeriods).toBe(5);
+    expect(r.isReportOverdue).toBe(true);
     expect(r.nextReportDueAt).toEqual(due);
+  });
+
+  it('đã nộp đủ mọi kỳ → không trễ, không còn kỳ tới', () => {
+    const r = computeCareReportSchedule({
+      status: 'IN_CARE',
+      careStartedAt: start,
+      careDueAt: due,
+      reportFrequencyDays: 7,
+      submittedCount: 5,
+      now: new Date(start.getTime() + 40 * DAY),
+    })!;
+    expect(r.isReportOverdue).toBe(false);
+    expect(r.nextReportDueAt).toBeNull();
   });
 
   it('đơn đã rời IN_CARE → không trễ, không có kỳ tới', () => {
