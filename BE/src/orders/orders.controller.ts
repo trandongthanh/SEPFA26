@@ -262,10 +262,11 @@ export class OrdersController {
   @HttpCode(200)
   @ApiOperation({
     summary:
-      'Khách xác nhận đã nhận lại cây (RETURN_AWAITING_CONFIRM → COMPLETED)',
+      'Khách xác nhận đã nhận lại cây (RETURN_AWAITING_CONFIRM → COMPLETED), chia tiền + tạo lệnh chi cho vườn; settlement trả về chỉ gồm phần của khách',
   })
   @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
   @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
+  @ApiResponse({ status: 500, description: 'ESCROW_BALANCE_INSUFFICIENT' })
   confirmReturn(
     @CurrentUser() user: CurrentUserData,
     @Param('orderId', ParseUUIDPipe) orderId: string,

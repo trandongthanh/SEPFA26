@@ -22,7 +22,9 @@ export interface DraftOrder {
   orderId: string;
   orderCode: string;
   plantIds: string[];
-  // provisional_total + pickup_fee_snapshot = số khách phải chuyển
+  // Phí dịch vụ 6% của provisional_total (sinh lúc đủ 2 chữ ký)
+  customerFee: string;
+  // provisional_total + customerFee + pickup_fee_snapshot = số khách phải chuyển
   amountDue: string;
 }
 
@@ -61,6 +63,28 @@ export class OrderSeed {
       accountId: body.account.id,
       auth: { Authorization: `Bearer ${body.accessToken}` },
     };
+  }
+
+  /** Admin không tự đăng ký được → đăng ký khách, đổi role bằng SQL, đăng nhập lại lấy token ADMIN. */
+  async admin(): Promise<{
+    accountId: string;
+    auth: { Authorization: string };
+  }> {
+    const { accountId } = await this.account('CUSTOMER');
+    await this.ctx.dataSource.query(
+      `UPDATE accounts SET role = 'ADMIN', status = 'ACTIVE' WHERE id = $1`,
+      [accountId],
+    );
+    const [{ email }] = (await this.ctx.dataSource.query(
+      'SELECT email FROM accounts WHERE id = $1',
+      [accountId],
+    )) as { email: string }[];
+    const res = await request(this.http)
+      .post(`${API}/auth/login`)
+      .send({ email, password: PASSWORD })
+      .expect(200);
+    const body = res.body as { accessToken: string };
+    return { accountId, auth: { Authorization: `Bearer ${body.accessToken}` } };
   }
 
   async customer(): Promise<OrderActor> {
@@ -138,11 +162,14 @@ export class OrderSeed {
         );
       }
     }
+    // Số cố định (6% của 200.000 × n chia hết) để test đọc như đơn mẫu: 2 cây → 24.000, tổng 484.000.
+    const customerFee = (provisional * 6) / 100;
     return {
       orderId,
       orderCode,
       plantIds,
-      amountDue: String(provisional + 60000),
+      customerFee: String(customerFee),
+      amountDue: String(provisional + customerFee + 60000),
     };
   }
 
@@ -151,10 +178,7 @@ export class OrderSeed {
     const config = this.ctx.app.get(ConfigService);
     return request(this.http)
       .post(`${API}/webhooks/sepay`)
-      .set(
-        'Authorization',
-        `Apikey ${config.get<string>('SEPAY_WEBHOOK_KEY')}`,
-      )
+      .set('Authorization', `Apikey ${config.get<string>('SEPAY_WEBHOOK_KEY')}`)
       .send({
         id,
         gateway: 'MBBank',

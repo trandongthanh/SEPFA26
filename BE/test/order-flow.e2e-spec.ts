@@ -119,6 +119,7 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
     expect(second.body).toEqual({
       status: 'AWAITING_PAYMENT',
       amountDue: c.order.amountDue,
+      customerFee: c.order.customerFee,
     });
 
     const paid = await pay(c);
@@ -236,6 +237,72 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
     expect(count).toBe(2); // PACKAGE_PRICE + PICKUP_FEE
   });
 
+  it('phí 6%: QR đòi 484.000; chuyển số cũ 460.000 bị thiếu tiền; chuyển đủ → PAID, DEPOSIT 484.000', async () => {
+    const c = await setup();
+    await submit(c);
+    await accept(c);
+    const signed = await signBoth(c);
+    expect(signed.body).toEqual({
+      status: 'AWAITING_PAYMENT',
+      amountDue: '484000',
+      customerFee: '24000',
+    });
+
+    const qr = await post(
+      `${c.order.orderId}/payment/qr`,
+      c.customer.auth,
+    ).expect(200);
+    // Mobile đọc đúng 6 field này — chỉ số tiền đổi.
+    expect(Object.keys(qr.body).sort()).toEqual(
+      [
+        'amount',
+        'bankAccountName',
+        'bankAccountNumber',
+        'bankBin',
+        'qrImageUrl',
+        'transferContent',
+      ].sort(),
+    );
+    expect(qr.body.amount).toBe('484000');
+    expect(qr.body.qrImageUrl).toContain('amount=484000');
+    expect(qr.body.transferContent).toBe(c.order.orderCode);
+
+    const old = await seed.webhook(c.order.orderCode, '460000').expect(200);
+    expect(old.body).toMatchObject({ ignored: 'INSUFFICIENT_AMOUNT' });
+    expect(await statusOf(c.order.orderId, c.customer.auth)).toBe(
+      'AWAITING_PAYMENT',
+    );
+
+    const paid = await seed.webhook(c.order.orderCode, '484000').expect(200);
+    expect(paid.body).toMatchObject({ success: true, status: 'PAID' });
+    const ledger = (await ctx.dataSource.query(
+      'SELECT entry_type, amount, balance_after FROM escrow_ledger WHERE service_order_id = $1',
+      [c.order.orderId],
+    )) as { entry_type: string; amount: string; balance_after: string }[];
+    expect(ledger).toEqual([
+      { entry_type: 'DEPOSIT', amount: '484000', balance_after: '484000' },
+    ]);
+    const components = (await ctx.dataSource.query(
+      `SELECT component_type, amount, customer_fee, status FROM payment_components
+        WHERE service_order_id = $1 ORDER BY component_type`,
+      [c.order.orderId],
+    )) as Record<string, string>[];
+    expect(components).toEqual([
+      {
+        component_type: 'PACKAGE_PRICE',
+        amount: '400000',
+        customer_fee: '24000',
+        status: 'PAID',
+      },
+      {
+        component_type: 'PICKUP_FEE',
+        amount: '60000',
+        customer_fee: '0',
+        status: 'PAID',
+      },
+    ]);
+  });
+
   it('webhook: thiếu tiền → bỏ qua, đơn đứng yên; gửi lại cùng id → duplicated; đơn đã PAID → bỏ qua', async () => {
     const c = await setup();
     await submit(c);
@@ -321,9 +388,11 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
         WHERE service_order_id = $1 ORDER BY created_at`,
       [c.order.orderId],
     )) as { entry_type: string; amount: string; balance_after: string }[];
+    // 484.000 = 400.000 + 6% (24.000) + 60.000. REFUND chưa hoàn phần 6% của cây bị từ chối
+    // (đã ghi nhận, chờ mentor) nên số dư còn 284.000.
     expect(ledger).toEqual([
-      { entry_type: 'DEPOSIT', amount: '460000', balance_after: '460000' },
-      { entry_type: 'REFUND', amount: '-200000', balance_after: '260000' },
+      { entry_type: 'DEPOSIT', amount: '484000', balance_after: '484000' },
+      { entry_type: 'REFUND', amount: '-200000', balance_after: '284000' },
     ]);
   });
 });

@@ -11,6 +11,9 @@ import { createHash } from 'crypto';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { EscrowLedger } from '../payments/entities/escrow-ledger.entity';
+import { escrowBalance } from '../payments/escrow-balance';
+import { loadCustomerSettlement } from '../payments/customer-settlement';
+import { settleCompletedOrder } from '../payments/settle-order';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { AssessPlantDto } from './dto/assess-plant.dto';
 import { AssessReturnPlantDto } from './dto/assess-return-plant.dto';
@@ -318,7 +321,7 @@ export class HandoverService {
       // Cây bị loại chốt hẳn tại đây → ghi nợ hoàn phần đó vào sổ escrow.
       if (rejectedCount > 0) {
         const refund = BigInt(locked.basePriceSnapshot) * BigInt(rejectedCount);
-        const lastBalance = await this.lastEscrowBalance(manager, order.id);
+        const lastBalance = await escrowBalance(manager, order.id);
         await manager.save(
           manager.create(EscrowLedger, {
             serviceOrderId: order.id,
@@ -503,7 +506,8 @@ export class HandoverService {
 
   /**
    * POST /orders/:id/return/confirm — khách xác nhận đã nhận lại cây (→ COMPLETED).
-   * Không chữ ký, không bút toán tiền: giải ngân cho vườn làm sau.
+   * Không chữ ký. Cùng transaction: chia tiền (PLATFORM_FEE + PAYOUT, sổ về 0) và tạo
+   * lệnh chi chờ 3 ngày (settle-order.ts) — lỗi bất kỳ bước nào thì đơn vẫn chờ khách xác nhận.
    */
   async confirmReturn(accountId: string, orderId: string) {
     const order = await this.getOrderAsCustomer(accountId, orderId);
@@ -533,7 +537,11 @@ export class HandoverService {
         handover.id,
         'CONFIRMED',
       );
-      return { status: locked.status, completedAt };
+      await settleCompletedOrder(manager, locked, completedAt);
+      // Route của KHÁCH → chỉ trả phần khách được thấy (cùng hình dạng `settlement` trong chi tiết đơn);
+      // phí 12%, phí nền tảng, số vườn nhận không trả ở đây.
+      const settlement = await loadCustomerSettlement(manager, locked.id);
+      return { status: locked.status, completedAt, settlement };
     });
   }
 
@@ -602,17 +610,5 @@ export class HandoverService {
       throw new InternalServerErrorException('HANDOVER_NOT_FOUND');
     }
     return handover;
-  }
-
-  // Số dư escrow hiện tại của đơn = balance_after của bút toán mới nhất.
-  private async lastEscrowBalance(
-    manager: EntityManager,
-    orderId: string,
-  ): Promise<bigint> {
-    const last = await manager.getRepository(EscrowLedger).findOne({
-      where: { serviceOrderId: orderId },
-      order: { createdAt: 'DESC' },
-    });
-    return last ? BigInt(last.balanceAfter) : 0n;
   }
 }
