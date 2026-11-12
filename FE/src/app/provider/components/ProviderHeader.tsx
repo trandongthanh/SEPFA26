@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { Avatar, Input, message } from 'antd';
 import { BellOutlined, MailOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
 import { ProviderProfileResponse } from '@/lib/provider.api';
@@ -53,9 +54,15 @@ export default function ProviderHeader({ profile, pendingCount = 0 }: ProviderHe
 
         {/* Profile User Avatar */}
         <div className="flex items-center gap-2 pl-2 border-l border-[#ECE7FA]">
-          <Avatar size={36} className="!bg-[#6027D2] text-white font-semibold shrink-0">
-            {profile?.displayName?.charAt(0) || user?.fullName?.charAt(0) || 'P'}
-          </Avatar>
+          <Link
+            href="/provider/profile"
+            title="Hồ sơ nhà vườn"
+            className="rounded-full transition-all hover:ring-2 hover:ring-[#DDD6FE]"
+          >
+            <Avatar size={36} className="!bg-[#6027D2] text-white font-semibold shrink-0 cursor-pointer">
+              {profile?.displayName?.charAt(0) || user?.fullName?.charAt(0) || 'P'}
+            </Avatar>
+          </Link>
         </div>
       </div>
     </header>

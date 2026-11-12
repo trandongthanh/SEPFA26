@@ -77,6 +77,21 @@ export type OrderStatus =
   | 'CANCELLED'
   | 'DISPUTED';
 
+export interface CareReportSchedule {
+  nextReportDueAt: string | null;
+  isReportOverdue: boolean;
+  submittedCount: number;
+  expectedCount: number;
+  totalPeriods: number;
+}
+
+export interface OrderPlantSummary {
+  id: string;
+  name: string;
+  speciesName?: string | null;
+  handoverDecision?: string | null;
+}
+
 export interface OrderItem {
   id: string;
   orderCode: string;
@@ -85,6 +100,8 @@ export interface OrderItem {
   finalTotal?: string;
   scheduledPickupAt: string;
   careDueAt?: string | null;
+  careReportSchedule?: CareReportSchedule | null;
+  plants?: OrderPlantSummary[];
   customer?: {
     account?: {
       fullName?: string;
@@ -125,45 +142,111 @@ export interface CreatePackagePayload {
   isActive?: boolean;
 }
 
+export type SubstrateMoisture = 'LOW' | 'MEDIUM' | 'HIGH';
+export type PartCondition = 'GOOD' | 'NORMAL' | 'POOR';
+export type OverallHealth = 'GOOD' | 'AVERAGE' | 'POOR';
+export type CareEvidenceType = 'OVERVIEW' | 'LEAF' | 'STEM' | 'ROOT';
+
+export interface CareReportPhotoItem {
+  id?: string;
+  evidenceType: CareEvidenceType;
+  photoUrl: string;
+  caption?: string | null;
+}
+
+export interface CareReportPlantItem {
+  id?: string;
+  plant: {
+    id: string;
+    name: string | null;
+    speciesName: string | null;
+  };
+  substrateMoisture: SubstrateMoisture;
+  leafCondition: PartCondition;
+  rootCondition: PartCondition;
+  stemCondition: PartCondition;
+  hasPestDisease: boolean;
+  overallHealth: OverallHealth;
+  note?: string | null;
+  leafLengthCm?: number | null;
+  leafCount?: number | null;
+  newRootLengthCm?: number | null;
+  newShootCount?: number | null;
+  flowerSpikeCount?: number | null;
+  budCount?: number | null;
+  flowerCount?: number | null;
+  photos: CareReportPhotoItem[];
+}
+
 export interface CareReportItem {
   id: string;
-  serviceOrderId?: string;
-  orderId?: string;
-  notes?: string;
-  plantNameSnapshot?: string;
-  plantCodeSnapshot?: string;
-  weather?: string;
-  substrateStatus?: string;
-  rootStatus?: string;
-  leafStatus?: string;
-  createdAt?: string;
+  serviceOrderId: string;
+  periodIndex: number;
+  periodStart: string;
+  periodEnd: string;
+  submittedAt: string;
+  isLate: boolean;
+  airTemperature: number;
+  airHumidity: number;
+  lightIntensity: number;
+  watered: boolean;
+  waterAmountMl?: number | null;
+  fertilized: boolean;
+  fertilizerType?: string | null;
+  otherCareNote?: string | null;
+  waterPh?: number | null;
+  waterEc?: number | null;
+  plants: CareReportPlantItem[];
+}
+
+export interface CreateCareReportPhotoPayload {
+  evidenceType: CareEvidenceType;
+  photoUrl: string;
+  caption?: string;
+}
+
+export interface CreateCareReportPlantPayload {
+  plantId: string;
+  substrateMoisture: SubstrateMoisture;
+  leafCondition: PartCondition;
+  rootCondition: PartCondition;
+  stemCondition: PartCondition;
+  hasPestDisease: boolean;
+  overallHealth: OverallHealth;
+  note?: string;
+  leafLengthCm?: number;
+  leafCount?: number;
+  newRootLengthCm?: number;
+  newShootCount?: number;
+  flowerSpikeCount?: number;
+  budCount?: number;
+  flowerCount?: number;
+  photos: CreateCareReportPhotoPayload[];
 }
 
 export interface CreateCareReportPayload {
   serviceOrderId: string;
+  airTemperature: number;
+  airHumidity: number;
+  lightIntensity: number;
+  watered: boolean;
+  waterAmountMl?: number;
+  fertilized: boolean;
+  fertilizerType?: string;
+  otherCareNote?: string;
+  waterPh?: number;
+  waterEc?: number;
+  plants: CreateCareReportPlantPayload[];
+}
+
+export interface CreateCareReportResponse {
+  id: string;
+  serviceOrderId: string;
+  periodIndex: number;
   periodStart: string;
   periodEnd: string;
-  plantNameSnapshot: string;
-  plantCodeSnapshot: string;
-  plotPositionSnapshot: string;
-  weather: 'SUNNY' | 'RAINY' | 'OVERCAST' | 'NORMAL';
-  temperatureMin: number;
-  temperatureMax: number;
-  humidityMin: number;
-  humidityMax: number;
-  substrateStatus: 'DRY_READY_TO_WATER' | 'MOIST_GOOD' | 'WATERLOGGED_RISK';
-  rootStatus: 'ROOTS_HEALTHY_GROWING' | 'ROOTS_STABLE' | 'ROOTS_AFFECTED';
-  rootAffectedCount?: number;
-  leafStatus: 'LEAVES_FIRM_AND_HEALTHY' | 'STEM_TURGID_GOOD' | 'BASE_LEAVES_YELLOW_REMOVED' | 'LEAF_ROT_BLACKSPOT_BURN';
-  shootStatus: 'SHOOTS_UNIFORM' | 'FLOWERS_UNIFORM';
-  wateringCount: number;
-  nutritionNote?: string;
-  diseasePrevention: 'DISINFECT_GARDEN' | 'SPRAY_BACTERIA_FUNGUS' | 'SNAIL_TREATMENT' | 'NONE';
-  evidences: {
-    evidenceType: 'OVERVIEW' | 'ROOT' | 'LEAF_OR_SHOOT';
-    photoUrl: string;
-    caption?: string;
-  }[];
+  isLate: boolean;
+  submittedAt: string;
 }
 
 export const providerApi = {
@@ -233,14 +316,21 @@ export const providerApi = {
   },
 
   // Danh sách báo cáo chăm sóc
-  listCareReports: async () => {
-    const res = await api.get<{ items?: CareReportItem[]; total?: number } | CareReportItem[]>('/api/v1/care-reports');
+  listCareReports: async (serviceOrderId?: string) => {
+    const params = serviceOrderId ? { serviceOrderId } : undefined;
+    const res = await api.get<CareReportItem[] | { items?: CareReportItem[] }>('/api/v1/care-reports', { params });
+    return Array.isArray(res.data) ? res.data : res.data?.items ?? [];
+  },
+
+  // Chi tiết báo cáo chăm sóc
+  getCareReport: async (id: string) => {
+    const res = await api.get<CareReportItem>(`/api/v1/care-reports/${id}`);
     return res.data;
   },
 
   // Nộp báo cáo chăm sóc mới
   createCareReport: async (payload: CreateCareReportPayload) => {
-    const res = await api.post<CareReportItem>('/api/v1/care-reports', payload);
+    const res = await api.post<CreateCareReportResponse>('/api/v1/care-reports', payload);
     return res.data;
   },
 
@@ -290,11 +380,78 @@ export const providerApi = {
     return res.data;
   },
 
+  // Bắt đầu phiên trả cây (POST /api/v1/orders/:orderId/return/start)
+  startReturn: async (orderId: string) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/return/start`);
+    return res.data;
+  },
+
+  // Ghi nhận tình trạng từng cây lúc trả (POST /api/v1/orders/:orderId/return/plants/:plantId/assess)
+  assessReturnPlant: async (
+    orderId: string,
+    plantId: string,
+    payload: {
+      checklist: Record<string, unknown>;
+      note?: string;
+      photos: { photoUrl: string; caption?: string; gpsLat?: number; gpsLng?: number }[];
+    }
+  ) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/return/plants/${plantId}/assess`, payload);
+    return res.data;
+  },
+
+  // Hoàn tất bàn giao trả cây (POST /api/v1/orders/:orderId/return/complete)
+  completeReturn: async (orderId: string) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/return/complete`);
+    return res.data;
+  },
+
+  // Huỷ phiên trả để hẹn lại (POST /api/v1/orders/:orderId/return/cancel)
+  cancelReturn: async (orderId: string, reason: string) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/return/cancel`, { reason });
+    return res.data;
+  },
+
   // Xem hợp đồng điện tử đầy đủ (GET /api/v1/orders/:orderId/agreement/contract)
   getContract: async (orderId: string) => {
     const res = await api.get(`/api/v1/orders/${orderId}/agreement/contract`);
     return res.data;
   },
+
+  // Danh sách tranh chấp của đơn (GET /api/v1/orders/:orderId/disputes)
+  listDisputes: async (orderId: string) => {
+    const res = await api.get<OrderDisputeItem[]>(`/api/v1/orders/${orderId}/disputes`);
+    return Array.isArray(res.data) ? res.data : [];
+  },
+
+  // Mở tranh chấp mới (POST /api/v1/orders/:orderId/disputes)
+  openDispute: async (
+    orderId: string,
+    payload: {
+      reason: DisputeReason;
+      description: string;
+      evidence: Array<{ photoUrl: string; caption?: string }>;
+    },
+  ) => {
+    const res = await api.post<OrderDisputeItem>(`/api/v1/orders/${orderId}/disputes`, payload);
+    return res.data;
+  },
 };
+
+export type DisputeReason = 'MISMATCHED_PLANT' | 'DAMAGE' | 'PICKUP' | 'OTHER';
+
+export interface OrderDisputeItem {
+  id: string;
+  serviceOrderId: string;
+  openedByAccountId: string;
+  status: 'OPEN' | 'UNDER_REVIEW' | 'RESOLVED' | 'REJECTED';
+  reason: DisputeReason | string;
+  description: string;
+  evidence: Array<{ photoUrl: string; caption?: string }>;
+  resolution: string | null;
+  resolvedByAccountId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 

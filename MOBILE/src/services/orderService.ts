@@ -34,7 +34,16 @@ export interface OrderPlantItem {
   speciesName?: string;
   isValueDeclared?: boolean;
   declaredValue?: string;
+  handoverDecision?: string | null;
   initialPhotos?: OrderPlantPhoto[];
+}
+
+export interface CareReportSchedule {
+  nextReportDueAt: string | null;
+  isReportOverdue: boolean;
+  submittedCount: number;
+  expectedCount: number;
+  totalPeriods: number;
 }
 
 export interface ServicePackageInfo {
@@ -87,6 +96,20 @@ export interface OrderItem {
     status: string;
     customerConfirmDueAt?: string;
   } | null;
+  returnHandover?: {
+    status: string;
+    customerConfirmDueAt?: string;
+    confirmedAt?: string | null;
+    assessments?: Array<{
+      id: string;
+      plantId: string;
+      checklist?: Record<string, any>;
+      note?: string | null;
+      photos?: Array<{ id?: string; photoUrl: string; caption?: string | null }>;
+    }>;
+  } | null;
+  isReturnOverdue?: boolean;
+  careReportSchedule?: CareReportSchedule | null;
 }
 
 export interface PaginatedOrdersResponse {
@@ -207,5 +230,52 @@ export const orderService = {
     const response = await apiClient.post(`/orders/${orderId}/handover/confirm`, {});
     return response.data;
   },
+
+  /**
+   * Khách xác nhận đã nhận lại cây (POST /orders/:orderId/return/confirm)
+   */
+  async confirmReturn(orderId: string): Promise<any> {
+    const response = await apiClient.post(`/orders/${orderId}/return/confirm`, {});
+    return response.data;
+  },
+
+  /**
+   * Danh sách tranh chấp của đơn (GET /orders/:orderId/disputes)
+   */
+  async listDisputes(orderId: string): Promise<OrderDisputeItem[]> {
+    const response = await apiClient.get<OrderDisputeItem[]>(`/orders/${orderId}/disputes`);
+    return Array.isArray(response.data) ? response.data : [];
+  },
+
+  /**
+   * Mở tranh chấp mới (POST /orders/:orderId/disputes)
+   */
+  async openDispute(
+    orderId: string,
+    payload: {
+      reason: DisputeReason;
+      description: string;
+      evidence: Array<{ photoUrl: string; caption?: string }>;
+    }
+  ): Promise<OrderDisputeItem> {
+    const response = await apiClient.post<OrderDisputeItem>(`/orders/${orderId}/disputes`, payload);
+    return response.data;
+  },
 };
+
+export type DisputeReason = 'MISMATCHED_PLANT' | 'DAMAGE' | 'PICKUP' | 'OTHER';
+
+export interface OrderDisputeItem {
+  id: string;
+  serviceOrderId: string;
+  openedByAccountId: string;
+  status: 'OPEN' | 'UNDER_REVIEW' | 'RESOLVED' | 'REJECTED';
+  reason: DisputeReason | string;
+  description: string;
+  evidence: Array<{ photoUrl: string; caption?: string }>;
+  resolution: string | null;
+  resolvedByAccountId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 

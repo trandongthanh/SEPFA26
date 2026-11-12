@@ -60,6 +60,15 @@ export default function ProviderProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploadingDoc, setUploadingDoc] = useState<string | null>(null);
+  const [approvedBannerDismissed, setApprovedBannerDismissed] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setApprovedBannerDismissed(
+        window.localStorage.getItem('lancare_provider_approved_banner_dismissed') === '1'
+      );
+    }
+  }, []);
 
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const user = useAuthStore((state) => state.user);
@@ -316,10 +325,17 @@ export default function ProviderProfilePage() {
             </div>
           ) : (
             <div className="space-y-6 max-w-5xl">
-              {profile?.verificationStatus === 'APPROVED' && (
+              {profile?.verificationStatus === 'APPROVED' && !approvedBannerDismissed && (
                 <Alert
                   type="success"
                   showIcon
+                  closable
+                  onClose={() => {
+                    setApprovedBannerDismissed(true);
+                    if (typeof window !== 'undefined') {
+                      window.localStorage.setItem('lancare_provider_approved_banner_dismissed', '1');
+                    }
+                  }}
                   icon={<CheckCircleFilled className="text-lg text-[#10B981]" />}
                   message={<span className="font-semibold text-[#065F46]">Hồ sơ đã được phê duyệt chính thức</span>}
                   description={
