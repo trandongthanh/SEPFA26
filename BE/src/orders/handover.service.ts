@@ -10,33 +10,44 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
-import { EscrowLedger } from '../payments/entities/escrow-ledger.entity';
-import { escrowBalance } from '../payments/escrow-balance';
+import { refundCancelledHandover } from '../payments/cancel-order-refund';
 import { loadCustomerSettlement } from '../payments/customer-settlement';
-import { settleCompletedOrder } from '../payments/settle-order';
+import { SecurityDeposit } from '../payments/entities/security-deposit.entity';
+import { settleOrder } from '../payments/settle-order';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { closeAddonsForReturn } from './addon-expiry';
+import { compensationCapFor } from './compensation-cap';
 import { AssessPlantDto } from './dto/assess-plant.dto';
 import { AssessReturnPlantDto } from './dto/assess-return-plant.dto';
+import { CancelHandoverDto } from './dto/cancel-handover.dto';
 import { CancelReturnDto } from './dto/cancel-return.dto';
-import { CompleteHandoverDto } from './dto/complete-handover.dto';
+import { ConfirmHandoverDto } from './dto/confirm-handover.dto';
+import { DeclineHandoverDto } from './dto/decline-handover.dto';
 import { AgreementSignature } from './entities/agreement-signature.entity';
 import { AssessmentPhoto } from './entities/assessment-photo.entity';
 import { Handover } from './entities/handover.entity';
 import { HandoverItem } from './entities/handover-item.entity';
+import { HandoverObjectionPhoto } from './entities/handover-objection-photo.entity';
 import { Plant } from './entities/plant.entity';
 import { PlantAssessment } from './entities/plant-assessment.entity';
 import { ServiceAgreement } from './entities/service-agreement.entity';
 import { ServiceOrder } from './entities/service-order.entity';
+import { generateSecurityDepositCode } from './order-code';
 import { OrderStateService } from './order-state.service';
 import { assertTransition } from './order-status';
 
 // Hạn khách xác nhận kết quả bàn giao — cron auto-confirm HOÃN, deadline vẫn ghi sẵn.
 const CUSTOMER_CONFIRM_WINDOW_MS = 48 * 60 * 60 * 1000;
 
+// Vườn có 2 giờ kể từ lúc khách đồng ý biên bản để nộp tiền bảo đảm; quá hạn thì bộ quét huỷ đơn.
+export const SECURITY_DEPOSIT_WINDOW_MS = 2 * 60 * 60 * 1000;
+const DEPOSIT_CODE_MAX_RETRY = 3;
+
 /**
- * 4 endpoint bàn giao nhận cây (PAID → IN_CARE) — nơi hiện thực định giá 2 tầng:
- * giá tạm khóa lúc ký online, giá CHÍNH THỨC khóa lúc khách confirm bàn giao.
+ * Các endpoint bàn giao nhận cây (PAID → IN_CARE): giá tạm khóa lúc ký online, giá CHÍNH THỨC
+ * (giá gói × số cây vườn nhận) chốt lúc vườn chốt biên bản. Thứ tự tại chỗ: vườn khám, chọn cây →
+ * khách đồng ý (có thể kèm phản đối) → vườn nộp tiền bảo đảm → tiền về (webhook SePay) → IN_CARE.
+ * Hai lối huỷ tại chỗ: khách không giao cây (decline), vườn không nộp tiền bảo đảm (cancel / quá 2 giờ).
  * Nguồn thiết kế: docs/sequence-diagrams/orders-handover.md.
  */
 @Injectable()
@@ -89,8 +100,8 @@ export class HandoverService {
   /**
    * POST /orders/:id/handover/plants/:plantId/assess — thẩm định TỪNG cây.
    * Append-only: re-assess trước complete tạo bản ghi MỚI, plant lấy quyết định
-   * mới nhất, chuỗi bằng chứng cũ giữ nguyên. ADJUST chỉ cho cây khai giá
-   * (cây thường giá theo gói — chống hét giá khi cây đã nằm trong tay vườn).
+   * mới nhất, chuỗi bằng chứng cũ giữ nguyên. Vườn chỉ nhận / nhận kèm cờ rủi ro /
+   * từ chối — không sửa giá công (chăm thêm thì đề xuất add-on).
    */
   async assessPlant(
     accountId: string,
@@ -107,9 +118,6 @@ export class HandoverService {
     });
     if (!plant) {
       throw new NotFoundException('PLANT_NOT_FOUND');
-    }
-    if (dto.decision === 'ADJUST' && !plant.isValueDeclared) {
-      throw new BadRequestException('ADJUST_NOT_ALLOWED');
     }
     // D9: cờ isHighRisk phải khớp decision — chống lệch bằng chứng trách nhiệm
     // (ACCEPT_HIGH_RISK mà cờ false, hoặc ngược lại).
@@ -148,15 +156,14 @@ export class HandoverService {
 
   /**
    * POST /orders/:id/handover/complete — chốt thẩm định
-   * (→ HANDOVER_AWAITING_CONFIRM). finalTotal đề xuất chỉ đi kèm cây ADJUST;
-   * mặc định = basePriceSnapshot × số cây không-REJECT. REJECT toàn bộ thì
-   * không cho complete — ép đường cancel để logic tiền hủy nằm 1 chỗ.
+   * (→ HANDOVER_AWAITING_CONFIRM). Giá công chốt = basePriceSnapshot × số cây được nhận,
+   * server tự tính (vườn không sửa giá). Mỗi cây được nhận có mức đền: có khai giá = giá khai,
+   * không khai = 2 × giá gói; tổng mức đền = tiền bảo đảm vườn sẽ phải nộp.
+   * Đơn mẫu 2 cây × 200.000, cây A khai 3.000.000, cây B không khai: finalTotal 400.000,
+   * mức đền 3.000.000 + 400.000 → securityDepositAmount 3.400.000.
+   * REJECT toàn bộ thì không cho complete — ép đường cancel để logic tiền hủy nằm 1 chỗ.
    */
-  async completeHandover(
-    accountId: string,
-    orderId: string,
-    dto: CompleteHandoverDto,
-  ) {
+  async completeHandover(accountId: string, orderId: string) {
     const order = await this.getOrderAsProvider(accountId, orderId);
     if (order.status !== 'HANDOVER_IN_PROGRESS') {
       throw new ConflictException('INVALID_STATE_TRANSITION');
@@ -176,38 +183,8 @@ export class HandoverService {
       // Không còn gì để chăm — đúng luồng là provider HỦY đơn (hoàn 100% kể cả ship).
       throw new BadRequestException('ALL_PLANTS_REJECTED');
     }
-    const hasAdjust = plants.some(
-      (plant) => plant.handoverDecision === 'ADJUST',
-    );
-    if (hasAdjust && dto.proposedFinalTotal === undefined) {
-      throw new BadRequestException('FINAL_TOTAL_REQUIRED');
-    }
-    if (!hasAdjust && dto.proposedFinalTotal !== undefined) {
-      throw new BadRequestException('ADJUST_NOT_ALLOWED');
-    }
-    if (dto.proposedFinalTotal !== undefined) {
-      const proposed = BigInt(dto.proposedFinalTotal);
-      if (proposed <= 0n) {
-        throw new BadRequestException('FINAL_TOTAL_REQUIRED');
-      }
-      // D1-cap: trần giá cuối = Σ(giá khách đã khai cho cây ADJUST) +
-      // giá gói × (cây còn nhận không-ADJUST). Vườn KHÔNG hét giá vượt mức
-      // khách đã đồng ý từ đầu, dù cây đã nằm trong tay vườn.
-      const base = BigInt(order.basePriceSnapshot);
-      let cap = 0n;
-      for (const plant of keptPlants) {
-        cap +=
-          plant.handoverDecision === 'ADJUST' && plant.declaredValue
-            ? BigInt(plant.declaredValue)
-            : base;
-      }
-      if (proposed > cap) {
-        throw new BadRequestException('FINAL_TOTAL_EXCEEDS_CAP');
-      }
-    }
-    const finalTotal =
-      dto.proposedFinalTotal ??
-      (BigInt(order.basePriceSnapshot) * BigInt(keptPlants.length)).toString();
+    const basePrice = BigInt(order.basePriceSnapshot);
+    const finalTotal = (basePrice * BigInt(keptPlants.length)).toString();
     const handover = await this.getActiveHandover(order.id);
 
     return this.dataSource.transaction(async (manager) => {
@@ -227,11 +204,13 @@ export class HandoverService {
           }),
         ),
       );
-      // Trần đền bù cây được nhận: cây khai giá = declaredValue, cây thường = null.
+      // Mức đền cho MỌI cây được nhận: có khai giá = giá khai, không khai = 2 × giá gói.
+      // (isValueDeclared mà thiếu declaredValue là dữ liệu cũ — coi như không khai.)
+      let securityDepositAmount = 0n;
       for (const plant of keptPlants) {
-        plant.protectionCap = plant.isValueDeclared
-          ? plant.declaredValue
-          : null;
+        const cap = compensationCapFor(plant, basePrice);
+        plant.protectionCap = cap.toString();
+        securityDepositAmount += cap;
       }
       await manager.save(keptPlants);
 
@@ -244,57 +223,56 @@ export class HandoverService {
       });
       locked.finalTotal = finalTotal;
       await manager.save(locked);
-      return { finalTotal, customerConfirmDueAt };
+      return {
+        finalTotal,
+        customerConfirmDueAt,
+        // Tổng mức đền các cây được nhận = tiền bảo đảm vườn phải nộp.
+        securityDepositAmount: securityDepositAmount.toString(),
+        plants: keptPlants.map((plant) => ({
+          plantId: plant.id,
+          compensationCap: plant.protectionCap,
+        })),
+      };
     });
   }
 
   /**
-   * POST /orders/:id/handover/confirm — khách xác nhận (→ IN_CARE, hết scope
-   * Phase 1). Điểm khóa giá CHÍNH THỨC: chữ ký HANDOVER + finalLockedAt;
-   * cây REJECT hoàn tiền bằng bút toán REFUND (admin chuyển tay theo sổ);
-   * chênh ADJUST chỉ ghi nhận — quyết toán sau IN_CARE là luồng payout.
+   * POST /orders/:id/handover/confirm — khách đồng ý biên bản nhận cây (có thể kèm ý kiến phản đối + ảnh).
+   * Đơn GIỮ NGUYÊN HANDOVER_AWAITING_CONFIRM; phiên nhận cây sang AWAITING_DEPOSIT và sinh khoản tiền bảo đảm
+   * vườn phải nộp trong 2 giờ = tổng mức đền các cây được nhận (đơn mẫu 3.000.000 + 400.000 = 3.400.000).
+   * Tiền bảo đảm về (webhook SePay) thì đơn mới sang IN_CARE và mới bắt đầu tính ngày chăm.
+   * Chữ ký giai đoạn HANDOVER của khách vẫn ghi ở đây. KHÔNG đụng sổ đơn.
+   * Bấm lần 2 → 409 (phiên không còn AWAITING_CUSTOMER).
    */
   async confirmHandover(
     accountId: string,
     orderId: string,
+    dto: ConfirmHandoverDto,
     ip: string | undefined,
   ) {
     const order = await this.getOrderAsCustomer(accountId, orderId);
     if (order.status !== 'HANDOVER_AWAITING_CONFIRM') {
       throw new ConflictException('INVALID_STATE_TRANSITION');
     }
-    assertTransition(order.status, 'IN_CARE');
-
-    const handover = await this.handoverRepo.findOne({
-      where: {
-        serviceOrderId: order.id,
-        handoverType: 'IN',
-        status: 'AWAITING_CUSTOMER',
-      },
-    });
-    if (!handover) {
-      throw new InternalServerErrorException('HANDOVER_NOT_FOUND');
-    }
-    const plants = await this.plantRepo.find({
-      where: { serviceOrderId: order.id },
-    });
-    const rejectedCount = plants.filter(
-      (plant) => plant.handoverDecision === 'REJECT',
-    ).length;
 
     return this.dataSource.transaction(async (manager) => {
-      const locked = await this.orderState.transition(
-        manager,
-        order.id,
-        'HANDOVER_AWAITING_CONFIRM',
-        'IN_CARE',
-      );
-      const now = new Date();
-      await manager.update(Handover, handover.id, {
-        status: 'CONFIRMED',
-        confirmedAt: now,
-        lockedAt: now,
+      // Khoá dòng đơn + kiểm lại: bấm đúp / khách bấm "không giao cây" cùng lúc chỉ một bên thắng.
+      const locked = await this.orderState.lock(manager, order.id);
+      if (!locked || locked.status !== 'HANDOVER_AWAITING_CONFIRM') {
+        throw new ConflictException('INVALID_STATE_TRANSITION');
+      }
+      const handover = await manager.findOne(Handover, {
+        where: {
+          serviceOrderId: order.id,
+          handoverType: 'IN',
+          status: 'AWAITING_CUSTOMER',
+        },
       });
+      if (!handover) {
+        // Khách đã đồng ý rồi (phiên đang AWAITING_DEPOSIT).
+        throw new ConflictException('INVALID_STATE_TRANSITION');
+      }
+      const now = new Date();
 
       // Chữ ký giai đoạn HANDOVER — cùng bảng chữ ký online, phase khác.
       const agreement = await manager.findOne(ServiceAgreement, {
@@ -319,34 +297,173 @@ export class HandoverService {
         }),
       );
 
-      // Cây bị loại chốt hẳn tại đây → ghi nợ hoàn phần đó vào sổ escrow.
-      if (rejectedCount > 0) {
-        const refund = BigInt(locked.basePriceSnapshot) * BigInt(rejectedCount);
-        const lastBalance = await escrowBalance(manager, order.id);
+      // Ý kiến phản đối + ảnh của khách: khoá cùng biên bản, làm bằng chứng lúc tranh chấp.
+      const objectionPhotos = dto.objectionPhotos ?? [];
+      if (objectionPhotos.length > 0) {
         await manager.save(
-          manager.create(EscrowLedger, {
-            serviceOrderId: order.id,
-            transactionId: null,
-            entryType: 'REFUND' as const,
-            amount: (-refund).toString(),
-            balanceAfter: (lastBalance - refund).toString(),
-            note: `Hoàn ${rejectedCount} cây bị từ chối tại bàn giao đơn ${locked.orderCode}`,
-          }),
+          objectionPhotos.map((photo) =>
+            manager.create(HandoverObjectionPhoto, {
+              handoverId: handover.id,
+              photoUrl: photo.photoUrl,
+              caption: photo.caption || null,
+            }),
+          ),
         );
       }
 
-      locked.finalLockedAt = now;
-      locked.careStartedAt = now;
-      locked.careDueAt = new Date(
-        now.getTime() + locked.durationDaysSnapshot * 24 * 60 * 60 * 1000,
+      // Tiền bảo đảm = Σ mức đền (protection_cap đã ghi lúc vườn chốt biên bản) của cây được nhận.
+      const plants = await manager.find(Plant, {
+        where: { serviceOrderId: order.id },
+      });
+      const amount = plants
+        .filter(
+          (plant) =>
+            plant.handoverDecision !== null &&
+            plant.handoverDecision !== 'REJECT',
+        )
+        .reduce((sum, plant) => sum + BigInt(plant.protectionCap ?? '0'), 0n);
+      const dueAt = new Date(now.getTime() + SECURITY_DEPOSIT_WINDOW_MS);
+      const deposit = await manager.save(
+        manager.create(SecurityDeposit, {
+          serviceOrderId: order.id,
+          providerId: order.providerId,
+          amount: amount.toString(),
+          depositCode: await this.newDepositCode(manager),
+          dueAt,
+          status: 'PENDING' as const,
+        }),
       );
-      await manager.save(locked);
+
+      await manager.update(Handover, handover.id, {
+        status: 'AWAITING_DEPOSIT',
+        customerObjectionNote: dto.objectionNote || null,
+      });
       return {
         status: locked.status,
+        handoverStatus: 'AWAITING_DEPOSIT' as const,
         finalTotal: locked.finalTotal,
-        careDueAt: locked.careDueAt,
+        securityDepositAmount: deposit.amount,
+        depositDueAt: deposit.dueAt,
       };
     });
+  }
+
+  /**
+   * POST /orders/:id/handover/decline — khách KHÔNG giao cây sau khi xem biên bản (phiên đang
+   * AWAITING_CUSTOMER, vườn chưa nộp gì). Đơn → CANCELLED. Vườn đã mất công tới nơi nên giữ phí lấy cây;
+   * khách nhận lại giá gói + 6%; nền tảng không thu. Đơn mẫu: khách 424.000, vườn 60.000.
+   * Khách đã đồng ý biên bản rồi (phiên AWAITING_DEPOSIT) → 409, vì khách đã ký.
+   */
+  async declineHandover(
+    accountId: string,
+    orderId: string,
+    dto: DeclineHandoverDto,
+  ) {
+    const order = await this.getOrderAsCustomer(accountId, orderId);
+    if (order.status !== 'HANDOVER_AWAITING_CONFIRM') {
+      throw new ConflictException('INVALID_STATE_TRANSITION');
+    }
+    assertTransition(order.status, 'CANCELLED');
+
+    return this.dataSource.transaction(async (manager) => {
+      const locked = await this.orderState.transition(
+        manager,
+        order.id,
+        'HANDOVER_AWAITING_CONFIRM',
+        'CANCELLED',
+      );
+      const now = new Date();
+      // Điều kiện status trong câu UPDATE: phiên đã sang AWAITING_DEPOSIT thì không dòng nào đổi → 409,
+      // cả transaction huỷ (đơn vẫn chờ vườn nộp tiền bảo đảm).
+      const cancelled = await manager.update(
+        Handover,
+        {
+          serviceOrderId: order.id,
+          handoverType: 'IN',
+          status: 'AWAITING_CUSTOMER',
+        },
+        { status: 'CANCELLED', note: dto.reason },
+      );
+      if (!cancelled.affected) {
+        throw new ConflictException('INVALID_STATE_TRANSITION');
+      }
+      locked.cancelledBy = 'CUSTOMER';
+      locked.cancelledAt = now;
+      locked.cancelReason = dto.reason;
+      await manager.save(locked);
+
+      const { customerRefund } = await refundCancelledHandover(
+        manager,
+        locked,
+        now,
+        'CUSTOMER',
+      );
+      // Route của KHÁCH: chỉ trả số khách nhận lại, không trả phần của vườn.
+      return {
+        status: locked.status,
+        refundAmount: customerRefund.toString(),
+      };
+    });
+  }
+
+  /**
+   * POST /orders/:id/handover/cancel — vườn tự huỷ vì không nộp được tiền bảo đảm (phiên đang
+   * AWAITING_DEPOSIT, khoản còn PENDING). Lỗi của vườn → khách nhận lại 100%, kể cả phí lấy cây.
+   */
+  async cancelHandover(
+    accountId: string,
+    orderId: string,
+    dto: CancelHandoverDto,
+  ) {
+    const order = await this.getOrderAsProvider(accountId, orderId);
+    return this.dataSource.transaction(async (manager) => {
+      await this.cancelForUnpaidDeposit(manager, order.id, dto.reason);
+      return { status: 'CANCELLED' as const };
+    });
+  }
+
+  /**
+   * Lõi của nhánh "vườn không nộp tiền bảo đảm" — dùng chung cho vườn bấm huỷ và bộ quét hết 2 giờ.
+   * Gọi BÊN TRONG transaction của nơi gọi (mỗi đơn một transaction). Khoá dòng đơn rồi kiểm lại khoản
+   * bảo đảm còn PENDING: tiền vừa về (webhook) hoặc đã huỷ rồi → 409 SECURITY_DEPOSIT_NOT_PENDING,
+   * không đổi gì. Đơn mẫu: sổ đơn REFUND −484.000 → 0, 1 lệnh chi REFUND 484.000 cho khách,
+   * mọi dòng hoá đơn REFUNDED, khoản bảo đảm + phiên nhận cây CANCELLED.
+   * Hàm này KHÔNG kiểm hạn 2 giờ — nơi gọi tự quyết lúc nào được huỷ.
+   */
+  async cancelForUnpaidDeposit(
+    manager: EntityManager,
+    orderId: string,
+    reason: string,
+  ): Promise<void> {
+    const locked = await this.orderState.lock(manager, orderId);
+    const deposit = locked
+      ? await manager.findOne(SecurityDeposit, {
+          where: { serviceOrderId: orderId, status: 'PENDING' },
+          lock: { mode: 'pessimistic_write' },
+        })
+      : null;
+    if (!locked || !deposit) {
+      throw new ConflictException('SECURITY_DEPOSIT_NOT_PENDING');
+    }
+    await this.orderState.apply(manager, locked, 'CANCELLED');
+    const now = new Date();
+    deposit.status = 'CANCELLED';
+    await manager.save(deposit);
+    await manager.update(
+      Handover,
+      {
+        serviceOrderId: orderId,
+        handoverType: 'IN',
+        status: 'AWAITING_DEPOSIT',
+      },
+      { status: 'CANCELLED', note: reason },
+    );
+    locked.cancelledBy = 'PROVIDER';
+    locked.cancelledAt = now;
+    locked.cancelReason = reason;
+    await manager.save(locked);
+
+    await refundCancelledHandover(manager, locked, now, 'PROVIDER');
   }
 
   // ---- Trả cây (IN_CARE → COMPLETED) ----
@@ -511,8 +628,8 @@ export class HandoverService {
 
   /**
    * POST /orders/:id/return/confirm — khách xác nhận đã nhận lại cây (→ COMPLETED).
-   * Không chữ ký. Cùng transaction: chia tiền (PLATFORM_FEE + PAYOUT, sổ về 0) và tạo
-   * lệnh chi chờ 3 ngày (settle-order.ts) — lỗi bất kỳ bước nào thì đơn vẫn chờ khách xác nhận.
+   * Không chữ ký. Cùng transaction: chia tiền (REFUND nếu có cây bị từ chối lúc nhận, PLATFORM_FEE,
+   * PAYOUT → sổ về 0) và tạo lệnh chi (settle-order.ts) — lỗi bất kỳ bước nào thì đơn vẫn chờ khách xác nhận.
    */
   async confirmReturn(accountId: string, orderId: string) {
     const order = await this.getOrderAsCustomer(accountId, orderId);
@@ -542,7 +659,7 @@ export class HandoverService {
         handover.id,
         'CONFIRMED',
       );
-      await settleCompletedOrder(manager, locked, completedAt);
+      await settleOrder(manager, locked, completedAt);
       // Route của KHÁCH → chỉ trả phần khách được thấy (cùng hình dạng `settlement` trong chi tiết đơn);
       // phí 12%, phí nền tảng, số vườn nhận không trả ở đây.
       const settlement = await loadCustomerSettlement(manager, locked.id);
@@ -601,6 +718,19 @@ export class HandoverService {
       throw new NotFoundException('ORDER_NOT_FOUND');
     }
     return order;
+  }
+
+  // Mã chuyển khoản bảo đảm chưa ai dùng (4,3 tỷ mã — trùng cực hiếm, thử lại vài lần cho chắc;
+  // DB vẫn có UNIQUE làm chốt cuối).
+  private async newDepositCode(manager: EntityManager): Promise<string> {
+    for (let attempt = 0; attempt < DEPOSIT_CODE_MAX_RETRY; attempt++) {
+      const code = generateSecurityDepositCode();
+      const taken = await manager.exists(SecurityDeposit, {
+        where: { depositCode: code },
+      });
+      if (!taken) return code;
+    }
+    throw new InternalServerErrorException('DEPOSIT_CODE_GENERATION_FAILED');
   }
 
   // Phiên IN_PROGRESS đúng chiều phải tồn tại khi đơn đang ở chặng đó — lệch là lỗi hệ thống.

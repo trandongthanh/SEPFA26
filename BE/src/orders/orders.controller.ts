@@ -21,9 +21,12 @@ import type { CurrentUserData } from '../auth/types/current-user.type';
 import { AddInitialPhotoDto } from './dto/add-initial-photo.dto';
 import { AssessPlantDto } from './dto/assess-plant.dto';
 import { AssessReturnPlantDto } from './dto/assess-return-plant.dto';
+import { CancelHandoverDto } from './dto/cancel-handover.dto';
 import { CancelReturnDto } from './dto/cancel-return.dto';
 import { CompleteHandoverDto } from './dto/complete-handover.dto';
+import { ConfirmHandoverDto } from './dto/confirm-handover.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { DeclineHandoverDto } from './dto/decline-handover.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
 import { ContractTemplateService } from './contract-template.service';
@@ -136,7 +139,12 @@ export class OrdersController {
   @Post(':orderId/handover/plants/:plantId/assess')
   @ApiOperation({
     summary:
-      'Vườn thẩm định từng cây (ảnh bắt buộc, re-assess được trước complete)',
+      'Vườn thẩm định từng cây: ACCEPT | ACCEPT_HIGH_RISK | REJECT (ảnh bắt buộc, re-assess được trước complete)',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'HIGH_RISK_FLAG_MISMATCH | decision không hợp lệ (ADJUST đã bỏ) | thiếu ảnh',
   })
   assessPlant(
     @CurrentUser() user: CurrentUserData,
@@ -156,28 +164,93 @@ export class OrdersController {
   @Post(':orderId/handover/complete')
   @HttpCode(200)
   @ApiOperation({
-    summary: 'Vườn chốt thẩm định (→ HANDOVER_AWAITING_CONFIRM, hẹn khách 48h)',
+    summary:
+      'Vườn chốt thẩm định (→ HANDOVER_AWAITING_CONFIRM): giá công = giá gói × số cây nhận, trả kèm mức đền từng cây và tổng tiền bảo đảm',
   })
+  @ApiResponse({
+    status: 400,
+    description:
+      'UNASSESSED_PLANTS | ALL_PLANTS_REJECTED | body có field lạ (proposedFinalTotal đã bỏ)',
+  })
+  @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
   completeHandover(
     @CurrentUser() user: CurrentUserData,
     @Param('orderId', ParseUUIDPipe) orderId: string,
-    @Body() dto: CompleteHandoverDto,
+    // Body không còn field nào; giữ DTO rỗng để field lạ (proposedFinalTotal cũ) bị 400.
+    @Body() _dto: CompleteHandoverDto,
   ) {
-    return this.handoverService.completeHandover(user.accountId, orderId, dto);
+    return this.handoverService.completeHandover(user.accountId, orderId);
   }
 
   @Roles('CUSTOMER')
   @Post(':orderId/handover/confirm')
   @HttpCode(200)
   @ApiOperation({
-    summary: 'Khách xác nhận bàn giao (→ IN_CARE) — khóa giá chính thức',
+    summary:
+      'Khách đồng ý biên bản nhận cây (có thể kèm ý kiến phản đối + ảnh) → phiên chờ vườn nộp tiền bảo đảm trong 2 giờ; đơn chỉ sang IN_CARE khi tiền bảo đảm về',
+  })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description: 'INVALID_STATE_TRANSITION (sai chặng hoặc bấm lần 2)',
   })
   confirmHandover(
     @CurrentUser() user: CurrentUserData,
     @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: ConfirmHandoverDto,
     @Ip() ip: string,
   ) {
-    return this.handoverService.confirmHandover(user.accountId, orderId, ip);
+    return this.handoverService.confirmHandover(
+      user.accountId,
+      orderId,
+      dto,
+      ip,
+    );
+  }
+
+  @Roles('CUSTOMER')
+  @Post(':orderId/handover/decline')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Khách không giao cây sau khi xem biên bản (→ CANCELLED): hoàn giá gói + 6%, vườn giữ phí lấy cây',
+  })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'INVALID_STATE_TRANSITION (sai chặng, hoặc khách đã đồng ý biên bản và vườn đang chờ nộp tiền bảo đảm)',
+  })
+  @ApiResponse({ status: 500, description: 'ESCROW_BALANCE_INSUFFICIENT' })
+  declineHandover(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: DeclineHandoverDto,
+  ) {
+    return this.handoverService.declineHandover(user.accountId, orderId, dto);
+  }
+
+  @Roles('PROVIDER')
+  @Post(':orderId/handover/cancel')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Vườn huỷ vì không nộp tiền bảo đảm (→ CANCELLED): hoàn khách 100% kể cả phí lấy cây',
+  })
+  @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'SECURITY_DEPOSIT_NOT_PENDING (khách chưa đồng ý biên bản, khoản đã nộp hoặc đã huỷ)',
+  })
+  @ApiResponse({ status: 500, description: 'ESCROW_BALANCE_INSUFFICIENT' })
+  cancelHandover(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: CancelHandoverDto,
+  ) {
+    return this.handoverService.cancelHandover(user.accountId, orderId, dto);
   }
 
   // ---- Trả cây (IN_CARE → COMPLETED) ----

@@ -72,6 +72,7 @@ describe('Care reports (e2e)', () => {
     }
     await postOrder(`${id}/handover/complete`, provider.auth).expect(200);
     await postOrder(`${id}/handover/confirm`, customer.auth).expect(200);
+    await seed.paySecurityDeposit(id);
     return { customer, provider, order };
   };
 

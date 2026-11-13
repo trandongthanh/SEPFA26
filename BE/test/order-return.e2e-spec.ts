@@ -80,6 +80,7 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
     }
     await post(`${id}/handover/complete`, provider.auth).expect(200);
     await post(`${id}/handover/confirm`, customer.auth).expect(200);
+    await seed.paySecurityDeposit(id);
     return c;
   };
 
@@ -107,17 +108,27 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
     await post(`${id}/return/complete`, c.provider.auth).expect(200);
   };
 
-  // Tiền của đơn trong DB: sổ ký quỹ (theo thứ tự ghi), tổng sổ, hoá đơn, lệnh chi.
+  // Tiền của đơn trong DB: sổ ĐƠN (theo thứ tự ghi) + tổng sổ đơn, sổ BẢO ĐẢM + tổng, hoá đơn, lệnh chi.
   const money = async (orderId: string) => {
     const q = (sql: string) =>
       ctx.dataSource.query(sql, [orderId]) as Promise<Record<string, any>[]>;
     const ledger = await q(
       `SELECT entry_type, amount, balance_after FROM escrow_ledger
-        WHERE service_order_id = $1
+        WHERE service_order_id = $1 AND book = 'ORDER'
         ORDER BY created_at, CASE entry_type WHEN 'PLATFORM_FEE' THEN 1 WHEN 'PAYOUT' THEN 2 ELSE 0 END`,
     );
     const [{ sum }] = await q(
-      `SELECT COALESCE(SUM(amount), 0)::text AS sum FROM escrow_ledger WHERE service_order_id = $1`,
+      `SELECT COALESCE(SUM(amount), 0)::text AS sum FROM escrow_ledger
+        WHERE service_order_id = $1 AND book = 'ORDER'`,
+    );
+    const security = await q(
+      `SELECT entry_type, amount, balance_after FROM escrow_ledger
+        WHERE service_order_id = $1 AND book = 'SECURITY'
+        ORDER BY created_at, CASE entry_type WHEN 'SECURITY_IN' THEN 0 WHEN 'COMPENSATION' THEN 1 ELSE 2 END`,
+    );
+    const [{ sum: securitySum }] = await q(
+      `SELECT COALESCE(SUM(amount), 0)::text AS sum FROM escrow_ledger
+        WHERE service_order_id = $1 AND book = 'SECURITY'`,
     );
     const components = await q(
       `SELECT component_type, provider_fee, status FROM payment_components
@@ -126,7 +137,7 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
     const disbursements = await q(
       `SELECT type, amount, status, eligible_at FROM disbursements WHERE service_order_id = $1`,
     );
-    return { ledger, sum, components, disbursements };
+    return { ledger, sum, security, securitySum, components, disbursements };
   };
 
   it('luồng chính: chưa tới hạn → 409; tới hạn → bắt đầu → kiểm từng cây → chốt → khách xác nhận → COMPLETED', async () => {
@@ -178,6 +189,7 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
       addonAmount: '0',
       customerTotal: '484000',
       refundAmount: '0',
+      compensationAmount: '0',
     });
     // CP3: chia tiền trong cùng transaction — 484.000 = nền tảng 72.000 + vườn 412.000 (kiểm trong DB).
     const m = await money(id);
@@ -191,22 +203,36 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
       { component_type: 'PACKAGE_PRICE', provider_fee: '48000', status: 'RELEASED' },
       { component_type: 'PICKUP_FEE', provider_fee: '0', status: 'RELEASED' },
     ]);
-    expect(m.disbursements).toHaveLength(1);
-    expect(m.disbursements[0]).toMatchObject({
-      type: 'PAYOUT',
-      amount: '412000',
+    // Sổ bảo đảm: 2 cây không khai giá → vườn đã nộp 800.000, không tranh chấp → trả lại vườn hết, về 0.
+    expect(m.security).toEqual([
+      { entry_type: 'SECURITY_IN', amount: '800000', balance_after: '800000' },
+      { entry_type: 'SECURITY_RETURN', amount: '-800000', balance_after: '0' },
+    ]);
+    expect(m.securitySum).toBe('0');
+    // Mỗi sổ một lệnh chi cho vườn, cùng chờ 3 ngày.
+    expect(m.disbursements).toHaveLength(2);
+    const payout = m.disbursements.find((row) => row.type === 'PAYOUT')!;
+    const securityReturn = m.disbursements.find(
+      (row) => row.type === 'SECURITY_RETURN',
+    )!;
+    expect(payout).toMatchObject({ amount: '412000', status: 'PENDING' });
+    expect(securityReturn).toMatchObject({
+      amount: '800000',
       status: 'PENDING',
     });
-    const holdMs =
-      new Date(m.disbursements[0].eligible_at).getTime() -
-      new Date(done.body.completedAt).getTime();
-    expect(holdMs).toBe(3 * 24 * 60 * 60 * 1000);
+    for (const row of [payout, securityReturn]) {
+      const holdMs =
+        new Date(row.eligible_at).getTime() -
+        new Date(done.body.completedAt).getTime();
+      expect(holdMs).toBe(3 * 24 * 60 * 60 * 1000);
+    }
 
-    // Bấm lại → 409, không đổi gì (vẫn đúng 1 lệnh chi, sổ vẫn 0).
+    // Bấm lại → 409, không đổi gì (vẫn đúng 2 lệnh chi, hai sổ vẫn 0).
     await post(`${id}/return/confirm`, c.customer.auth).expect(409);
     const again = await money(id);
-    expect(again.disbursements).toHaveLength(1);
+    expect(again.disbursements).toHaveLength(2);
     expect(again.sum).toBe('0');
+    expect(again.securitySum).toBe('0');
 
     const body = await detail(id, c.customer.auth);
     expect(body.status).toBe('COMPLETED');
@@ -259,35 +285,115 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
     );
   });
 
-  it('CP3: vườn từ chối 1 cây lúc nhận → chia theo 1 cây, sổ còn 12.000 (6% cây bị từ chối, chờ mentor)', async () => {
+  it('vườn từ chối 1 cây lúc nhận → cuối đơn khách được hoàn 212.000 (đủ 6%), vườn 236.000, nền tảng 36.000, sổ về 0', async () => {
     const c = await toInCare({ rejectFirst: true });
     const id = c.order.orderId;
+    // Lúc khách xác nhận nhận cây sổ đơn chưa đổi, chưa có lệnh chi nào.
+    const before = await money(id);
+    expect(before.ledger).toEqual([
+      { entry_type: 'DEPOSIT', amount: '484000', balance_after: '484000' },
+    ]);
+    // Cây bị từ chối không vào tiền bảo đảm: vườn chỉ nộp mức đền của 1 cây nhận = 400.000.
+    expect(before.security).toEqual([
+      { entry_type: 'SECURITY_IN', amount: '400000', balance_after: '400000' },
+    ]);
+    expect(before.disbursements).toHaveLength(0);
+    // Khách khai tài khoản trước khi đơn xong → lệnh hoàn chụp sẵn.
+    await request(http)
+      .put(`${API}/customers/me/profile`)
+      .set(c.customer.auth)
+      .send({
+        bankName: 'Vietcombank',
+        bankAccount: '9876543210',
+        bankHolder: 'NGUYEN VAN MINH',
+      })
+      .expect(200);
     await toReturnAwaitingConfirm(c, c.order.plantIds.slice(1));
 
     const done = await post(`${id}/return/confirm`, c.customer.auth).expect(
       200,
     );
-    // Khách chỉ thấy số đã trả + tiền hoàn cây bị từ chối.
+    // Khách thấy số đã trả + tiền hoàn cây bị từ chối: 200.000 + 6% = 212.000.
     expect(done.body.settlement).toEqual({
       packageAmount: '400000',
       customerFee: '24000',
       pickupFee: '60000',
       addonAmount: '0',
       customerTotal: '484000',
-      refundAmount: '200000',
+      refundAmount: '212000',
+      compensationAmount: '0',
     });
-    // S = 200.000: phí khách 12.000 + phí vườn 24.000 = 36.000; vườn 200.000 − 24.000 + 60.000 (kiểm trong DB).
+    // S = 200.000: nền tảng giữ 6% (12.000) + 12% (24.000) = 36.000; vườn 200.000 − 24.000 + 60.000.
     const m = await money(id);
     expect(m.ledger).toEqual([
       { entry_type: 'DEPOSIT', amount: '484000', balance_after: '484000' },
-      { entry_type: 'REFUND', amount: '-200000', balance_after: '284000' },
-      { entry_type: 'PLATFORM_FEE', amount: '-36000', balance_after: '248000' },
-      { entry_type: 'PAYOUT', amount: '-236000', balance_after: '12000' },
+      { entry_type: 'REFUND', amount: '-212000', balance_after: '272000' },
+      { entry_type: 'PLATFORM_FEE', amount: '-36000', balance_after: '236000' },
+      { entry_type: 'PAYOUT', amount: '-236000', balance_after: '0' },
     ]);
-    expect(m.sum).toBe('12000');
-    expect(m.disbursements).toEqual([
-      expect.objectContaining({ amount: '236000', status: 'PENDING' }),
+    expect(m.sum).toBe('0');
+    // Dòng gói có cây bị từ chối vẫn RELEASED, phí 12% tính trên 1 cây.
+    expect(m.components).toEqual([
+      { component_type: 'PACKAGE_PRICE', provider_fee: '24000', status: 'RELEASED' },
+      { component_type: 'PICKUP_FEE', provider_fee: '0', status: 'RELEASED' },
     ]);
+
+    const rows = (await ctx.dataSource.query(
+      `SELECT type, amount, status, customer_id, provider_id, eligible_at,
+              bank_name, bank_account, bank_holder
+         FROM disbursements WHERE service_order_id = $1 ORDER BY type`,
+      [id],
+    )) as Record<string, any>[];
+    expect(rows).toHaveLength(3);
+    const [payout, refund, securityReturn] = rows;
+    expect(securityReturn).toMatchObject({
+      type: 'SECURITY_RETURN',
+      amount: '400000',
+      status: 'PENDING',
+      customer_id: null,
+      provider_id: c.provider.profileId,
+    });
+    expect(m.securitySum).toBe('0');
+    expect(payout).toMatchObject({
+      type: 'PAYOUT',
+      amount: '236000',
+      status: 'PENDING',
+      customer_id: null,
+      provider_id: c.provider.profileId,
+    });
+    expect(refund).toMatchObject({
+      type: 'REFUND',
+      amount: '212000',
+      status: 'PENDING',
+      customer_id: c.customer.profileId,
+      provider_id: null,
+      bank_name: 'Vietcombank',
+      bank_account: '9876543210',
+      bank_holder: 'NGUYEN VAN MINH',
+    });
+    // Khách được chi ngay; vườn chờ 3 ngày.
+    const completedAt = new Date(done.body.completedAt).getTime();
+    expect(new Date(refund.eligible_at).getTime()).toBe(completedAt);
+    expect(new Date(payout.eligible_at).getTime() - completedAt).toBe(
+      3 * 24 * 60 * 60 * 1000,
+    );
+  });
+
+  it('ràng buộc lệnh chi: phải có đúng một người nhận (khách hoặc vườn)', async () => {
+    const c = await toInCare();
+    const insert = (customerId: string | null, providerId: string | null) =>
+      ctx.dataSource.query(
+        `INSERT INTO disbursements (service_order_id, customer_id, provider_id, type, amount, eligible_at)
+         VALUES ($1, $2, $3, 'REFUND', 1000, now())`,
+        [c.order.orderId, customerId, providerId],
+      );
+    await expect(insert(null, null)).rejects.toThrow(
+      /CHK_disbursements_recipient/,
+    );
+    await expect(
+      insert(c.customer.profileId, c.provider.profileId),
+    ).rejects.toThrow(/CHK_disbursements_recipient/);
+    await expect(insert(c.customer.profileId, null)).resolves.toBeDefined();
   });
 
   it('CP3: sổ không đủ tiền để chia → 500, rollback cả bước xác nhận (đơn vẫn chờ khách)', async () => {

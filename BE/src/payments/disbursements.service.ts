@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { MarkDisbursementPaidDto } from './dto/mark-disbursement-paid.dto';
 import { QueryDisbursementDto } from './dto/query-disbursement.dto';
@@ -30,7 +31,9 @@ function pickBank(source: {
 
 /**
  * Lệnh chi cho admin: xem danh sách và bấm "Đã chuyển" sau khi chuyển khoản tay.
- * Không ghi thêm sổ ký quỹ — bút toán PAYOUT đã ghi lúc đơn COMPLETED (settle-order.ts).
+ * Mỗi lệnh có đúng một người nhận: vườn (PAYOUT...) hoặc khách (REFUND...) — phân biệt bằng
+ * `customer_id` có giá trị hay không, KHÔNG suy từ `type`.
+ * Không ghi thêm sổ ký quỹ — bút toán đã ghi lúc chia tiền cuối đơn (settle-order.ts).
  */
 @Injectable()
 export class DisbursementsService {
@@ -48,6 +51,8 @@ export class DisbursementsService {
       .createQueryBuilder('disbursement')
       .leftJoinAndSelect('disbursement.serviceOrder', 'serviceOrder')
       .leftJoinAndSelect('disbursement.provider', 'provider')
+      .leftJoinAndSelect('disbursement.customer', 'customer')
+      .leftJoinAndSelect('customer.account', 'customerAccount')
       .orderBy('disbursement.eligibleAt', 'ASC')
       .addOrderBy('disbursement.id', 'ASC')
       .skip((page - 1) * limit)
@@ -86,26 +91,34 @@ export class DisbursementsService {
         throw new ConflictException('DISBURSEMENT_ALREADY_PAID');
       }
       const now = new Date();
-      // Chưa hết 3 ngày chờ khiếu nại thì chưa được chi.
+      // Chưa tới ngày được chi (lệnh của vườn chờ 3 ngày đối soát) thì chưa được bấm.
       if (disbursement.eligibleAt.getTime() > now.getTime()) {
         throw new ConflictException('DISBURSEMENT_NOT_ELIGIBLE');
       }
 
       if (!pickBank(disbursement)) {
-        // Chỉ lệnh trả vườn mới được lấy bù tài khoản từ hồ sơ vườn. Lệnh hoàn tiền khách (REFUND,
-        // chưa sinh ở đợt này) mà lấy bù kiểu đó thì tiền của khách sẽ chạy vào tài khoản vườn.
-        if (disbursement.type !== 'PAYOUT') {
-          throw new ConflictException('DISBURSEMENT_BANK_INFO_MISSING');
+        // Lúc tạo lệnh người nhận chưa khai ngân hàng → chụp bù từ hồ sơ hiện tại của ĐÚNG người
+        // nhận. Lệnh của khách không bao giờ lấy tài khoản vườn (và ngược lại): lấy nhầm là tiền
+        // hoàn của khách chạy vào tài khoản vườn.
+        if (disbursement.customerId) {
+          const customer = await manager.findOne(CustomerProfile, {
+            where: { id: disbursement.customerId },
+          });
+          const bank = customer ? pickBank(customer) : null;
+          if (!bank) {
+            throw new ConflictException('DISBURSEMENT_BANK_INFO_MISSING');
+          }
+          Object.assign(disbursement, bank);
+        } else {
+          const provider = await manager.findOne(ProviderProfile, {
+            where: { id: disbursement.providerId ?? undefined },
+          });
+          const bank = provider ? pickBank(provider) : null;
+          if (!bank) {
+            throw new ConflictException('PROVIDER_BANK_INFO_MISSING');
+          }
+          Object.assign(disbursement, bank);
         }
-        // Lúc đơn COMPLETED vườn chưa khai ngân hàng → chụp bù từ hồ sơ hiện tại.
-        const provider = await manager.findOne(ProviderProfile, {
-          where: { id: disbursement.providerId },
-        });
-        const bank = provider ? pickBank(provider) : null;
-        if (!bank) {
-          throw new ConflictException('PROVIDER_BANK_INFO_MISSING');
-        }
-        Object.assign(disbursement, bank);
       }
 
       disbursement.status = 'PAID';
@@ -119,28 +132,39 @@ export class DisbursementsService {
 
     const saved = await this.disbursementRepo.findOneOrFail({
       where: { id: disbursementId },
-      relations: { serviceOrder: true, provider: true },
+      relations: {
+        serviceOrder: true,
+        provider: true,
+        customer: { account: true },
+      },
     });
     return this.toView(saved, new Date());
   }
 
   // Một hình dạng cho cả danh sách lẫn kết quả mark-paid.
   private toView(row: Disbursement, now: Date) {
+    const toCustomer = row.customerId !== null;
+    // Hồ sơ hiện tại của người nhận — gợi ý tài khoản khi lệnh chi chưa có bản chụp.
+    const profile = toCustomer ? row.customer : row.provider;
     return {
       id: row.id,
       orderId: row.serviceOrderId,
       orderCode: row.serviceOrder.orderCode,
+      recipient: toCustomer ? ('CUSTOMER' as const) : ('PROVIDER' as const),
+      // Tên người nhận đúng bên: tên vườn hoặc họ tên tài khoản khách.
+      recipientName: toCustomer
+        ? (row.customer?.account?.fullName ?? null)
+        : (row.provider?.displayName ?? null),
+      customerId: row.customerId,
+      // Giữ 2 field cũ cho màn admin đang chạy; lệnh của khách thì cả hai null.
       providerId: row.providerId,
-      providerName: row.provider.displayName,
+      providerName: row.provider?.displayName ?? null,
       type: row.type,
       amount: row.amount,
       eligibleAt: row.eligibleAt,
       isEligible: row.eligibleAt.getTime() <= now.getTime(),
       status: row.status,
-      // Bản chụp trên lệnh chi; trống thì gợi ý theo hồ sơ vườn hiện tại — chỉ với lệnh trả vườn.
-      bank:
-        pickBank(row) ??
-        (row.type === 'PAYOUT' ? pickBank(row.provider) : null),
+      bank: pickBank(row) ?? (profile ? pickBank(profile) : null),
       transferCode: row.transferCode,
       paidAt: row.paidAt,
       note: row.note,

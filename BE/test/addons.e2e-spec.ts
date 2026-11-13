@@ -84,6 +84,7 @@ describe('Add-on: đề xuất, trả tiền, báo xong, chia tiền (e2e)', () 
     }
     await post(`${id}/handover/complete`, provider.auth).expect(200);
     await post(`${id}/handover/confirm`, customer.auth).expect(200);
+    await seed.paySecurityDeposit(id);
     return { customer, provider, order };
   };
 
@@ -151,9 +152,10 @@ describe('Add-on: đề xuất, trả tiền, báo xong, chia tiền (e2e)', () 
     await post(`${id}/return/confirm`, c.customer.auth).expect(200);
   };
 
+  // Sổ ĐƠN (book ORDER) — tiền bảo đảm của vườn nằm ở sổ riêng, không cộng lẫn vào đây.
   const ledgerOf = (orderId: string) =>
     sql(
-      `SELECT entry_type, amount FROM escrow_ledger WHERE service_order_id = $1
+      `SELECT entry_type, amount FROM escrow_ledger WHERE service_order_id = $1 AND book = 'ORDER'
         ORDER BY created_at, CASE entry_type WHEN 'PLATFORM_FEE' THEN 1 WHEN 'PAYOUT' THEN 2 ELSE 0 END`,
       [orderId],
     );
@@ -161,7 +163,8 @@ describe('Add-on: đề xuất, trả tiền, báo xong, chia tiền (e2e)', () 
   const balanceOf = async (orderId: string) =>
     (
       await sql(
-        `SELECT COALESCE(SUM(amount), 0)::text AS sum FROM escrow_ledger WHERE service_order_id = $1`,
+        `SELECT COALESCE(SUM(amount), 0)::text AS sum FROM escrow_ledger
+          WHERE service_order_id = $1 AND book = 'ORDER'`,
         [orderId],
       )
     )[0].sum as string;
@@ -610,11 +613,13 @@ describe('Add-on: đề xuất, trả tiền, báo xong, chia tiền (e2e)', () 
       ]);
       expect(await balanceOf(c.order.orderId)).toBe('0');
       const disbursements = await sql(
-        `SELECT type, amount, status FROM disbursements WHERE service_order_id = $1`,
+        `SELECT type, amount, status FROM disbursements WHERE service_order_id = $1 ORDER BY type`,
         [c.order.orderId],
       );
+      // Add-on không đổi tiền bảo đảm: vườn nhận lại đủ 800.000 (2 cây không khai giá × 400.000).
       expect(disbursements).toEqual([
         { type: 'PAYOUT', amount: '500000', status: 'PENDING' },
+        { type: 'SECURITY_RETURN', amount: '800000', status: 'PENDING' },
       ]);
       const components = await sql(
         `SELECT component_type, provider_fee, status FROM payment_components
@@ -641,6 +646,7 @@ describe('Add-on: đề xuất, trả tiền, báo xong, chia tiền (e2e)', () 
         addonAmount: '100000',
         customerTotal: '590000',
         refundAmount: '0',
+        compensationAmount: '0',
       });
       // Vườn: giá dịch vụ đã làm 500.000, bị trừ 12% = 60.000, nhận 500.000 (gồm phí lấy cây 60.000).
       const providerView = (await detail(c.order.orderId, c.provider.auth))

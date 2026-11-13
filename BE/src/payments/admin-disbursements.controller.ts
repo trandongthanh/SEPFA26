@@ -32,7 +32,7 @@ export class AdminDisbursementsController {
   @Get()
   @ApiOperation({
     summary:
-      'Admin xem danh sách lệnh chi (tiền phải chuyển cho vườn), lệnh tới hạn sớm nhất lên đầu',
+      'Admin xem danh sách lệnh chi (tiền phải chuyển cho vườn hoặc hoàn cho khách, xem field recipient), lệnh tới hạn sớm nhất lên đầu',
   })
   @ApiResponse({
     status: 400,
@@ -45,7 +45,8 @@ export class AdminDisbursementsController {
   @Post(':id/mark-paid')
   @HttpCode(200)
   @ApiOperation({
-    summary: 'Admin xác nhận đã chuyển khoản cho vườn (bấm "Đã chuyển")',
+    summary:
+      'Admin xác nhận đã chuyển khoản cho vườn hoặc cho khách (bấm "Đã chuyển")',
   })
   @ApiResponse({
     status: 400,
@@ -56,17 +57,18 @@ export class AdminDisbursementsController {
   @ApiResponse({ status: 409, description: 'DISBURSEMENT_ALREADY_PAID' })
   @ApiResponse({
     status: 409,
-    description: 'DISBURSEMENT_NOT_ELIGIBLE (chưa hết 3 ngày chờ khiếu nại)',
+    description:
+      'DISBURSEMENT_NOT_ELIGIBLE (chưa tới ngày được chi: lệnh của vườn chờ 3 ngày đối soát)',
   })
   @ApiResponse({
     status: 409,
     description:
-      'PROVIDER_BANK_INFO_MISSING (vườn chưa khai đủ tên ngân hàng, số tài khoản, chủ tài khoản)',
+      'PROVIDER_BANK_INFO_MISSING (lệnh của vườn: vườn chưa khai đủ tên ngân hàng, số tài khoản, chủ tài khoản)',
   })
   @ApiResponse({
     status: 409,
     description:
-      'DISBURSEMENT_BANK_INFO_MISSING (lệnh hoàn tiền khách chưa có tài khoản nhận — chưa dùng ở đợt này)',
+      'DISBURSEMENT_BANK_INFO_MISSING (lệnh của khách: khách chưa khai đủ tên ngân hàng, số tài khoản, chủ tài khoản)',
   })
   markPaid(
     @CurrentUser() user: CurrentUserData,

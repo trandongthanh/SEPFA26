@@ -92,6 +92,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
     }
     await post(`${id}/handover/complete`, c.provider.auth).expect(200);
     await post(`${id}/handover/confirm`, c.customer.auth).expect(200);
+    await seed.paySecurityDeposit(id);
     await ctx.dataSource.query(
       `UPDATE service_orders
          SET care_started_at = care_started_at - interval '40 days',
@@ -125,7 +126,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       [providerProfileId],
     );
 
-  // Giả lập đã qua 3 ngày chờ khiếu nại.
+  // Giả lập đã qua 3 ngày admin đối soát.
   const makeEligible = (orderId: string) =>
     ctx.dataSource.query(
       `UPDATE disbursements SET eligible_at = now() - interval '1 minute'
@@ -152,6 +153,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       addonAmount: '0',
       customerTotal: '484000',
       refundAmount: '0',
+      compensationAmount: '0',
     };
     // Trước COMPLETED: khách và vườn cùng thấy đúng phần hoá đơn, chưa có phần chia tiền.
     expect((await detail(id, c.customer.auth)).settlement).toEqual(
@@ -186,7 +188,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
     );
   });
 
-  it('settlement: vườn từ chối 1 cây → khách thấy đã hoàn 200.000; vườn nhận 236.000', async () => {
+  it('settlement: vườn từ chối 1 cây → khách thấy được hoàn 212.000 (200.000 + 6%); vườn nhận 236.000', async () => {
     const c = await toCompleted({ rejectFirst: true });
     const id = c.order.orderId;
 
@@ -196,10 +198,11 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       pickupFee: '60000',
       addonAmount: '0',
       customerTotal: '484000',
-      refundAmount: '200000',
+      refundAmount: '212000',
+      compensationAmount: '0',
     });
     expect((await detail(id, c.provider.auth)).settlement).toMatchObject({
-      refundAmount: '200000',
+      refundAmount: '212000',
       serviceAmount: '200000',
       providerFee: '24000',
       providerReceives: '236000',
@@ -219,11 +222,26 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       admin.auth,
       '?status=PENDING',
     ).expect(200);
-    expect(pending.body).toMatchObject({ total: 1, page: 1, limit: 10 });
-    const row = pending.body.data[0] as Record<string, any>;
+    // Vườn có 2 lệnh chi cùng ngày tới hạn: tiền công (PAYOUT) + trả lại tiền bảo đảm (SECURITY_RETURN).
+    expect(pending.body).toMatchObject({ total: 2, page: 1, limit: 10 });
+    const rows = pending.body.data as Record<string, any>[];
+    expect(rows.find((item) => item.type === 'SECURITY_RETURN')).toMatchObject({
+      orderId: id,
+      recipient: 'PROVIDER',
+      providerId: c.provider.profileId,
+      customerId: null,
+      amount: '800000',
+      isEligible: false,
+      status: 'PENDING',
+      bank: BANK,
+    });
+    const row = rows.find((item) => item.type === 'PAYOUT')!;
     expect(row).toMatchObject({
       orderId: id,
       orderCode: c.order.orderCode,
+      recipient: 'PROVIDER',
+      recipientName: 'Vườn Lan',
+      customerId: null,
       providerId: c.provider.profileId,
       providerName: 'Vườn Lan',
       type: 'PAYOUT',
@@ -267,10 +285,11 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
     }).expect(409);
     expect(again.body.message).toBe('DISBURSEMENT_ALREADY_PAID');
 
+    // Còn lại lệnh trả tiền bảo đảm chưa chuyển.
     expect(
       (await listDisbursements(admin.auth, '?status=PENDING').expect(200)).body
         .total,
-    ).toBe(0);
+    ).toBe(1);
     const paidList = await listDisbursements(admin.auth, '?status=PAID').expect(
       200,
     );
@@ -335,20 +354,27 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
     await setBank(second.provider.profileId);
 
     const all = await listDisbursements(admin.auth).expect(200);
-    expect(all.body.total).toBe(2);
+    // Mỗi đơn 2 lệnh chi cho vườn (PAYOUT + SECURITY_RETURN) cùng ngày tới hạn → 4 dòng.
+    expect(all.body.total).toBe(4);
     expect(
       (all.body.data as Record<string, any>[]).map((row) => row.orderId),
-    ).toEqual([second.order.orderId, first.order.orderId]);
+    ).toEqual([
+      second.order.orderId,
+      second.order.orderId,
+      first.order.orderId,
+      first.order.orderId,
+    ]);
 
-    const page2 = await listDisbursements(admin.auth, '?page=2&limit=1').expect(
+    const page2 = await listDisbursements(admin.auth, '?page=2&limit=2').expect(
       200,
     );
-    expect(page2.body).toMatchObject({ total: 2, page: 2, limit: 1 });
+    expect(page2.body).toMatchObject({ total: 4, page: 2, limit: 2 });
     expect(page2.body.data).toEqual([
+      expect.objectContaining({ orderId: first.order.orderId }),
       expect.objectContaining({ orderId: first.order.orderId }),
     ]);
     const beyond = await listDisbursements(admin.auth, '?page=9').expect(200);
-    expect(beyond.body).toMatchObject({ total: 2, data: [] });
+    expect(beyond.body).toMatchObject({ total: 4, data: [] });
 
     // Khoá dòng: 2 yêu cầu song song, mã giao dịch khác nhau → 1 cái 200, 1 cái 409.
     const targetId = all.body.data[0].id as string;
@@ -394,22 +420,6 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
     await markPaid(row.id, admin.auth, { transferCode: 'FT001' }).expect(409);
 
     await setBank(c.provider.profileId);
-    // Lệnh hoàn tiền khách (giả lập bằng SQL) KHÔNG được lấy tài khoản của vườn.
-    const setType = (type: string) =>
-      ctx.dataSource.query(`UPDATE disbursements SET type = $2 WHERE id = $1`, [
-        row.id,
-        type,
-      ]);
-    await setType('REFUND');
-    expect(
-      (await listDisbursements(admin.auth).expect(200)).body.data[0].bank,
-    ).toBeNull();
-    const refund = await markPaid(row.id, admin.auth, {
-      transferCode: 'FT001',
-    }).expect(409);
-    expect(refund.body.message).toBe('DISBURSEMENT_BANK_INFO_MISSING');
-    await setType('PAYOUT');
-
     // Danh sách gợi ý theo hồ sơ hiện tại dù lệnh chi chưa có bản chụp.
     expect(
       (await listDisbursements(admin.auth).expect(200)).body.data[0].bank,
@@ -430,5 +440,160 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       bank_holder: 'VUON LAN',
       note: null,
     });
+  });
+
+  it('admin: lệnh hoàn cho khách (REFUND) — chi được ngay, không lấy tài khoản vườn; khách chưa khai → 409, khai xong → 200', async () => {
+    const c = await newOrder();
+    const id = c.order.orderId;
+    await sign(c);
+    await setBank(c.provider.profileId); // vườn CÓ tài khoản — lệnh của khách không được mượn
+    await payToCompleted(c, { rejectFirst: true });
+    const admin = await seed.admin();
+
+    const list = await listDisbursements(admin.auth, '?status=PENDING').expect(
+      200,
+    );
+    // REFUND của khách + PAYOUT và SECURITY_RETURN của vườn.
+    expect(list.body.total).toBe(3);
+    // Lệnh của khách tới hạn ngay nên đứng trước 2 lệnh của vườn (chờ 3 ngày).
+    const listed = list.body.data as Record<string, any>[];
+    const refund = listed[0];
+    const payout = listed.find((item) => item.type === 'PAYOUT')!;
+    expect(refund).toMatchObject({
+      orderId: id,
+      orderCode: c.order.orderCode,
+      recipient: 'CUSTOMER',
+      recipientName: expect.stringMatching(/^Người /),
+      customerId: c.customer.profileId,
+      providerId: null,
+      providerName: null,
+      type: 'REFUND',
+      amount: '212000',
+      isEligible: true,
+      status: 'PENDING',
+      bank: null,
+    });
+    expect(payout).toMatchObject({
+      recipient: 'PROVIDER',
+      customerId: null,
+      providerId: c.provider.profileId,
+      type: 'PAYOUT',
+      amount: '236000',
+      isEligible: false,
+      bank: BANK,
+    });
+
+    const noBank = await markPaid(refund.id, admin.auth, {
+      transferCode: 'FT-KH-1',
+    }).expect(409);
+    expect(noBank.body.message).toBe('DISBURSEMENT_BANK_INFO_MISSING');
+
+    // Khách khai thiếu chủ tài khoản → vẫn coi là chưa khai.
+    const putProfile = (body: object) =>
+      request(http)
+        .put(`${API}/customers/me/profile`)
+        .set(c.customer.auth)
+        .send(body);
+    await putProfile({
+      bankName: 'Vietcombank',
+      bankAccount: '9876543210',
+    }).expect(200);
+    expect(
+      (await listDisbursements(admin.auth).expect(200)).body.data[0].bank,
+    ).toBeNull();
+    await markPaid(refund.id, admin.auth, { transferCode: 'FT-KH-1' }).expect(
+      409,
+    );
+
+    await putProfile({ bankHolder: 'NGUYEN VAN MINH' }).expect(200);
+    const customerBank = {
+      bankName: 'Vietcombank',
+      bankAccount: '9876543210',
+      bankHolder: 'NGUYEN VAN MINH',
+    };
+    // Danh sách gợi ý theo hồ sơ khách hiện tại dù lệnh chi chưa có bản chụp.
+    expect(
+      (await listDisbursements(admin.auth).expect(200)).body.data[0].bank,
+    ).toEqual(customerBank);
+
+    const paid = await markPaid(refund.id, admin.auth, {
+      transferCode: 'FT-KH-1',
+    }).expect(200);
+    expect(paid.body).toMatchObject({
+      id: refund.id,
+      recipient: 'CUSTOMER',
+      status: 'PAID',
+      transferCode: 'FT-KH-1',
+      bank: customerBank,
+    });
+    const [saved] = (await ctx.dataSource.query(
+      `SELECT bank_name, bank_account, bank_holder FROM disbursements WHERE id = $1`,
+      [refund.id],
+    )) as Record<string, string | null>[];
+    expect(saved).toEqual({
+      bank_name: 'Vietcombank',
+      bank_account: '9876543210',
+      bank_holder: 'NGUYEN VAN MINH',
+    });
+    // Lệnh của vườn không bị ảnh hưởng: vẫn PENDING, chưa tới hạn.
+    const early = await markPaid(payout.id, admin.auth, {
+      transferCode: 'FT-V-1',
+    }).expect(409);
+    expect(early.body.message).toBe('DISBURSEMENT_NOT_ELIGIBLE');
+  });
+
+  it('hồ sơ khách: khai / sửa / xoá 3 field ngân hàng; khách và admin đều thấy', async () => {
+    const customer = await seed.customer();
+    const admin = await seed.admin();
+    const profile = (method: 'get' | 'put', body?: object) =>
+      request(http)
+        [method](`${API}/customers/me/profile`)
+        .set(customer.auth)
+        .send(body);
+
+    const empty = await profile('get').expect(200);
+    expect(empty.body).toMatchObject({
+      bankName: null,
+      bankAccount: null,
+      bankHolder: null,
+    });
+
+    const saved = await profile('put', {
+      bankName: '  Vietcombank  ',
+      bankAccount: ' 9876543210 ',
+      bankHolder: 'NGUYEN VAN MINH',
+    }).expect(200);
+    expect(saved.body).toMatchObject({
+      bankName: 'Vietcombank',
+      bankAccount: '9876543210',
+      bankHolder: 'NGUYEN VAN MINH',
+    });
+
+    // PUT merge: gửi field khác thì ngân hàng giữ nguyên.
+    const merged = await profile('put', { address: '25 Lê Lợi' }).expect(200);
+    expect(merged.body).toMatchObject({
+      address: '25 Lê Lợi',
+      bankAccount: '9876543210',
+    });
+
+    await profile('put', { bankName: 'x'.repeat(101) }).expect(400);
+    await profile('put', { bankAccount: '1'.repeat(51) }).expect(400);
+    await profile('put', { bankHolder: 123 }).expect(400);
+
+    const forAdmin = await request(http)
+      .get(`${API}/customers/admin/${customer.profileId}`)
+      .set(admin.auth)
+      .expect(200);
+    expect(forAdmin.body).toMatchObject({
+      bankName: 'Vietcombank',
+      bankAccount: '9876543210',
+      bankHolder: 'NGUYEN VAN MINH',
+      lostDisputeCount: 0,
+    });
+
+    // Chuỗi rỗng (sau trim) = xoá.
+    const cleared = await profile('put', { bankHolder: '   ' }).expect(200);
+    expect(cleared.body.bankHolder).toBeNull();
+    expect(cleared.body.bankName).toBe('Vietcombank');
   });
 });

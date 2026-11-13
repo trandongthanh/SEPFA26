@@ -99,6 +99,12 @@ export class CustomersService {
           profile.cccdBackUrl = dto.cccdBackUrl;
         if (dto.selfieWithIdUrl !== undefined)
           profile.selfieWithIdUrl = dto.selfieWithIdUrl;
+        // Tài khoản nhận tiền hoàn: gửi chuỗi rỗng (sau trim) = xoá trường đó.
+        if (dto.bankName !== undefined) profile.bankName = dto.bankName || null;
+        if (dto.bankAccount !== undefined)
+          profile.bankAccount = dto.bankAccount || null;
+        if (dto.bankHolder !== undefined)
+          profile.bankHolder = dto.bankHolder || null;
 
         // Mã hóa AES + hash SHA-256 để check unique (giống SĐT).
         if (dto.cccdNumber !== undefined) {
@@ -185,8 +191,14 @@ export class CustomersService {
   }
 
   // Bản cho chủ hồ sơ: giải mã SĐT/CCCD, bỏ cccdNumberHash (hash không khoá — dò ngược được).
+  // Bỏ cả lostDisputeCount: số lần thua tranh chấp là ghi chú nội bộ cho admin, khách không thấy.
   private toOwnerView(profile: CustomerProfile, account: Account | null) {
-    const { cccdNumberHash: _hash, account: _account, ...rest } = profile;
+    const {
+      cccdNumberHash: _hash,
+      account: _account,
+      lostDisputeCount: _lostDisputeCount,
+      ...rest
+    } = profile;
     return {
       ...rest,
       phone: account?.phone ? this.crypto.decrypt(account.phone) : null,

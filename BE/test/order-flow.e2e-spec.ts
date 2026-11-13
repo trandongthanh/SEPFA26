@@ -93,7 +93,7 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
     await pay(c);
   };
 
-  it('luồng chính: submit → ACCEPT → ký 2 bên → SePay → bàn giao → khách xác nhận → IN_CARE', async () => {
+  it('luồng chính: submit → ACCEPT → ký 2 bên → SePay → bàn giao → khách xác nhận → vườn nộp bảo đảm → IN_CARE', async () => {
     const c = await setup();
     const { orderId, plantIds } = c.order;
 
@@ -101,7 +101,11 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
     expect(submitted.body.status).toBe('PENDING_PROVIDER');
 
     const accepted = await accept(c);
-    expect(accepted.body).toMatchObject({ status: 'AGREEMENT_PENDING' });
+    // 2 cây không khai giá → tiền bảo đảm dự kiến 2 × (2 × 200.000) = 800.000.
+    expect(accepted.body).toMatchObject({
+      status: 'AGREEMENT_PENDING',
+      estimatedSecurityDeposit: '800000',
+    });
     expect(accepted.body.agreementId).toEqual(expect.any(String));
 
     const first = await post(
@@ -151,6 +155,8 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
       c.provider.auth,
     ).expect(200);
     expect(completed.body.finalTotal).toBe('400000');
+    // 2 cây không khai giá → mức đền mỗi cây 2 × 200.000, tiền bảo đảm 800.000.
+    expect(completed.body.securityDepositAmount).toBe('800000');
     expect(await statusOf(orderId, c.provider.auth)).toBe(
       'HANDOVER_AWAITING_CONFIRM',
     );
@@ -159,10 +165,20 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
       `${orderId}/handover/confirm`,
       c.customer.auth,
     ).expect(200);
+    // Khách đồng ý: đơn CHƯA sang IN_CARE, phiên nhận cây chờ vườn nộp tiền bảo đảm trong 2 giờ.
     expect(confirmed.body).toMatchObject({
-      status: 'IN_CARE',
+      status: 'HANDOVER_AWAITING_CONFIRM',
+      handoverStatus: 'AWAITING_DEPOSIT',
       finalTotal: '400000',
+      securityDepositAmount: '800000',
     });
+    expect(confirmed.body.depositDueAt).toEqual(expect.any(String));
+    expect(await statusOf(orderId, c.customer.auth)).toBe(
+      'HANDOVER_AWAITING_CONFIRM',
+    );
+    // Tiền bảo đảm về đủ → IN_CARE, ngày chăm tính từ lúc này.
+    await seed.paySecurityDeposit(orderId);
+    expect(await statusOf(orderId, c.customer.auth)).toBe('IN_CARE');
     const [order] = (await ctx.dataSource.query(
       'SELECT care_started_at, care_due_at, final_locked_at FROM service_orders WHERE id = $1',
       [orderId],
@@ -357,7 +373,7 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
     expect(confirm.body.message).toBe('INVALID_STATE_TRANSITION');
   });
 
-  it('vườn từ chối 1 cây lúc nhận → giá chốt còn 1 cây, xác nhận ghi bút toán hoàn', async () => {
+  it('vườn từ chối 1 cây lúc nhận → giá chốt còn 1 cây; khách xác nhận thì sổ CHƯA đổi (hoàn lúc chia tiền cuối đơn)', async () => {
     const c = await setup();
     await toPaid(c);
     const [keep, reject] = c.order.plantIds;
@@ -379,6 +395,11 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
       c.provider.auth,
     ).expect(200);
     expect(completed.body.finalTotal).toBe('200000');
+    // Cây bị từ chối không có mức đền, không vào tiền bảo đảm.
+    expect(completed.body.securityDepositAmount).toBe('400000');
+    expect(completed.body.plants).toEqual([
+      { plantId: keep, compensationCap: '400000' },
+    ]);
 
     await post(`${c.order.orderId}/handover/confirm`, c.customer.auth).expect(
       200,
@@ -388,11 +409,90 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
         WHERE service_order_id = $1 ORDER BY created_at`,
       [c.order.orderId],
     )) as { entry_type: string; amount: string; balance_after: string }[];
-    // 484.000 = 400.000 + 6% (24.000) + 60.000. REFUND chưa hoàn phần 6% của cây bị từ chối
-    // (đã ghi nhận, chờ mentor) nên số dư còn 284.000.
+    // 484.000 = 400.000 + 6% (24.000) + 60.000 vẫn nằm nguyên trong sổ; phần của cây bị từ chối
+    // (200.000 + 6%) hoàn lúc đơn COMPLETED — kiểm ở order-return.
     expect(ledger).toEqual([
       { entry_type: 'DEPOSIT', amount: '484000', balance_after: '484000' },
-      { entry_type: 'REFUND', amount: '-200000', balance_after: '284000' },
     ]);
+    const [{ count }] = (await ctx.dataSource.query(
+      'SELECT COUNT(*)::int AS count FROM disbursements WHERE service_order_id = $1',
+      [c.order.orderId],
+    )) as { count: number }[];
+    expect(count).toBe(0);
+    // Khách chưa thấy tiền hoàn cho tới lúc chia tiền.
+    const detail = await request(http)
+      .get(`${API}/orders/${c.order.orderId}`)
+      .set(c.customer.auth)
+      .expect(200);
+    expect(detail.body.settlement.refundAmount).toBe('0');
+  });
+
+  it('bỏ ADJUST: decision ADJUST → 400; complete gửi proposedFinalTotal → 400; mức đền = giá khai hoặc 2 × giá gói', async () => {
+    const c = await setup();
+    await toPaid(c);
+    const { orderId } = c.order;
+    const [declared, plain] = c.order.plantIds;
+    // Cây A khách khai giá 3.000.000; cây B không khai.
+    await ctx.dataSource.query(
+      `UPDATE plants SET is_value_declared = true, declared_value = 3000000 WHERE id = $1`,
+      [declared],
+    );
+    await post(`${orderId}/handover/start`, c.provider.auth).expect(201);
+
+    await post(
+      `${orderId}/handover/plants/${declared}/assess`,
+      c.provider.auth,
+      assessBody('ADJUST'),
+    ).expect(400);
+    await post(
+      `${orderId}/handover/plants/${declared}/assess`,
+      c.provider.auth,
+      assessBody(),
+    ).expect(201);
+    await post(
+      `${orderId}/handover/plants/${plain}/assess`,
+      c.provider.auth,
+      assessBody('ACCEPT_HIGH_RISK'),
+    ).expect(201);
+
+    await post(`${orderId}/handover/complete`, c.provider.auth, {
+      proposedFinalTotal: '350000',
+    }).expect(400);
+    expect(await statusOf(orderId, c.provider.auth)).toBe(
+      'HANDOVER_IN_PROGRESS',
+    );
+
+    const completed = await post(
+      `${orderId}/handover/complete`,
+      c.provider.auth,
+    ).expect(200);
+    // Giá công luôn = giá gói × số cây nhận, giá khai không vào tiền công.
+    expect(completed.body).toMatchObject({
+      finalTotal: '400000',
+      securityDepositAmount: '3400000',
+    });
+    expect(completed.body.customerConfirmDueAt).toEqual(expect.any(String));
+    expect(completed.body.plants).toHaveLength(2);
+    expect(completed.body.plants).toEqual(
+      expect.arrayContaining([
+        { plantId: declared, compensationCap: '3000000' },
+        { plantId: plain, compensationCap: '400000' },
+      ]),
+    );
+    const caps = (await ctx.dataSource.query(
+      `SELECT id, protection_cap, handover_decision FROM plants
+        WHERE service_order_id = $1`,
+      [orderId],
+    )) as { id: string; protection_cap: string; handover_decision: string }[];
+    expect(caps).toEqual(
+      expect.arrayContaining([
+        { id: declared, protection_cap: '3000000', handover_decision: 'ACCEPT' },
+        {
+          id: plain,
+          protection_cap: '400000',
+          handover_decision: 'ACCEPT_HIGH_RISK',
+        },
+      ]),
+    );
   });
 });
