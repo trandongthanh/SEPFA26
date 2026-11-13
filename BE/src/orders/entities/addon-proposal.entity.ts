@@ -9,6 +9,7 @@ import {
 } from 'typeorm';
 import { Account } from '../../accounts/entities/account.entity';
 import { BaseEntity } from '../../common/entities/base.entity';
+import type { OverallHealth } from '../../care-reports/care-report.constants';
 import type { AddonExpiredReason, AddonStatus } from '../addon-rules';
 import { Plant } from './plant.entity';
 import { ServiceOrder } from './service-order.entity';
@@ -28,6 +29,10 @@ import { ServiceOrder } from './service-order.entity';
 @Check(
   'CHK_addon_proposals_expired_reason',
   `"expired_reason" IS NULL OR "expired_reason" IN ('NO_RESPONSE','NOT_PAID','ORDER_RETURNING')`,
+)
+@Check(
+  'CHK_addon_proposals_done_plant_health',
+  `"done_plant_health" IS NULL OR "done_plant_health" IN ('GOOD','AVERAGE','POOR')`,
 )
 // Danh sách đề xuất của một đơn + đếm đề xuất đang mở.
 @Index('IDX_addon_proposals_order_status', ['serviceOrderId', 'status'])
@@ -97,6 +102,15 @@ export class AddonProposal extends BaseEntity {
 
   @Column({ type: 'text', name: 'done_note', nullable: true })
   doneNote!: string | null;
+
+  // Tình trạng cây sau khi làm (cùng thang với báo cáo chăm sóc). Null = chưa xong hoặc add-on cho cả đơn.
+  @Column({
+    type: 'varchar',
+    length: 10,
+    name: 'done_plant_health',
+    nullable: true,
+  })
+  donePlantHealth!: OverallHealth | null;
 
   @Column({
     type: 'varchar',

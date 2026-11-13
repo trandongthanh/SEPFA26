@@ -112,11 +112,21 @@ describe('Add-on: đề xuất, trả tiền, báo xong, chia tiền (e2e)', () 
       { decision },
     );
 
-  const complete = (c: Ctx, addonId: string, auth?: Auth) =>
+  const DONE_BODY = {
+    photoUrls: ['https://example.com/da-thay.jpg'],
+    note: 'Đã thay dớn',
+  };
+
+  const complete = (
+    c: Ctx,
+    addonId: string,
+    auth?: Auth,
+    body: object = DONE_BODY,
+  ) =>
     post(
       `${c.order.orderId}/addons/${addonId}/complete`,
       auth ?? c.provider.auth,
-      { photoUrls: ['https://example.com/da-thay.jpg'], note: 'Đã thay dớn' },
+      body,
     );
 
   // Đề xuất → khách đồng ý → tiền về đủ → PAID.
@@ -545,6 +555,70 @@ describe('Add-on: đề xuất, trả tiền, báo xong, chia tiền (e2e)', () 
 
       const again = await complete(c, addon.id).expect(409);
       expect(again.body.message).toBe('ADDON_INVALID_STATE');
+    });
+
+    it('báo cáo add-on: thiếu mô tả hoặc mô tả quá ngắn → 400; add-on cho cả đơn mà gửi tình trạng cây → 400', async () => {
+      const c = await toInCare();
+      const addon = await paidAddon(c);
+
+      await complete(c, addon.id, undefined, {
+        photoUrls: DONE_BODY.photoUrls,
+      }).expect(400);
+      await complete(c, addon.id, undefined, {
+        ...DONE_BODY,
+        note: 'Xong',
+      }).expect(400);
+      await complete(c, addon.id, undefined, {
+        ...DONE_BODY,
+        plantHealthAfter: 'TUYET_VOI',
+      }).expect(400);
+      const notAllowed = await complete(c, addon.id, undefined, {
+        ...DONE_BODY,
+        plantHealthAfter: 'GOOD',
+      }).expect(400);
+      expect(notAllowed.body.message).toBe('ADDON_PLANT_HEALTH_NOT_ALLOWED');
+
+      // Các lần hỏng không đổi gì: đề xuất vẫn PAID, báo đúng thì xong, tình trạng cây để trống.
+      const done = await complete(c, addon.id).expect(200);
+      expect(done.body.status).toBe('DONE');
+      expect(done.body.donePlantHealth).toBeNull();
+    });
+
+    it('báo cáo add-on gắn một cây: thiếu tình trạng cây → 400; đủ → DONE, khách xem thấy trọn báo cáo', async () => {
+      const c = await toInCare();
+      const plantId = c.order.plantIds[0];
+
+      // Chưa trả tiền thì vẫn báo lỗi trạng thái trước, chưa xét tới tình trạng cây.
+      const unpaid = await propose(c, { plantId });
+      await respond(c, unpaid.id, 'ACCEPT').expect(200);
+      const early = await complete(c, unpaid.id).expect(409);
+      expect(early.body.message).toBe('ADDON_INVALID_STATE');
+
+      const addon = await paidAddon(c, { plantId });
+      const missing = await complete(c, addon.id).expect(400);
+      expect(missing.body.message).toBe('ADDON_PLANT_HEALTH_REQUIRED');
+
+      const done = await complete(c, addon.id, undefined, {
+        ...DONE_BODY,
+        plantHealthAfter: 'AVERAGE',
+      }).expect(200);
+      expect(done.body.status).toBe('DONE');
+      expect(done.body.donePlantHealth).toBe('AVERAGE');
+
+      const seen = (await listAddons(c.order.orderId, c.customer.auth)).find(
+        (item) => item.id === addon.id,
+      )!;
+      expect(seen).toMatchObject({
+        status: 'DONE',
+        title: 'Thay giá thể',
+        reason: 'Giá thể đã mục, rễ bắt đầu úng',
+        photoUrls: ['https://example.com/re-ung.jpg'],
+        donePhotoUrls: DONE_BODY.photoUrls,
+        doneNote: DONE_BODY.note,
+        donePlantHealth: 'AVERAGE',
+        plant: { id: plantId },
+      });
+      expect(seen.doneAt).not.toBeNull();
     });
 
     it('còn add-on đã trả tiền mà chưa báo xong → trả cây bị chặn ADDON_OPEN, đơn vẫn IN_CARE; báo xong thì trả được', async () => {

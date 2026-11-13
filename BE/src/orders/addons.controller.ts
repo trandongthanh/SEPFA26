@@ -93,7 +93,13 @@ export class AddonsController {
   @Post(':addonId/complete')
   @HttpCode(200)
   @ApiOperation({
-    summary: 'Vườn báo đã làm xong add-on (khách đã trả tiền), kèm ảnh',
+    summary:
+      'Vườn báo đã làm xong add-on (khách đã trả tiền) — báo cáo gồm ảnh sau khi làm, mô tả việc đã làm, tình trạng cây',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'ADDON_PLANT_HEALTH_REQUIRED (add-on gắn một cây mà thiếu plantHealthAfter) | ADDON_PLANT_HEALTH_NOT_ALLOWED (add-on cho cả đơn mà gửi plantHealthAfter) | thiếu note hoặc note dưới 10 ký tự, photoUrls không phải 1–5 link https',
   })
   @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
   @ApiResponse({ status: 404, description: 'ADDON_NOT_FOUND' })

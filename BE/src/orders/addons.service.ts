@@ -177,7 +177,10 @@ export class AddonsService {
     return (await this.toViews([saved]))[0];
   }
 
-  /** POST /orders/:orderId/addons/:addonId/complete — vườn báo đã làm xong add-on khách đã trả tiền. */
+  /**
+   * POST /orders/:orderId/addons/:addonId/complete — vườn báo đã làm xong add-on khách đã trả tiền.
+   * Nội dung báo xong chính là báo cáo add-on khách xem ở GET …/addons.
+   */
   async complete(
     accountId: string,
     orderId: string,
@@ -190,10 +193,18 @@ export class AddonsService {
       addonId,
       (manager, proposal, now) => {
         assertAddonTransition(proposal.status, 'DONE');
+        // Add-on gắn một cây thì phải báo tình trạng cây đó; add-on cho cả đơn không có cây nào để báo.
+        if (proposal.plantId && !dto.plantHealthAfter) {
+          throw new BadRequestException('ADDON_PLANT_HEALTH_REQUIRED');
+        }
+        if (!proposal.plantId && dto.plantHealthAfter) {
+          throw new BadRequestException('ADDON_PLANT_HEALTH_NOT_ALLOWED');
+        }
         proposal.status = 'DONE';
         proposal.doneAt = now;
         proposal.donePhotoUrls = dto.photoUrls;
-        proposal.doneNote = dto.note ?? null;
+        proposal.doneNote = dto.note;
+        proposal.donePlantHealth = dto.plantHealthAfter ?? null;
         return manager.save(proposal);
       },
     );
@@ -340,6 +351,7 @@ export class AddonsService {
         doneAt: proposal.doneAt,
         donePhotoUrls: proposal.donePhotoUrls,
         doneNote: proposal.doneNote,
+        donePlantHealth: proposal.donePlantHealth,
         expiredReason: proposal.expiredReason,
         expiredAt: proposal.expiredAt,
         createdAt: proposal.createdAt,
