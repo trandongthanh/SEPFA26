@@ -35,7 +35,8 @@ export const ORDER_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
   AWAITING_PAYMENT: ['PAID', 'CANCELLED'],
   PAID: ['HANDOVER_IN_PROGRESS', 'CANCELLED'],
   HANDOVER_IN_PROGRESS: ['HANDOVER_AWAITING_CONFIRM', 'CANCELLED'],
-  HANDOVER_AWAITING_CONFIRM: ['IN_CARE'],
+  // CANCELLED: khách không giao cây, hoặc vườn không nộp tiền bảo đảm (tự bấm huỷ / quá 2 giờ).
+  HANDOVER_AWAITING_CONFIRM: ['IN_CARE', 'CANCELLED'],
   IN_CARE: ['RETURN_IN_PROGRESS'],
   // Về lại IN_CARE khi vườn hủy phiên trả (khách vắng nhà) để hẹn lại.
   RETURN_IN_PROGRESS: ['RETURN_AWAITING_CONFIRM', 'IN_CARE'],

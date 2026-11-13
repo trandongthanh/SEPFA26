@@ -193,4 +193,35 @@ export class OrderSeed {
         referenceCode: `FT${id}`,
       });
   }
+
+  /** Khoản tiền bảo đảm đang chờ vườn nộp của đơn (sinh lúc khách đồng ý biên bản nhận cây). */
+  async pendingSecurityDeposit(orderId: string) {
+    const [deposit] = (await this.ctx.dataSource.query(
+      `SELECT id, deposit_code, amount FROM security_deposits
+        WHERE service_order_id = $1 AND status = 'PENDING'`,
+      [orderId],
+    )) as { id: string; deposit_code: string; amount: string }[];
+    if (!deposit) {
+      throw new Error(`Đơn ${orderId} không có khoản tiền bảo đảm PENDING`);
+    }
+    return deposit;
+  }
+
+  /**
+   * Vườn nộp ĐỦ tiền bảo đảm qua webhook SePay giả → đơn sang IN_CARE, bắt đầu tính ngày chăm.
+   * Mọi e2e cần đơn IN_CARE gọi hàm này ngay sau khi khách `handover/confirm`.
+   */
+  async paySecurityDeposit(orderId: string) {
+    const deposit = await this.pendingSecurityDeposit(orderId);
+    const res = await this.webhook(deposit.deposit_code, deposit.amount).expect(
+      200,
+    );
+    const body = res.body as { success: boolean; status?: string };
+    if (body.status !== 'PAID') {
+      throw new Error(
+        `Webhook tiền bảo đảm không được ghi nhận: ${JSON.stringify(res.body)}`,
+      );
+    }
+    return deposit;
+  }
 }

@@ -62,4 +62,25 @@ export class PaymentsController {
       addonId,
     );
   }
+
+  @Roles('PROVIDER')
+  @Post(':orderId/security-deposit/qr')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Vườn lấy mã VietQR nộp tiền bảo đảm lúc nhận cây (trong 2 giờ kể từ lúc khách đồng ý biên bản)',
+  })
+  @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'SECURITY_DEPOSIT_NOT_PENDING (khách chưa đồng ý biên bản, khoản đã nộp hoặc đã huỷ) | SECURITY_DEPOSIT_EXPIRED (khoản còn chờ nhưng đã quá hạn 2 giờ)',
+  })
+  getSecurityDepositQr(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ) {
+    return this.paymentsService.getSecurityDepositQr(user.accountId, orderId);
+  }
 }

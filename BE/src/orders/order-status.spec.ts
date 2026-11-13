@@ -40,6 +40,7 @@ describe('ORDER_TRANSITIONS', () => {
     ['AWAITING_PAYMENT', 'CANCELLED'],
     ['PAID', 'CANCELLED'],
     ['HANDOVER_IN_PROGRESS', 'CANCELLED'],
+    ['HANDOVER_AWAITING_CONFIRM', 'CANCELLED'], // khách không giao cây / vườn không nộp bảo đảm
     ['RETURN_IN_PROGRESS', 'IN_CARE'], // vườn hủy phiên trả, hẹn lại
     ['RETURN_AWAITING_CONFIRM', 'DISPUTED'],
     ['DISPUTED', 'COMPLETED'],
@@ -57,7 +58,7 @@ describe('ORDER_TRANSITIONS', () => {
     ['AGREEMENT_PENDING', 'EXPIRED'], // hết hạn 24 giờ chỉ áp lúc chờ vườn trả lời
     ['AWAITING_PAYMENT', 'HANDOVER_IN_PROGRESS'], // chưa trả tiền đã đi lấy cây
     ['PAID', 'IN_CARE'], // bỏ qua bàn giao thẩm định
-    ['HANDOVER_AWAITING_CONFIRM', 'CANCELLED'], // thẩm định xong chỉ được xác nhận
+    ['HANDOVER_AWAITING_CONFIRM', 'RETURN_IN_PROGRESS'], // chưa nộp bảo đảm thì chưa có kỳ chăm
     ['IN_CARE', 'COMPLETED'], // bỏ qua trả cây
     ['IN_CARE', 'CANCELLED'], // đã nhận cây thì dừng giữa chừng, không hủy
     ['IN_CARE', 'DISPUTED'], // tranh chấp chỉ mở sau khi trả cây

@@ -14,13 +14,17 @@ import { CareReport } from '../care-reports/entities/care-report.entity';
 import { CryptoService } from '../crypto/crypto.service';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
-import { loadCustomerSettlement } from '../payments/customer-settlement';
-import { Disbursement } from '../payments/entities/disbursement.entity';
+import {
+  loadCustomerSettlement,
+  loadProviderSettlement,
+} from '../payments/customer-settlement';
 import { PaymentComponent } from '../payments/entities/payment-component.entity';
+import { SecurityDeposit } from '../payments/entities/security-deposit.entity';
 import { customerFeeFor } from '../payments/settlement';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { ServicePackage } from '../providers/entities/service-package.entity';
 import { ADDON_OPEN_STATUSES, overdueReason } from './addon-rules';
+import { sumCompensationCaps } from './compensation-cap';
 import { DistanceService } from './distance.service';
 import { PlantRecognitionService } from './plant-recognition.service';
 import { ContractTemplateService } from './contract-template.service';
@@ -33,6 +37,7 @@ import { computeCareReportSchedule } from './care-report-schedule';
 import { AddonProposal } from './entities/addon-proposal.entity';
 import { AgreementSignature } from './entities/agreement-signature.entity';
 import { AssessmentPhoto } from './entities/assessment-photo.entity';
+import { Dispute } from './entities/dispute.entity';
 import { Handover } from './entities/handover.entity';
 import { InitialPhoto } from './entities/initial-photo.entity';
 import { Negotiation } from './entities/negotiation.entity';
@@ -519,6 +524,15 @@ export class OrdersService {
       [handover?.id, returnHandover?.id].filter((id): id is string => !!id),
     );
     const settlement = await this.loadSettlement(order, role);
+    // Khoản tiền bảo đảm là việc giữa vườn và nền tảng → khách KHÔNG thấy field này.
+    // Lấy khoản mới nhất của đơn (PENDING / PAID / CANCELLED); khách chưa đồng ý biên bản thì null.
+    const securityDeposit =
+      role === 'CUSTOMER'
+        ? null
+        : await this.dataSource.getRepository(SecurityDeposit).findOne({
+            where: { serviceOrderId: order.id },
+            order: { createdAt: 'DESC' },
+          });
     // Số đề xuất add-on còn đang mở (chờ khách trả lời / chờ trả tiền / chờ vườn làm) để app hiện chấm báo.
     // Chỉ đọc: đề xuất đã quá hạn không tính, việc ghi EXPIRED để route add-on lo.
     const now = new Date();
@@ -531,15 +545,44 @@ export class OrdersService {
     const openAddonCount = openAddons.filter(
       (proposal) => overdueReason(proposal, now) === null,
     ).length;
+    // Tranh chấp của đơn (mỗi đơn tối đa một) — chỉ vài field để app biết có tranh chấp và các hạn;
+    // nội dung đầy đủ ở GET /orders/:orderId/dispute.
+    const dispute = await this.dataSource
+      .getRepository(Dispute)
+      .findOne({ where: { serviceOrderId: order.id } });
 
     return {
       ...order,
       settlement,
       openAddonCount,
+      dispute: dispute
+        ? {
+            id: dispute.id,
+            status: dispute.status,
+            outcome: dispute.outcome,
+            negotiationDueAt: dispute.negotiationDueAt,
+            adminDueAt: dispute.adminDueAt,
+          }
+        : null,
+      // Trạng thái phiên NHẬN cây mới nhất (vd AWAITING_DEPOSIT = chờ vườn nộp tiền bảo đảm); chưa có → null.
+      handoverStatus: handover?.status ?? null,
+      ...(role === 'CUSTOMER'
+        ? {}
+        : {
+            securityDeposit: securityDeposit
+              ? {
+                  amount: securityDeposit.amount,
+                  status: securityDeposit.status,
+                  dueAt: securityDeposit.dueAt,
+                }
+              : null,
+          }),
       plants: order.plants.map((plant) => {
         const plantPhotos = photos.filter((photo) => photo.plantId === plant.id);
         return {
           ...plant,
+          // Mức đền của cây (có sau khi vườn chốt biên bản nhận cây; cây bị từ chối = null).
+          compensationCap: plant.protectionCap,
           initialPhotos: plantPhotos,
           photos: plantPhotos,
         };
@@ -619,33 +662,8 @@ export class OrdersService {
       return customerPart;
     }
 
-    const [components, payout] = await Promise.all([
-      this.dataSource.getRepository(PaymentComponent).find({
-        where: { serviceOrderId: order.id },
-      }),
-      this.dataSource.getRepository(Disbursement).findOne({
-        where: { serviceOrderId: order.id, type: 'PAYOUT' },
-      }),
-    ]);
-    return {
-      ...customerPart,
-      // Giá dịch vụ đã làm = giá gói chốt + các add-on đã làm; phí 12% cộng từ từng dòng hoá đơn.
-      serviceAmount: (
-        BigInt(order.finalTotal ?? order.provisionalTotal) +
-        BigInt(customerPart.addonAmount)
-      ).toString(),
-      providerFee: components
-        .reduce((sum, component) => sum + BigInt(component.providerFee), 0n)
-        .toString(),
-      providerReceives: payout?.amount ?? '0',
-      payout: payout
-        ? {
-            status: payout.status,
-            eligibleAt: payout.eligibleAt,
-            paidAt: payout.paidAt,
-          }
-        : null,
-    };
+    // Cùng hàm với response vườn bấm đồng ý đề nghị tranh chấp → hai chỗ luôn cùng hình dạng.
+    return loadProviderSettlement(this.dataSource.manager, order, customerPart);
   }
 
   /**
@@ -959,7 +977,17 @@ export class OrdersService {
       );
       // apply lưu luôn provisionalTotal (nếu vườn đề xuất giá) cùng lần đổi trạng thái.
       await this.orderState.apply(manager, locked, 'AGREEMENT_PENDING');
-      return { status: locked.status, agreementId: agreement.id };
+      return {
+        status: locked.status,
+        agreementId: agreement.id,
+        // Tiền bảo đảm DỰ KIẾN vườn phải nộp lúc nhận cây nếu nhận hết mọi cây, để vườn chuẩn bị tiền:
+        // Σ mức đền (giá khai nếu có khai, không thì 2 × giá gói). Đơn mẫu 3.000.000 + 400.000 = 3.400.000.
+        // Số thật chốt lúc vườn chốt biên bản (cây bị từ chối không tính).
+        estimatedSecurityDeposit: sumCompensationCaps(
+          plants,
+          BigInt(locked.basePriceSnapshot),
+        ).toString(),
+      };
     });
   }
 
@@ -1158,7 +1186,7 @@ export class OrdersService {
     pkg: ServicePackage,
   ) {
     // D3: khai giá (isValueDeclared=true) thì BẮT BUỘC có declaredValue —
-    // chặn mở khoá ADJUST khống + trần đền bù null ở bàn giao.
+    // không thì lúc nhận cây mức đền của cây khai giá không có số để lấy.
     if (plant.isValueDeclared === true && plant.declaredValue === undefined) {
       throw new BadRequestException('DECLARED_VALUE_REQUIRED');
     }

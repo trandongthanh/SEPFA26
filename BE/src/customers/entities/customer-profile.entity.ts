@@ -77,4 +77,19 @@ export class CustomerProfile extends BaseEntity {
 
   @Column({ type: 'varchar', length: 500, name: 'selfie_with_id_url', nullable: true })
   selfieWithIdUrl!: string | null;
+
+  // Tài khoản nhận tiền hoàn / tiền đền — lệnh chi cho khách chụp lại 3 cột này lúc tạo.
+  // Admin đối chiếu tên chủ tài khoản với họ tên eKYC trước khi chuyển.
+  @Column({ type: 'varchar', length: 100, name: 'bank_name', nullable: true })
+  bankName!: string | null;
+
+  @Column({ type: 'varchar', length: 50, name: 'bank_account', nullable: true })
+  bankAccount!: string | null;
+
+  @Column({ type: 'varchar', length: 100, name: 'bank_holder', nullable: true })
+  bankHolder!: string | null;
+
+  // Số lần khách thua tranh chấp (admin kết luận mọi cây bị khiếu nại đều không lỗi). Không phạt tiền.
+  @Column({ type: 'int', name: 'lost_dispute_count', default: 0 })
+  lostDisputeCount!: number;
 }

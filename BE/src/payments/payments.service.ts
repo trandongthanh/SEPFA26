@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -15,14 +16,21 @@ import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { expireAddon } from '../orders/addon-expiry';
 import { extractAddonCode, overdueReason } from '../orders/addon-rules';
 import { AddonProposal } from '../orders/entities/addon-proposal.entity';
+import { Handover } from '../orders/entities/handover.entity';
 import { ServiceOrder } from '../orders/entities/service-order.entity';
-import { extractOrderCode } from '../orders/order-code';
+import {
+  extractOrderCode,
+  extractSecurityDepositCode,
+} from '../orders/order-code';
+import { OrderStateService } from '../orders/order-state.service';
 import { assertTransition } from '../orders/order-status';
+import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { SepayWebhookDto } from './dto/sepay-webhook.dto';
 import { EscrowLedger } from './entities/escrow-ledger.entity';
 import { PaymentComponent } from './entities/payment-component.entity';
 import { PaymentTransaction } from './entities/payment-transaction.entity';
 import { PaymentWebhookLog } from './entities/payment-webhook-log.entity';
+import { SecurityDeposit } from './entities/security-deposit.entity';
 import { escrowBalance } from './escrow-balance';
 
 const PG_UNIQUE_VIOLATION = '23505';
@@ -44,8 +52,13 @@ export class PaymentsService {
     private readonly customerRepo: Repository<CustomerProfile>,
     @InjectRepository(AddonProposal)
     private readonly addonRepo: Repository<AddonProposal>,
+    @InjectRepository(ProviderProfile)
+    private readonly providerRepo: Repository<ProviderProfile>,
+    @InjectRepository(SecurityDeposit)
+    private readonly depositRepo: Repository<SecurityDeposit>,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
+    private readonly orderState: OrderStateService,
   ) {}
 
   /**
@@ -110,7 +123,52 @@ export class PaymentsService {
     return this.buildQr(amount.toString(), proposal.addonCode);
   }
 
-  // Thông tin chuyển khoản + URL ảnh VietQR — dùng chung cho tiền đơn và tiền add-on.
+  /**
+   * POST /orders/:orderId/security-deposit/qr — vườn của đơn lấy QR nộp tiền bảo đảm tại chỗ.
+   * Đọc-tính-trả, không ghi DB → gọi lại bao nhiêu lần cũng được trong lúc khoản còn PENDING.
+   * Đơn mẫu: amount "3400000", transferContent "BAODAM5E6F7A8B", dueAt = lúc khách đồng ý + 2 giờ.
+   * Khoản đã nộp / đã huỷ / khách chưa đồng ý biên bản → 409 SECURITY_DEPOSIT_NOT_PENDING.
+   * Khoản còn PENDING nhưng đã quá hạn 2 giờ → 409 SECURITY_DEPOSIT_EXPIRED.
+   */
+  async getSecurityDepositQr(accountId: string, orderId: string) {
+    // Người ngoài đơn → 404, chống IDOR (cùng luật với các route bàn giao của vườn).
+    const provider = await this.providerRepo.findOne({ where: { accountId } });
+    if (!provider) {
+      throw new NotFoundException('ORDER_NOT_FOUND');
+    }
+    // Vườn bị tước APPROVED không được tiếp tục bàn giao — nộp bảo đảm là bước đưa đơn vào IN_CARE.
+    if (provider.verificationStatus !== 'APPROVED') {
+      throw new ForbiddenException('PROFILE_NOT_APPROVED');
+    }
+    const order = await this.orderRepo.findOne({
+      where: { id: orderId, providerId: provider.id },
+    });
+    if (!order) {
+      throw new NotFoundException('ORDER_NOT_FOUND');
+    }
+    const deposit = await this.depositRepo.findOne({
+      where: {
+        serviceOrderId: order.id,
+        providerId: provider.id,
+        status: 'PENDING',
+      },
+    });
+    if (!deposit) {
+      throw new ConflictException('SECURITY_DEPOSIT_NOT_PENDING');
+    }
+    // Quá 2 giờ mà bộ quét chưa kịp huỷ đơn: không phát QR nữa, vì tiền chuyển lúc này webhook cũng
+    // không ghi nhận (khách đồng ý 09:00 → hạn 11:00; 11:01 vườn xin QR → 409).
+    if (deposit.dueAt.getTime() <= Date.now()) {
+      throw new ConflictException('SECURITY_DEPOSIT_EXPIRED');
+    }
+    // Cùng hình dạng với QR tiền đơn / QR add-on (qrImageUrl + thông tin ngân hàng), thêm hạn nộp.
+    return {
+      ...this.buildQr(deposit.amount, deposit.depositCode),
+      dueAt: deposit.dueAt,
+    };
+  }
+
+  // Thông tin chuyển khoản + URL ảnh VietQR — dùng chung cho tiền đơn, tiền add-on và tiền bảo đảm.
   private buildQr(amount: string, transferContent: string) {
     const bin = this.config.get<string>('BANK_BIN')!;
     const accountNumber = this.config.get<string>('BANK_ACCOUNT_NUMBER')!;
@@ -221,6 +279,20 @@ export class PaymentsService {
 
     // Từ đây trở xuống: tiền THẬT đã vào tài khoản mình — mọi nhánh thoát
     // đều phải để lại dấu vết trong transactions (5).
+
+    // Tiền bảo đảm của vườn có mã riêng (BAODAM + 8 hex, không lẫn với mã đơn / mã add-on)
+    // → rẽ nhánh trước khi tìm mã đơn.
+    const depositCode = extractSecurityDepositCode(dto.content ?? '');
+    if (depositCode) {
+      return this.handleSecurityDepositPayment(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        depositCode,
+        transferAmount,
+      );
+    }
 
     // Tiền add-on có mã riêng (ADDON + 8 hex, không lẫn với mã đơn) → rẽ nhánh trước khi tìm mã đơn.
     const addonCode = extractAddonCode(dto.content ?? '');
@@ -425,6 +497,118 @@ export class PaymentsService {
       return { success: true, ignored };
     }
     return { success: true, addonCode, status: 'PAID' };
+  }
+
+  /**
+   * Tiền bảo đảm của vườn vào (đơn đang HANDOVER_AWAITING_CONFIRM, phiên nhận cây AWAITING_DEPOSIT).
+   * Đạt khi: khoản còn PENDING, đơn còn chờ, còn hạn 2 giờ, đủ tiền → 1 transaction DB: giao dịch SUCCESS + bút toán
+   * SECURITY_IN vào sổ BẢO ĐẢM (số thực nhận) + khoản PAID + phiên nhận cây CONFIRMED + đơn IN_CARE,
+   * ngày chăm tính từ LÚC NÀY (trước đó vườn chưa được mang cây đi).
+   * Đơn mẫu: vườn chuyển 3.400.000 nội dung BAODAM5E6F7A8B → sổ bảo đảm +3.400.000 (sổ đơn vẫn 484.000).
+   * Không đạt (thiếu tiền, quá hạn, khoản đã nộp / đã huỷ, mã không khớp) → tiền thật vẫn ghi `transactions`
+   * PENDING để admin hoàn tay cho vườn, trả 200 như mọi nhánh "không xử lý" khác, không đổi gì khác.
+   */
+  private async handleSecurityDepositPayment(
+    log: PaymentWebhookLog,
+    sepayTxnId: string,
+    dto: SepayWebhookDto,
+    rawBody: Record<string, unknown>,
+    depositCode: string,
+    transferAmount: bigint,
+  ) {
+    const found = await this.depositRepo.findOne({ where: { depositCode } });
+    if (!found) {
+      this.logger.warn(
+        `Webhook ${sepayTxnId}: mã bảo đảm ${depositCode} không khớp khoản nào`,
+      );
+      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, null);
+      return { success: true, ignored: 'SECURITY_DEPOSIT_NOT_MATCHED' };
+    }
+    const orderId = found.serviceOrderId;
+    await this.webhookLogRepo.update(log.id, { matchedOrderId: orderId });
+
+    const ignored = await this.dataSource.transaction(async (manager) => {
+      // Khoá đơn trước rồi khoá khoản bảo đảm — cùng thứ tự với nhánh vườn huỷ / bộ quét 2 giờ,
+      // nên tiền về và lệnh huỷ chạy cùng lúc chỉ một bên thắng.
+      const order = await this.orderState.lock(manager, orderId);
+      const deposit = await manager.findOne(SecurityDeposit, {
+        where: { id: found.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (
+        !order ||
+        !deposit ||
+        deposit.status !== 'PENDING' ||
+        order.status !== 'HANDOVER_AWAITING_CONFIRM'
+      ) {
+        return 'SECURITY_DEPOSIT_NOT_PENDING';
+      }
+      const now = new Date();
+      // Chỉ ghi nhận khi "đủ tiền và còn hạn": quá 2 giờ thì đơn sắp bị bộ quét huỷ, hoàn khách 100%
+      // → tiền tới trễ ghi chờ admin hoàn tay cho vườn, không đưa đơn vào IN_CARE nữa.
+      if (deposit.dueAt.getTime() <= now.getTime()) {
+        return 'SECURITY_DEPOSIT_EXPIRED';
+      }
+      if (transferAmount < BigInt(deposit.amount)) {
+        // KHÔNG nhận một phần — giống luật thanh toán đơn.
+        return 'INSUFFICIENT_AMOUNT';
+      }
+
+      const txn = await this.saveSuccessTransaction(
+        manager,
+        order.id,
+        sepayTxnId,
+        transferAmount,
+        dto,
+        rawBody,
+      );
+      // Ghi toàn bộ tiền thật nhận (kể cả chuyển dư) vào sổ BẢO ĐẢM; balance_after là số dư riêng sổ này.
+      const lastBalance = await escrowBalance(manager, order.id, 'SECURITY');
+      await manager.save(
+        manager.create(EscrowLedger, {
+          serviceOrderId: order.id,
+          transactionId: txn.id,
+          book: 'SECURITY' as const,
+          entryType: 'SECURITY_IN' as const,
+          amount: transferAmount.toString(),
+          balanceAfter: (lastBalance + transferAmount).toString(),
+          note: `Vườn nộp tiền bảo đảm đơn ${order.orderCode} (${deposit.depositCode}) qua SePay #${sepayTxnId}`,
+        }),
+      );
+      deposit.status = 'PAID';
+      deposit.paidAt = now;
+      deposit.transactionId = txn.id;
+      await manager.save(deposit);
+
+      await manager.update(
+        Handover,
+        {
+          serviceOrderId: order.id,
+          handoverType: 'IN',
+          status: 'AWAITING_DEPOSIT',
+        },
+        { status: 'CONFIRMED', confirmedAt: now, lockedAt: now },
+      );
+
+      // Điểm khoá giá CHÍNH THỨC + bắt đầu kỳ chăm: gói 30 ngày → care_due_at = now + 30 ngày.
+      order.finalLockedAt = now;
+      order.careStartedAt = now;
+      order.careDueAt = new Date(
+        now.getTime() + order.durationDaysSnapshot * 24 * 60 * 60 * 1000,
+      );
+      await this.orderState.apply(manager, order, 'IN_CARE');
+      await manager.update(PaymentWebhookLog, log.id, { processed: true });
+      return null;
+    });
+
+    if (ignored) {
+      this.logger.warn(
+        `Webhook ${sepayTxnId}: tiền bảo đảm ${depositCode} không ghi nhận được (${ignored}, nhận ${transferAmount})`,
+      );
+      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, orderId);
+      return { success: true, ignored };
+    }
+    return { success: true, depositCode, status: 'PAID' };
   }
 
   // ---- helpers ----

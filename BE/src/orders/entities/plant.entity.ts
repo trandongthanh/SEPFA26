@@ -16,7 +16,7 @@ import { ServiceOrder } from './service-order.entity';
  */
 @Entity({ name: 'plants' })
 @Check(
-  `"handover_decision" IS NULL OR "handover_decision" IN ('ACCEPT','ACCEPT_HIGH_RISK','ADJUST','REJECT')`,
+  `"handover_decision" IS NULL OR "handover_decision" IN ('ACCEPT','ACCEPT_HIGH_RISK','REJECT')`,
 )
 export class Plant extends BaseEntity {
   @PrimaryGeneratedColumn('uuid')
@@ -51,7 +51,8 @@ export class Plant extends BaseEntity {
   @Column({ type: 'bigint', name: 'declared_value', nullable: true })
   declaredValue!: string | null;
 
-  // Trần đền bù — set tại bàn giao (vòng handover), không phải lúc tạo đơn.
+  // Mức đền của cây — chốt lúc vườn chốt biên bản nhận cây, cho MỌI cây được nhận:
+  // có khai giá = declared_value, không khai = 2 × giá gói. Cây bị từ chối = null.
   @Column({ type: 'bigint', name: 'protection_cap', nullable: true })
   protectionCap!: string | null;
 
@@ -62,7 +63,7 @@ export class Plant extends BaseEntity {
     name: 'handover_decision',
     nullable: true,
   })
-  handoverDecision!: 'ACCEPT' | 'ACCEPT_HIGH_RISK' | 'ADJUST' | 'REJECT' | null;
+  handoverDecision!: 'ACCEPT' | 'ACCEPT_HIGH_RISK' | 'REJECT' | null;
 
   @Column({ type: 'boolean', name: 'is_high_risk', default: false })
   isHighRisk!: boolean;

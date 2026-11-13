@@ -1,4 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsNumber,
   IsOptional,
@@ -10,6 +11,7 @@ import {
   Min,
 } from 'class-validator';
 import { CCCD_REGEX, VN_PHONE_REGEX } from '../../common/identity';
+import { toTrimmed } from '../../common/transforms';
 
 // PUT merge (C2): field không gửi giữ nguyên; muốn xoá phải gửi null tường minh.
 export class UpsertCustomerProfileDto {
@@ -71,4 +73,26 @@ export class UpsertCustomerProfileDto {
   @IsUrl({}, { message: 'Ảnh selfie cùng căn cước chưa hợp lệ.' })
   @MaxLength(500)
   selfieWithIdUrl?: string;
+
+  // Tài khoản nhận tiền hoàn / tiền đền. Bắt buộc có đủ 3 trường trước khi mở tranh chấp.
+  @ApiPropertyOptional({ example: 'MBBank' })
+  @IsOptional()
+  @Transform(toTrimmed)
+  @IsString()
+  @MaxLength(100)
+  bankName?: string;
+
+  @ApiPropertyOptional({ example: '0123456789' })
+  @IsOptional()
+  @Transform(toTrimmed)
+  @IsString()
+  @MaxLength(50)
+  bankAccount?: string;
+
+  @ApiPropertyOptional({ example: 'NGUYEN VAN MINH' })
+  @IsOptional()
+  @Transform(toTrimmed)
+  @IsString()
+  @MaxLength(100)
+  bankHolder?: string;
 }

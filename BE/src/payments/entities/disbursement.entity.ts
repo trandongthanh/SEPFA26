@@ -9,18 +9,31 @@ import {
 } from 'typeorm';
 import { Account } from '../../accounts/entities/account.entity';
 import { BaseEntity } from '../../common/entities/base.entity';
+import { CustomerProfile } from '../../customers/entities/customer-profile.entity';
 import { ServiceOrder } from '../../orders/entities/service-order.entity';
 import { ProviderProfile } from '../../providers/entities/provider-profile.entity';
 
 /**
- * Lệnh chi — tiền thật phải chuyển ra khỏi tài khoản nền tảng.
- * PAYOUT: sinh lúc đơn COMPLETED (cùng transaction với bút toán PAYOUT trong escrow_ledger),
- * chờ `eligible_at` (COMPLETED + 3 ngày) rồi admin chuyển khoản tay và bấm "đã chuyển" (CP4).
- * REFUND: để dành cho hoàn tiền khách sau này, đợt này chưa ghi.
- * Tên ràng buộc khớp sql/2026-11-13-payout.sql để DB synchronize và DB chạy SQL tay giống nhau.
+ * Lệnh chi — tiền thật phải chuyển ra khỏi tài khoản nền tảng. Mỗi dòng có ĐÚNG MỘT người nhận:
+ * vườn (`provider_id`) hoặc khách (`customer_id`).
+ * PAYOUT (vườn): sinh lúc chia tiền cuối đơn (cùng transaction với bút toán PAYOUT trong escrow_ledger),
+ * chờ `eligible_at` (+3 ngày để admin đối soát) rồi admin chuyển khoản tay và bấm "đã chuyển".
+ * REFUND (khách): tiền sổ đơn hoàn cho khách — phần chênh cây bị từ chối lúc nhận, tiền công hoàn
+ * khi vườn có lỗi — kèm 6% tương ứng; chi được ngay (`eligible_at` = lúc chia tiền).
+ * COMPENSATION (khách) / SECURITY_RETURN (vườn): hai dòng của sổ bảo đảm, khai sẵn kiểu, ghi từ
+ * đợt tiền bảo đảm.
+ * Tên ràng buộc cố định để DB synchronize và DB chạy SQL tay giống nhau.
  */
 @Entity({ name: 'disbursements' })
-@Check('CHK_disbursements_type', `"type" IN ('PAYOUT','REFUND')`)
+@Check(
+  'CHK_disbursements_type',
+  `"type" IN ('PAYOUT','REFUND','SECURITY_RETURN','COMPENSATION')`,
+)
+// Đúng một trong hai có giá trị: lệnh chi không người nhận hoặc hai người nhận đều là lỗi.
+@Check(
+  'CHK_disbursements_recipient',
+  `("customer_id" IS NULL) <> ("provider_id" IS NULL)`,
+)
 @Check('CHK_disbursements_status', `"status" IN ('PENDING','PAID')`)
 @Check('CHK_disbursements_amount', `"amount" > 0`)
 // Mỗi đơn chỉ được trả vườn đúng 1 lần (bấm 2 lần / cron chạy chồng → DB chặn).
@@ -41,15 +54,22 @@ export class Disbursement extends BaseEntity {
   @JoinColumn({ name: 'service_order_id' })
   serviceOrder!: ServiceOrder;
 
-  @Column({ type: 'uuid', name: 'provider_id' })
-  providerId!: string;
+  @Column({ type: 'uuid', name: 'provider_id', nullable: true })
+  providerId!: string | null;
 
-  @ManyToOne(() => ProviderProfile, { onDelete: 'RESTRICT' })
+  @ManyToOne(() => ProviderProfile, { onDelete: 'RESTRICT', nullable: true })
   @JoinColumn({ name: 'provider_id' })
-  provider!: ProviderProfile;
+  provider!: ProviderProfile | null;
+
+  @Column({ type: 'uuid', name: 'customer_id', nullable: true })
+  customerId!: string | null;
+
+  @ManyToOne(() => CustomerProfile, { onDelete: 'RESTRICT', nullable: true })
+  @JoinColumn({ name: 'customer_id' })
+  customer!: CustomerProfile | null;
 
   @Column({ type: 'varchar', length: 20 })
-  type!: 'PAYOUT' | 'REFUND';
+  type!: 'PAYOUT' | 'REFUND' | 'SECURITY_RETURN' | 'COMPENSATION';
 
   @Column({ type: 'bigint' })
   amount!: string;
@@ -57,7 +77,7 @@ export class Disbursement extends BaseEntity {
   @Column({ type: 'timestamptz', name: 'eligible_at' })
   eligibleAt!: Date;
 
-  // Bản chụp tài khoản nhận tiền lúc tạo lệnh chi — vườn đổi hồ sơ sau đó không làm lệch lệnh chi.
+  // Bản chụp tài khoản nhận tiền lúc tạo lệnh chi — người nhận đổi hồ sơ sau đó không làm lệch lệnh chi.
   @Column({ type: 'varchar', length: 100, name: 'bank_name', nullable: true })
   bankName!: string | null;
 

@@ -16,8 +16,9 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-// Trùng giá trị handover_decision trong entity Plant.
-const DECISIONS = ['ACCEPT', 'ACCEPT_HIGH_RISK', 'ADJUST', 'REJECT'] as const;
+// Trùng giá trị handover_decision trong entity Plant. Không còn ADJUST: giá công luôn = giá gói,
+// vườn chỉ nhận / nhận kèm cờ rủi ro / từ chối; cần chăm thêm thì đề xuất add-on.
+const DECISIONS = ['ACCEPT', 'ACCEPT_HIGH_RISK', 'REJECT'] as const;
 type Decision = (typeof DECISIONS)[number];
 
 export class AssessmentPhotoDto {
