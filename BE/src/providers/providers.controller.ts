@@ -10,7 +10,12 @@ import {
   Put,
   Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Public } from '../auth/decorators/public.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -45,7 +50,18 @@ export class ProvidersController {
   @Roles('PROVIDER')
   @Put('me/profile')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Provider tạo/cập nhật hồ sơ của mình (upsert)' })
+  @ApiOperation({
+    summary:
+      'Provider tạo/cập nhật hồ sơ của mình (upsert, kèm SĐT + số CCCD) — trả cùng dạng GET /providers/me',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'PROVIDER_PROFILE_FIELDS_REQUIRED | GPS_PAIR_REQUIRED',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'PHONE_EXISTS | CCCD_NUMBER_EXISTS',
+  })
   upsertProfile(
     @CurrentUser() user: CurrentUserData,
     @Body() dto: UpsertProfileDto,
@@ -59,11 +75,15 @@ export class ProvidersController {
   @ApiOperation({
     summary: 'Provider tạo gói dịch vụ mới (cần hồ sơ đã APPROVED)',
   })
+  @ApiResponse({ status: 404, description: 'PROFILE_NOT_FOUND' })
+  @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
+  @ApiResponse({ status: 400, description: 'DECLARED_VALUE_RANGE_INVALID' })
   createPackage(
     @CurrentUser() user: CurrentUserData,
     @Body() dto: UpsertPackageDto,
   ) {
-    return this.providersService.createPackage(user?.accountId || '', dto);
+    // accountId lấy từ JWT (route cần đăng nhập + role PROVIDER) — không nhận id vườn từ client.
+    return this.providersService.createPackage(user.accountId, dto);
   }
 
   @Roles('PROVIDER')

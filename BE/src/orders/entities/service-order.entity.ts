@@ -16,8 +16,10 @@ import { OrderStatus } from '../order-status';
 import { Plant } from './plant.entity';
 
 @Entity({ name: 'service_orders' })
+// Đặt tên cố định để file sql/2026-11-11-order-status-15.sql tạo đúng tên này → synchronize không drop/tạo lại.
 @Check(
-  `"status" IN ('DRAFT','PENDING_PROVIDER','AGREEMENT_PENDING','AWAITING_PAYMENT','PAID','HANDOVER_IN_PROGRESS','HANDOVER_AWAITING_CONFIRM','IN_CARE','REJECTED','CANCELLED')`,
+  'CHK_service_orders_status',
+  `"status" IN ('DRAFT','PENDING_PROVIDER','AGREEMENT_PENDING','AWAITING_PAYMENT','PAID','HANDOVER_IN_PROGRESS','HANDOVER_AWAITING_CONFIRM','IN_CARE','RETURN_IN_PROGRESS','RETURN_AWAITING_CONFIRM','COMPLETED','REJECTED','EXPIRED','CANCELLED','DISPUTED')`,
 )
 @Check(`"plant_count" > 0`)
 @Check(`"cancelled_by" IS NULL OR "cancelled_by" IN ('CUSTOMER','PROVIDER')`)

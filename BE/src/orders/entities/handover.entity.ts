@@ -11,12 +11,17 @@ import { BaseEntity } from '../../common/entities/base.entity';
 import { ServiceOrder } from './service-order.entity';
 
 /**
- * Phiên bàn giao — khoảnh khắc "quyền kiểm soát cây" chuyển sang provider.
- * Giờ chỉ IN (nhận cây); OUT khai sẵn cho check-out Phase 2.
- * customerConfirmDueAt ghi sẵn hạn 48h — cron auto-confirm HOÃN (teammate thêm
- * @Cron sau, không phải sửa schema); AUTO_CONFIRMED vẫn nằm trong CHECK.
+ * Phiên bàn giao — khoảnh khắc "quyền kiểm soát cây" đổi tay.
+ * IN = vườn nhận cây (PAID → IN_CARE); OUT = vườn trả cây (IN_CARE → COMPLETED).
+ * customerConfirmDueAt = hạn 48h khách xác nhận; quá hạn thì tự xác nhận (AUTO_CONFIRMED).
+ * Mỗi đơn tối đa 1 phiên IN và 1 phiên OUT còn sống (phiên CANCELLED không tính),
+ * để bấm đúp "bắt đầu trả cây" không mở 2 phiên.
  */
 @Entity({ name: 'handovers' })
+@Index('UQ_handovers_order_type_active', ['serviceOrderId', 'handoverType'], {
+  unique: true,
+  where: `"status" <> 'CANCELLED'`,
+})
 @Check(`"handover_type" IN ('IN','OUT')`)
 @Check(
   `"status" IN ('IN_PROGRESS','AWAITING_CUSTOMER','CONFIRMED','AUTO_CONFIRMED','CANCELLED')`,
@@ -56,4 +61,8 @@ export class Handover extends BaseEntity {
 
   @Column({ type: 'timestamptz', name: 'locked_at', nullable: true })
   lockedAt!: Date | null;
+
+  // Lý do vườn huỷ phiên trả cây (vd khách vắng nhà, hẹn lại).
+  @Column({ type: 'text', nullable: true })
+  note!: string | null;
 }

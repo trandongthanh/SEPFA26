@@ -9,16 +9,24 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import type { CurrentUserData } from '../auth/types/current-user.type';
 import { AddInitialPhotoDto } from './dto/add-initial-photo.dto';
 import { AssessPlantDto } from './dto/assess-plant.dto';
+import { AssessReturnPlantDto } from './dto/assess-return-plant.dto';
+import { CancelReturnDto } from './dto/cancel-return.dto';
 import { CompleteHandoverDto } from './dto/complete-handover.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
+import { ContractTemplateService } from './contract-template.service';
 import { HandoverService } from './handover.service';
 import { OrdersService } from './orders.service';
 
@@ -29,6 +37,7 @@ export class OrdersController {
   constructor(
     private readonly ordersService: OrdersService,
     private readonly handoverService: HandoverService,
+    private readonly contractTemplate: ContractTemplateService,
   ) {}
 
   @Roles('CUSTOMER')
@@ -78,6 +87,11 @@ export class OrdersController {
   @HttpCode(200)
   @ApiOperation({
     summary: 'Vườn quyết đơn: ACCEPT → AGREEMENT_PENDING / REJECT → REJECTED',
+  })
+  @ApiResponse({
+    status: 403,
+    description:
+      'PROFILE_NOT_APPROVED | PROVIDER_IDENTITY_INCOMPLETE (ACCEPT khi vườn chưa khai SĐT/số CCCD)',
   })
   respondNegotiation(
     @CurrentUser() user: CurrentUserData,
@@ -164,6 +178,118 @@ export class OrdersController {
     @Ip() ip: string,
   ) {
     return this.handoverService.confirmHandover(user.accountId, orderId, ip);
+  }
+
+  // ---- Trả cây (IN_CARE → COMPLETED) ----
+
+  @Roles('PROVIDER')
+  @Post(':orderId/return/start')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Vườn bắt đầu trả cây khi đã hết hạn chăm (IN_CARE → RETURN_IN_PROGRESS)',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'CARE_NOT_DUE | INVALID_STATE_TRANSITION | ADDON_OPEN (còn add-on khách đã trả tiền mà vườn chưa báo xong)',
+  })
+  @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  startReturn(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ) {
+    return this.handoverService.startReturn(user.accountId, orderId);
+  }
+
+  @Roles('PROVIDER')
+  @Post(':orderId/return/plants/:plantId/assess')
+  @ApiOperation({
+    summary: 'Vườn ghi tình trạng từng cây lúc trả (ảnh bắt buộc)',
+  })
+  @ApiResponse({ status: 400, description: 'PLANT_NOT_IN_CARE' })
+  @ApiResponse({
+    status: 404,
+    description: 'ORDER_NOT_FOUND | PLANT_NOT_FOUND',
+  })
+  @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
+  assessReturnPlant(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Param('plantId', ParseUUIDPipe) plantId: string,
+    @Body() dto: AssessReturnPlantDto,
+  ) {
+    return this.handoverService.assessReturnPlant(
+      user.accountId,
+      orderId,
+      plantId,
+      dto,
+    );
+  }
+
+  @Roles('PROVIDER')
+  @Post(':orderId/return/complete')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Vườn chốt trả cây (→ RETURN_AWAITING_CONFIRM, hẹn khách 48h)',
+  })
+  @ApiResponse({ status: 400, description: 'UNASSESSED_PLANTS' })
+  @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
+  completeReturn(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ) {
+    return this.handoverService.completeReturn(user.accountId, orderId);
+  }
+
+  @Roles('PROVIDER')
+  @Post(':orderId/return/cancel')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Vườn huỷ phiên trả để hẹn lại (RETURN_IN_PROGRESS → IN_CARE)',
+  })
+  @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
+  cancelReturn(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: CancelReturnDto,
+  ) {
+    return this.handoverService.cancelReturn(user.accountId, orderId, dto);
+  }
+
+  @Roles('CUSTOMER')
+  @Post(':orderId/return/confirm')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Khách xác nhận đã nhận lại cây (RETURN_AWAITING_CONFIRM → COMPLETED), chia tiền + tạo lệnh chi cho vườn; settlement trả về chỉ gồm phần của khách',
+  })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
+  @ApiResponse({ status: 500, description: 'ESCROW_BALANCE_INSUFFICIENT' })
+  confirmReturn(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ) {
+    return this.handoverService.confirmReturn(user.accountId, orderId);
+  }
+
+  @Roles('CUSTOMER', 'PROVIDER')
+  @Get(':orderId/agreement/contract')
+  @ApiOperation({
+    summary:
+      'Xem hợp đồng điện tử đầy đủ (điều khoản, cây, bồi thường 120%, chữ ký)',
+  })
+  getContract(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ) {
+    return this.ordersService.getContractDetail(
+      user.accountId,
+      user.role,
+      orderId,
+    );
   }
 
   @Roles('CUSTOMER', 'PROVIDER')

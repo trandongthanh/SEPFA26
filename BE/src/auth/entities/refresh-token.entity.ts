@@ -21,6 +21,11 @@ export class RefreshToken {
   @JoinColumn({ name: 'account_id' })
   account!: Account;
 
+  // UNIQUE: /auth/refresh + /auth/logout tra theo token_hash → cần index (trước đây quét cả bảng).
+  // SHA-256 hex dài 64 nhưng GIỮ length 255: đổi length thì synchronize DROP + tạo lại cột
+  // (mất dữ liệu phiên trên DB dev). DB không chạy synchronize (prod): tạo index bằng SQL tay,
+  // xem sql/2026-10-05-auth.sql. Tên index CỐ ĐỊNH để SQL tay trên prod khớp với synchronize ở dev.
+  @Index('IDX_refresh_tokens_token_hash', { unique: true })
   @Column({ type: 'varchar', length: 255, name: 'token_hash' })
   tokenHash!: string;
 

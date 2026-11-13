@@ -4,11 +4,13 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
+import { CCCD_REGEX, VN_PHONE_REGEX } from '../../common/identity';
 
 // Trùng giá trị provider_type trong entity.
 const PROVIDER_TYPES = ['NURSERY', 'EXPERT'] as const;
@@ -16,7 +18,9 @@ type ProviderType = (typeof PROVIDER_TYPES)[number];
 
 // KHÔNG nhận verificationStatus/ratingAvg: provider không tự đặt được (chỉ admin/hệ thống).
 // C1: mọi field optional → PUT kiểu merge (đổi mỗi 1 field không phải gửi lại cả hồ sơ).
-// Hồ sơ đã được auto-tạo lúc register nên providerType/displayName luôn tồn tại sẵn.
+// Hồ sơ chưa tồn tại (account PROVIDER mới) → PUT đầu tiên TẠO hồ sơ, khi đó bắt buộc
+// providerType + displayName (2 cột NOT NULL) — thiếu → 400 PROVIDER_PROFILE_FIELDS_REQUIRED.
+// MaxLength khớp độ dài cột — vượt cột thì Postgres ném lỗi → 500 thay vì 400.
 export class UpsertProfileDto {
   @ApiPropertyOptional({ enum: PROVIDER_TYPES, example: 'NURSERY' })
   @IsOptional()
@@ -51,6 +55,24 @@ export class UpsertProfileDto {
   @IsString()
   @MaxLength(500) // khớp cột portfolio_url varchar(500)
   portfolioUrl?: string;
+
+  // SĐT lưu ở bảng accounts (dùng chung mọi role) — vườn đăng nhập Google chưa có SĐT khai ở đây.
+  // KHÔNG nhạy cảm: đổi SĐT không làm hồ sơ APPROVED về PENDING (chỉ là thông tin liên lạc).
+  @ApiPropertyOptional({ example: '0909123456' })
+  @IsOptional()
+  @IsString()
+  @Matches(VN_PHONE_REGEX, { message: 'Số điện thoại Việt Nam chưa hợp lệ.' })
+  phone?: string;
+
+  // Số CCCD: mã hoá AES + hash check trùng. NHẠY CẢM: đổi (kể cả khai lần đầu) khi APPROVED → PENDING.
+  @ApiPropertyOptional({
+    description: 'Số căn cước công dân (12 chữ số)',
+    example: '001234567890',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(CCCD_REGEX, { message: 'Số căn cước phải gồm đúng 12 chữ số.' })
+  cccdNumber?: string;
 
   @ApiPropertyOptional({
     example: 'https://res.cloudinary.com/.../portrait.jpg',
@@ -109,35 +131,42 @@ export class UpsertProfileDto {
   @ApiPropertyOptional({ example: '5' })
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   experience?: string;
 
   @ApiPropertyOptional({ example: 'Hồ Điệp, Dendro, Vũ Nữ, Lan Hài' })
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   specialties?: string;
 
   @ApiPropertyOptional({ example: 'TP.HCM, Bình Dương' })
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   serviceAreas?: string;
 
   @ApiPropertyOptional({ example: 'Chứng chỉ nông nghiệp' })
   @IsOptional()
   @IsString()
+  @MaxLength(2000)
   certificates?: string;
 
   @ApiPropertyOptional({ example: 'Vietcombank' })
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   bankName?: string;
 
   @ApiPropertyOptional({ example: '1234567890' })
   @IsOptional()
   @IsString()
+  @MaxLength(50)
   bankAccount?: string;
 
   @ApiPropertyOptional({ example: 'NGUYEN VAN A' })
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   bankHolder?: string;
 }

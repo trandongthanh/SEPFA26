@@ -1,11 +1,15 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CustomersModule } from '../customers/customers.module';
+import { Disbursement } from '../payments/entities/disbursement.entity';
 import { EscrowLedger } from '../payments/entities/escrow-ledger.entity';
 import { PaymentComponent } from '../payments/entities/payment-component.entity';
 import { ProvidersModule } from '../providers/providers.module';
 import { VideoCallsModule } from '../video-calls/video-calls.module';
+import { AddonsController } from './addons.controller';
+import { AddonsService } from './addons.service';
 import { DistanceService } from './distance.service';
+import { AddonProposal } from './entities/addon-proposal.entity';
 import { AgreementSignature } from './entities/agreement-signature.entity';
 import { AssessmentPhoto } from './entities/assessment-photo.entity';
 import { Handover } from './entities/handover.entity';
@@ -23,13 +27,16 @@ import { AdminShippingRatesController } from './admin-shipping-rates.controller'
 import { DisputesService } from './disputes.service';
 import { HandoverService } from './handover.service';
 import { OrdersController } from './orders.controller';
+import { OrderStateService } from './order-state.service';
 import { OrdersService } from './orders.service';
 import { PlantRecognitionService } from './plant-recognition.service';
+import { ContractTemplateService } from './contract-template.service';
 
 // Import Customers/Providers module để lấy repo profile + package (2 module đó export TypeOrmModule).
 // PaymentComponent/EscrowLedger đăng ký thẳng ở đây (sinh khoản phải trả lúc ký + bút toán REFUND
 // lúc confirm bàn giao đều phải CÙNG transaction với đơn) — không import PaymentsModule để tránh
-// phụ thuộc vòng (PaymentsModule đã import OrdersModule).
+// phụ thuộc vòng (PaymentsModule đã import OrdersModule). Disbursement cũng vậy: lệnh chi tạo
+// cùng transaction khách xác nhận nhận lại cây (settle-order.ts).
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -45,15 +52,23 @@ import { PlantRecognitionService } from './plant-recognition.service';
       AssessmentPhoto,
       PaymentComponent,
       EscrowLedger,
+      Disbursement,
       ShippingRate,
       OrderDispute,
+      AddonProposal,
     ]),
     CustomersModule,
     ProvidersModule,
     VideoCallsModule,
   ],
-  controllers: [OrdersController, DisputesController, AdminShippingRatesController],
-  providers: [OrdersService, HandoverService, DistanceService, DisputesService, PlantRecognitionService],
-  exports: [TypeOrmModule, DistanceService],
+  controllers: [
+    OrdersController,
+    DisputesController,
+    AdminShippingRatesController,
+    AddonsController,
+  ],
+  providers: [OrdersService, HandoverService, DistanceService, DisputesService, PlantRecognitionService, ContractTemplateService, OrderStateService, AddonsService],
+  // OrderStateService export sẵn cho module khác (webhook thanh toán chuyển sang dùng ở đợt sau).
+  exports: [TypeOrmModule, DistanceService, OrderStateService],
 })
 export class OrdersModule {}

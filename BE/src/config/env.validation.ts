@@ -1,5 +1,8 @@
 import * as Joi from 'joi';
 
+// SMTP được coi là bật khi SMTP_HOST có giá trị (không rỗng).
+const SMTP_ENABLED = Joi.string().min(1).required();
+
 export const envValidationSchema = Joi.object({
   NODE_ENV: Joi.string()
     .valid('development', 'test', 'production')
@@ -50,8 +53,39 @@ export const envValidationSchema = Joi.object({
   SEED_ADMIN_PASSWORD: Joi.string().min(8).required(),
   STREAM_API_KEY: Joi.string().required(),
   STREAM_API_SECRET: Joi.string().required(),
+
+  // ===== Video call 1-1 (src/video-calls) — đều có mặc định =====
+  // Call type riêng trên GetStream (tạo bằng script src/video-calls/scripts/setup-stream-call-type.ts).
+  STREAM_CALL_TYPE: Joi.string()
+    .pattern(/^[a-z0-9_]+$/)
+    .default('lancare_call'),
+  // User hệ thống đứng tên mọi cuộc gọi trên GetStream.
+  STREAM_SYSTEM_USER_ID: Joi.string().default('lancare-system'),
+  // Đổ chuông bao lâu thì thành cuộc gọi nhỡ (MISSED).
+  VIDEO_CALL_RING_TIMEOUT_SECONDS: Joi.number()
+    .integer()
+    .min(10)
+    .max(300)
+    .default(45),
+  // Đang nói mà thiếu người được chờ quay lại bao lâu trước khi DROPPED.
+  VIDEO_CALL_RECONNECT_GRACE_SECONDS: Joi.number()
+    .integer()
+    .min(10)
+    .max(600)
+    .default(300),
+  // Thời lượng tối đa tính từ lúc nghe (TIMEOUT).
+  VIDEO_CALL_MAX_DURATION_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .max(14400)
+    .default(3600),
+
   CLOUDINARY_URL: Joi.string().pattern(/^cloudinary:\/\//).optional(),
-  APP_BASE_URL: Joi.string().uri().optional(),
+  APP_BASE_URL: Joi.string().uri().when('SMTP_HOST', {
+    is: SMTP_ENABLED,
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
 
   // Đã dùng ở main.ts/typeorm.config.ts từ trước nhưng chưa khai schema — bổ sung cho tường minh.
   CORS_ORIGIN: Joi.string().optional(),
@@ -76,4 +110,48 @@ export const envValidationSchema = Joi.object({
   BANK_BIN: Joi.string().default('970422'),
   BANK_ACCOUNT_NUMBER: Joi.string().default('0000000000'),
   BANK_ACCOUNT_NAME: Joi.string().default('LANCARE HUB'),
+
+  // ===== AI eKYC Service (Self-hosted Python/FastAPI) =====
+  AI_SERVICE_URL: Joi.string().uri().default('http://localhost:8000'),
+
+  // ===== Google Sign-In =====
+  // Client ID OAuth (web, android, ios...) cách nhau dấu phẩy — aud hợp lệ của ID token.
+  // Để trống → POST /auth/google trả 503 GOOGLE_AUTH_NOT_CONFIGURED.
+  GOOGLE_CLIENT_IDS: Joi.string().allow('').optional(),
+
+  // ===== SMTP (gửi mật khẩu cho tài khoản tạo bằng Google) =====
+  // Để trống SMTP_HOST → không gửi mail, chỉ log cảnh báo (dev).
+  // Có SMTP_HOST → bắt buộc USER/PASS + APP_BASE_URL (link "Đổi mật khẩu" trong mail
+  // phải là URL tuyệt đối) — thiếu thì app không khởi động thay vì gửi mail hỏng.
+  SMTP_HOST: Joi.string().allow('').optional(),
+  SMTP_PORT: Joi.number().port().default(587),
+  SMTP_USER: Joi.string().when('SMTP_HOST', {
+    is: SMTP_ENABLED,
+    then: Joi.required(),
+    otherwise: Joi.allow('').optional(),
+  }),
+  SMTP_PASS: Joi.string().when('SMTP_HOST', {
+    is: SMTP_ENABLED,
+    then: Joi.required(),
+    otherwise: Joi.allow('').optional(),
+  }),
+  MAIL_FROM: Joi.string().allow('').optional(),
+
+  // 'true' → tin X-Forwarded-For (có proxy đứng trước: nginx, Render...). Trên Vercel tự bật
+  // (process.env.VERCEL) — không cần đặt. Chạy thẳng không qua proxy: KHÔNG đặt (xem main.ts).
+  TRUST_PROXY: Joi.string().valid('true', 'false').optional(),
+
+  // ===== Rate limit (@nestjs/throttler) =====
+  // 'true' → tắt hẳn rate limit (CHỈ cho e2e — test đăng nhập hàng chục lần/phút).
+  // Production cấm bật: lỡ copy .env test lên server là app không khởi động.
+  THROTTLE_DISABLED: Joi.string()
+    .when('NODE_ENV', {
+      is: 'production',
+      then: Joi.valid('false'),
+      otherwise: Joi.valid('true', 'false'),
+    })
+    .optional(),
+
+  // ===== FPT.AI eKYC (Deprecated - kept for backward compatibility) =====
+  FPTAI_API_KEY: Joi.string().allow('').optional().default(''),
 });
