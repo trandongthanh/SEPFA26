@@ -175,6 +175,7 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
       packageAmount: '400000',
       customerFee: '24000',
       pickupFee: '60000',
+      addonAmount: '0',
       customerTotal: '484000',
       refundAmount: '0',
     });
@@ -271,6 +272,7 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
       packageAmount: '400000',
       customerFee: '24000',
       pickupFee: '60000',
+      addonAmount: '0',
       customerTotal: '484000',
       refundAmount: '200000',
     });

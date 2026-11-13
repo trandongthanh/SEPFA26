@@ -149,6 +149,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       packageAmount: '400000',
       customerFee: '24000',
       pickupFee: '60000',
+      addonAmount: '0',
       customerTotal: '484000',
       refundAmount: '0',
     };
@@ -193,6 +194,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       packageAmount: '400000',
       customerFee: '24000',
       pickupFee: '60000',
+      addonAmount: '0',
       customerTotal: '484000',
       refundAmount: '200000',
     });

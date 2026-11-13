@@ -10,8 +10,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { randomUUID, timingSafeEqual } from 'crypto';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { expireAddon } from '../orders/addon-expiry';
+import { extractAddonCode, overdueReason } from '../orders/addon-rules';
+import { AddonProposal } from '../orders/entities/addon-proposal.entity';
 import { ServiceOrder } from '../orders/entities/service-order.entity';
 import { extractOrderCode } from '../orders/order-code';
 import { assertTransition } from '../orders/order-status';
@@ -39,6 +42,8 @@ export class PaymentsService {
     private readonly orderRepo: Repository<ServiceOrder>,
     @InjectRepository(CustomerProfile)
     private readonly customerRepo: Repository<CustomerProfile>,
+    @InjectRepository(AddonProposal)
+    private readonly addonRepo: Repository<AddonProposal>,
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
   ) {}
@@ -64,12 +69,55 @@ export class PaymentsService {
     }
 
     const amount = await this.sumPendingComponents(order.id);
+    return this.buildQr(amount, order.orderCode);
+  }
+
+  /**
+   * POST /orders/:orderId/addons/:addonId/payment/qr — QR trả tiền MỘT add-on khách đã đồng ý.
+   * Cùng 6 field với QR của đơn; số tiền = giá add-on + 6% (chốt lúc đồng ý), nội dung CK = mã add-on.
+   * Ví dụ add-on 100.000 → amount "106000", transferContent "ADDON1A2B3C4D".
+   */
+  async getAddonPaymentQr(accountId: string, orderId: string, addonId: string) {
+    const customer = await this.customerRepo.findOne({ where: { accountId } });
+    if (!customer) {
+      throw new NotFoundException('CUSTOMER_PROFILE_NOT_FOUND');
+    }
+    const order = await this.orderRepo.findOne({
+      where: { id: orderId, customerId: customer.id },
+    });
+    if (!order) {
+      throw new NotFoundException('ORDER_NOT_FOUND');
+    }
+    const proposal = await this.addonRepo.findOne({
+      where: { id: addonId, serviceOrderId: order.id },
+    });
+    if (!proposal) {
+      throw new NotFoundException('ADDON_NOT_FOUND');
+    }
+    // Kiểm hạn lúc chạm: quá 24 giờ chưa trả thì đóng đề xuất, không phát QR nữa.
+    const now = new Date();
+    const reason = overdueReason(proposal, now);
+    if (reason) {
+      await expireAddon(this.dataSource.manager, proposal, reason, now);
+    }
+    if (proposal.status === 'EXPIRED') {
+      throw new ConflictException('ADDON_EXPIRED');
+    }
+    if (proposal.status !== 'ACCEPTED') {
+      throw new ConflictException('ADDON_INVALID_STATE');
+    }
+    const amount = BigInt(proposal.price) + BigInt(proposal.customerFee);
+    return this.buildQr(amount.toString(), proposal.addonCode);
+  }
+
+  // Thông tin chuyển khoản + URL ảnh VietQR — dùng chung cho tiền đơn và tiền add-on.
+  private buildQr(amount: string, transferContent: string) {
     const bin = this.config.get<string>('BANK_BIN')!;
     const accountNumber = this.config.get<string>('BANK_ACCOUNT_NUMBER')!;
     const accountName = this.config.get<string>('BANK_ACCOUNT_NAME')!;
     const qrImageUrl =
       `https://img.vietqr.io/image/${bin}-${accountNumber}-compact2.png` +
-      `?amount=${amount}&addInfo=${order.orderCode}` +
+      `?amount=${amount}&addInfo=${transferContent}` +
       `&accountName=${encodeURIComponent(accountName)}`;
 
     return {
@@ -78,7 +126,7 @@ export class PaymentsService {
       bankAccountNumber: accountNumber,
       bankAccountName: accountName,
       amount,
-      transferContent: order.orderCode,
+      transferContent,
     };
   }
 
@@ -173,6 +221,20 @@ export class PaymentsService {
 
     // Từ đây trở xuống: tiền THẬT đã vào tài khoản mình — mọi nhánh thoát
     // đều phải để lại dấu vết trong transactions (5).
+
+    // Tiền add-on có mã riêng (ADDON + 8 hex, không lẫn với mã đơn) → rẽ nhánh trước khi tìm mã đơn.
+    const addonCode = extractAddonCode(dto.content ?? '');
+    if (addonCode) {
+      return this.handleAddonPayment(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        addonCode,
+        transferAmount,
+      );
+    }
+
     const orderCode = extractOrderCode(dto.content ?? '');
     if (!orderCode) {
       this.logger.warn(
@@ -222,29 +284,14 @@ export class PaymentsService {
         return false;
       }
 
-      // Retry sau crash có thể đã để lại dòng PENDING cùng sepay_txn_id
-      // (UNIQUE) — nâng cấp dòng đó thay vì insert đụng khóa.
-      let txn = await manager.findOne(PaymentTransaction, {
-        where: { sepayTxnId },
-      });
-      if (txn) {
-        txn.serviceOrderId = order.id;
-        txn.amount = transferAmount.toString();
-        txn.status = 'SUCCESS';
-        txn = await manager.save(txn);
-      } else {
-        txn = await manager.save(
-          manager.create(PaymentTransaction, {
-            serviceOrderId: order.id,
-            direction: 'IN' as const,
-            amount: transferAmount.toString(),
-            sepayTxnId,
-            transferContent: dto.content ?? null,
-            status: 'SUCCESS' as const,
-            rawPayload: rawBody,
-          }),
-        );
-      }
+      const txn = await this.saveSuccessTransaction(
+        manager,
+        order.id,
+        sepayTxnId,
+        transferAmount,
+        dto,
+        rawBody,
+      );
 
       // DEPOSIT toàn bộ tiền thật nhận (kể cả chuyển dư) — sổ phản ánh tiền thật.
       const lastBalance = await escrowBalance(manager, order.id);
@@ -279,7 +326,142 @@ export class PaymentsService {
     return { success: true, orderCode, status: 'PAID' };
   }
 
+  /**
+   * Tiền add-on vào (đơn đang IN_CARE, trạng thái đơn KHÔNG đổi).
+   * Đạt khi: đề xuất ACCEPTED, còn hạn trả 24 giờ, đủ tiền (giá + 6%) → 1 transaction DB:
+   * giao dịch SUCCESS + bút toán DEPOSIT + dòng hoá đơn ADD_ON (sinh ra đã PAID) + đề xuất PAID.
+   * Không đạt (quá hạn, thiếu tiền, đề xuất đã trả / đã đóng) → tiền thật vẫn ghi `transactions` PENDING
+   * gắn đơn để admin hoàn tay, trả 200 như mọi nhánh "không xử lý" khác.
+   */
+  private async handleAddonPayment(
+    log: PaymentWebhookLog,
+    sepayTxnId: string,
+    dto: SepayWebhookDto,
+    rawBody: Record<string, unknown>,
+    addonCode: string,
+    transferAmount: bigint,
+  ) {
+    const found = await this.addonRepo.findOne({ where: { addonCode } });
+    if (!found) {
+      this.logger.warn(
+        `Webhook ${sepayTxnId}: mã add-on ${addonCode} không khớp đề xuất nào`,
+      );
+      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, null);
+      return { success: true, ignored: 'ADDON_NOT_MATCHED' };
+    }
+    const orderId = found.serviceOrderId;
+    await this.webhookLogRepo.update(log.id, { matchedOrderId: orderId });
+
+    const ignored = await this.dataSource.transaction(async (manager) => {
+      // Khoá đơn trước (sổ ký quỹ theo đơn: 2 khoản tiền cùng vào không ghi chồng số dư), rồi khoá đề xuất.
+      const order = await manager.findOne(ServiceOrder, {
+        where: { id: orderId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const proposal = await manager.findOne(AddonProposal, {
+        where: { id: found.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!order || !proposal) {
+        return 'ADDON_NOT_PAYABLE';
+      }
+      const now = new Date();
+      const reason = overdueReason(proposal, now);
+      if (reason) {
+        // Tiền về sau hạn: đóng đề xuất (dòng này được commit vì không ném lỗi), tiền chờ admin hoàn.
+        await expireAddon(manager, proposal, reason, now);
+        return 'ADDON_NOT_PAYABLE';
+      }
+      if (proposal.status !== 'ACCEPTED' || order.status !== 'IN_CARE') {
+        return 'ADDON_NOT_PAYABLE';
+      }
+      const amountDue = BigInt(proposal.price) + BigInt(proposal.customerFee);
+      if (transferAmount < amountDue) {
+        return 'INSUFFICIENT_AMOUNT';
+      }
+
+      const txn = await this.saveSuccessTransaction(
+        manager,
+        order.id,
+        sepayTxnId,
+        transferAmount,
+        dto,
+        rawBody,
+      );
+      const lastBalance = await escrowBalance(manager, order.id);
+      await manager.save(
+        manager.create(EscrowLedger, {
+          serviceOrderId: order.id,
+          transactionId: txn.id,
+          entryType: 'DEPOSIT' as const,
+          amount: transferAmount.toString(),
+          balanceAfter: (lastBalance + transferAmount).toString(),
+          note: `Thu add-on ${proposal.addonCode} của đơn ${order.orderCode} qua SePay #${sepayTxnId}`,
+        }),
+      );
+      // Dòng hoá đơn add-on chỉ sinh khi tiền đã về → không bao giờ có dòng PENDING mồ côi.
+      await manager.save(
+        manager.create(PaymentComponent, {
+          serviceOrderId: order.id,
+          addonId: proposal.id,
+          componentType: 'ADD_ON' as const,
+          amount: proposal.price,
+          customerFee: proposal.customerFee,
+          status: 'PAID' as const,
+        }),
+      );
+      proposal.status = 'PAID';
+      proposal.paidAt = now;
+      await manager.save(proposal);
+      await manager.update(PaymentWebhookLog, log.id, { processed: true });
+      return null;
+    });
+
+    if (ignored) {
+      this.logger.warn(
+        `Webhook ${sepayTxnId}: add-on ${addonCode} không ghi nhận được (${ignored}, nhận ${transferAmount})`,
+      );
+      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, orderId);
+      return { success: true, ignored };
+    }
+    return { success: true, addonCode, status: 'PAID' };
+  }
+
   // ---- helpers ----
+
+  /**
+   * Ghi giao dịch tiền vào thành công. Retry sau crash có thể đã để lại dòng PENDING cùng
+   * sepay_txn_id (UNIQUE) — nâng cấp dòng đó thay vì insert đụng khóa.
+   */
+  private async saveSuccessTransaction(
+    manager: EntityManager,
+    orderId: string,
+    sepayTxnId: string,
+    transferAmount: bigint,
+    dto: SepayWebhookDto,
+    rawBody: Record<string, unknown>,
+  ): Promise<PaymentTransaction> {
+    const existing = await manager.findOne(PaymentTransaction, {
+      where: { sepayTxnId },
+    });
+    if (existing) {
+      existing.serviceOrderId = orderId;
+      existing.amount = transferAmount.toString();
+      existing.status = 'SUCCESS';
+      return manager.save(existing);
+    }
+    return manager.save(
+      manager.create(PaymentTransaction, {
+        serviceOrderId: orderId,
+        direction: 'IN' as const,
+        amount: transferAmount.toString(),
+        sepayTxnId,
+        transferContent: dto.content ?? null,
+        status: 'SUCCESS' as const,
+        rawPayload: rawBody,
+      }),
+    );
+  }
 
   /**
    * Ghi dấu vết tài chính cho tiền thật vào mà chưa xử lý được:

@@ -6,7 +6,10 @@ import { EscrowLedger } from '../payments/entities/escrow-ledger.entity';
 import { PaymentComponent } from '../payments/entities/payment-component.entity';
 import { ProvidersModule } from '../providers/providers.module';
 import { VideoCallsModule } from '../video-calls/video-calls.module';
+import { AddonsController } from './addons.controller';
+import { AddonsService } from './addons.service';
 import { DistanceService } from './distance.service';
+import { AddonProposal } from './entities/addon-proposal.entity';
 import { AgreementSignature } from './entities/agreement-signature.entity';
 import { AssessmentPhoto } from './entities/assessment-photo.entity';
 import { Handover } from './entities/handover.entity';
@@ -52,13 +55,19 @@ import { ContractTemplateService } from './contract-template.service';
       Disbursement,
       ShippingRate,
       OrderDispute,
+      AddonProposal,
     ]),
     CustomersModule,
     ProvidersModule,
     VideoCallsModule,
   ],
-  controllers: [OrdersController, DisputesController, AdminShippingRatesController],
-  providers: [OrdersService, HandoverService, DistanceService, DisputesService, PlantRecognitionService, ContractTemplateService, OrderStateService],
+  controllers: [
+    OrdersController,
+    DisputesController,
+    AdminShippingRatesController,
+    AddonsController,
+  ],
+  providers: [OrdersService, HandoverService, DistanceService, DisputesService, PlantRecognitionService, ContractTemplateService, OrderStateService, AddonsService],
   // OrderStateService export sẵn cho module khác (webhook thanh toán chuyển sang dùng ở đợt sau).
   exports: [TypeOrmModule, DistanceService, OrderStateService],
 })

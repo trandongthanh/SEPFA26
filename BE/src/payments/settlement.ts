@@ -59,3 +59,47 @@ export function computeSettlement({
     providerReceives: serviceAmount - providerFee + pickupFee,
   };
 }
+
+// Một dòng hoá đơn add-on khách đã trả: giá add-on + phí 6% ĐÃ THU thật lúc khách chuyển khoản.
+export interface AddonLine {
+  amount: bigint;
+  customerFee: bigint;
+}
+
+export interface AddonSettlement {
+  // Tổng giá các add-on (chưa gồm phí).
+  addonAmount: bigint;
+  // Phí 12% vườn bị trừ, theo từng dòng (cùng thứ tự `lines`) để ghi lại vào hoá đơn.
+  providerFees: bigint[];
+  providerFee: bigint;
+  platformFee: bigint;
+  providerReceives: bigint;
+}
+
+/**
+ * Phần add-on khi chia tiền lúc đơn COMPLETED — cộng thêm vào kết quả `computeSettlement` của gói.
+ * Phí tính theo TỪNG dòng rồi mới cộng: 6% đã làm tròn riêng ở mỗi lần thu, nếu tính lại trên tổng
+ * thì lệch 1 đồng so với tiền thật trong sổ (vd 2 add-on 8đ: thu 0 + 0, tính trên 16đ lại ra 1).
+ * Ví dụ add-on 100.000: khách đã trả 106.000 · vườn nhận 88.000 · nền tảng 6.000 + 12.000 = 18.000.
+ */
+export function computeAddonSettlement(lines: AddonLine[]): AddonSettlement {
+  const result: AddonSettlement = {
+    addonAmount: 0n,
+    providerFees: [],
+    providerFee: 0n,
+    platformFee: 0n,
+    providerReceives: 0n,
+  };
+  for (const line of lines) {
+    if (line.amount < 0n || line.customerFee < 0n) {
+      throw new RangeError('computeAddonSettlement chỉ nhận số không âm');
+    }
+    const providerFee = halfUpPercent(line.amount, PROVIDER_FEE_PERCENT);
+    result.addonAmount += line.amount;
+    result.providerFees.push(providerFee);
+    result.providerFee += providerFee;
+    result.platformFee += line.customerFee + providerFee;
+    result.providerReceives += line.amount - providerFee;
+  }
+  return result;
+}
