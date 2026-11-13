@@ -191,7 +191,8 @@ export class OrdersController {
   })
   @ApiResponse({
     status: 409,
-    description: 'CARE_NOT_DUE | INVALID_STATE_TRANSITION',
+    description:
+      'CARE_NOT_DUE | INVALID_STATE_TRANSITION | ADDON_OPEN (còn add-on khách đã trả tiền mà vườn chưa báo xong)',
   })
   @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
   @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })

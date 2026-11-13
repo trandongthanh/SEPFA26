@@ -1,4 +1,9 @@
-import { computeSettlement, customerFeeFor, halfUpPercent } from './settlement';
+import {
+  computeAddonSettlement,
+  computeSettlement,
+  customerFeeFor,
+  halfUpPercent,
+} from './settlement';
 
 describe('settlement', () => {
   describe('halfUpPercent', () => {
@@ -81,5 +86,50 @@ describe('settlement', () => {
     expect(() =>
       computeSettlement({ serviceAmount: -1n, pickupFee: 0n }),
     ).toThrow(RangeError);
+  });
+
+  describe('computeAddonSettlement', () => {
+    const line = (amount: bigint) => ({
+      amount,
+      customerFee: customerFeeFor(amount),
+    });
+
+    it('không có add-on → mọi số 0 (đơn thường không đổi)', () => {
+      expect(computeAddonSettlement([])).toEqual({
+        addonAmount: 0n,
+        providerFees: [],
+        providerFee: 0n,
+        platformFee: 0n,
+        providerReceives: 0n,
+      });
+    });
+
+    it('add-on 100.000: khách đã trả 106.000, vườn nhận 88.000, nền tảng 18.000', () => {
+      const a = computeAddonSettlement([line(100_000n)]);
+      expect(a.addonAmount).toBe(100_000n);
+      expect(a.providerFees).toEqual([12_000n]);
+      expect(a.platformFee).toBe(18_000n);
+      expect(a.providerReceives).toBe(88_000n);
+    });
+
+    it('nhiều add-on giá lẻ: tiền đã thu = vườn nhận + nền tảng, không lệch đồng nào', () => {
+      const lines = [line(33_333n), line(1_008n), line(8n), line(8n)];
+      const collected = lines.reduce(
+        (sum, l) => sum + l.amount + l.customerFee,
+        0n,
+      );
+      const a = computeAddonSettlement(lines);
+      expect(a.providerReceives + a.platformFee).toBe(collected);
+      // Tính lại 6% trên TỔNG sẽ ra số khác tiền thật đã thu → lý do phải cộng theo từng dòng.
+      const feeOnTotal = customerFeeFor(a.addonAmount);
+      const feeCollected = lines.reduce((sum, l) => sum + l.customerFee, 0n);
+      expect(feeOnTotal).not.toBe(feeCollected);
+    });
+
+    it('từ chối số âm', () => {
+      expect(() =>
+        computeAddonSettlement([{ amount: -1n, customerFee: 0n }]),
+      ).toThrow(RangeError);
+    });
   });
 });

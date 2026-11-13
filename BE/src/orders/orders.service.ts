@@ -20,6 +20,7 @@ import { PaymentComponent } from '../payments/entities/payment-component.entity'
 import { customerFeeFor } from '../payments/settlement';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { ServicePackage } from '../providers/entities/service-package.entity';
+import { ADDON_OPEN_STATUSES, overdueReason } from './addon-rules';
 import { DistanceService } from './distance.service';
 import { PlantRecognitionService } from './plant-recognition.service';
 import { ContractTemplateService } from './contract-template.service';
@@ -29,6 +30,7 @@ import { QueryOrderDto } from './dto/query-order.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
 import { ShippingRateInputDto } from './dto/replace-shipping-rates.dto';
 import { computeCareReportSchedule } from './care-report-schedule';
+import { AddonProposal } from './entities/addon-proposal.entity';
 import { AgreementSignature } from './entities/agreement-signature.entity';
 import { AssessmentPhoto } from './entities/assessment-photo.entity';
 import { Handover } from './entities/handover.entity';
@@ -517,10 +519,23 @@ export class OrdersService {
       [handover?.id, returnHandover?.id].filter((id): id is string => !!id),
     );
     const settlement = await this.loadSettlement(order, role);
+    // Số đề xuất add-on còn đang mở (chờ khách trả lời / chờ trả tiền / chờ vườn làm) để app hiện chấm báo.
+    // Chỉ đọc: đề xuất đã quá hạn không tính, việc ghi EXPIRED để route add-on lo.
+    const now = new Date();
+    const openAddons = await this.dataSource.getRepository(AddonProposal).find({
+      where: {
+        serviceOrderId: order.id,
+        status: In([...ADDON_OPEN_STATUSES]),
+      },
+    });
+    const openAddonCount = openAddons.filter(
+      (proposal) => overdueReason(proposal, now) === null,
+    ).length;
 
     return {
       ...order,
       settlement,
+      openAddonCount,
       plants: order.plants.map((plant) => {
         const plantPhotos = photos.filter((photo) => photo.plantId === plant.id);
         return {
@@ -593,6 +608,7 @@ export class OrdersService {
    * Phần khách thấy: `loadCustomerSettlement` (chưa có hoá đơn → null).
    * Phần của vườn chỉ vườn thấy, và chỉ khi đơn COMPLETED.
    * Đơn mẫu 2 cây × 200.000, phí lấy cây 60.000: khách 484.000; vườn bị trừ 48.000, nhận 412.000.
+   * Thêm add-on 100.000 đã làm: khách 590.000; vườn bị trừ 60.000, nhận 500.000.
    */
   private async loadSettlement(order: ServiceOrder, role: string) {
     const customerPart = await loadCustomerSettlement(
@@ -603,9 +619,9 @@ export class OrdersService {
       return customerPart;
     }
 
-    const [packagePrice, payout] = await Promise.all([
-      this.dataSource.getRepository(PaymentComponent).findOne({
-        where: { serviceOrderId: order.id, componentType: 'PACKAGE_PRICE' },
+    const [components, payout] = await Promise.all([
+      this.dataSource.getRepository(PaymentComponent).find({
+        where: { serviceOrderId: order.id },
       }),
       this.dataSource.getRepository(Disbursement).findOne({
         where: { serviceOrderId: order.id, type: 'PAYOUT' },
@@ -613,8 +629,14 @@ export class OrdersService {
     ]);
     return {
       ...customerPart,
-      serviceAmount: order.finalTotal ?? order.provisionalTotal,
-      providerFee: packagePrice?.providerFee ?? '0',
+      // Giá dịch vụ đã làm = giá gói chốt + các add-on đã làm; phí 12% cộng từ từng dòng hoá đơn.
+      serviceAmount: (
+        BigInt(order.finalTotal ?? order.provisionalTotal) +
+        BigInt(customerPart.addonAmount)
+      ).toString(),
+      providerFee: components
+        .reduce((sum, component) => sum + BigInt(component.providerFee), 0n)
+        .toString(),
       providerReceives: payout?.amount ?? '0',
       payout: payout
         ? {

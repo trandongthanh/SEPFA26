@@ -7,6 +7,8 @@ export interface CustomerSettlement {
   packageAmount: string;
   customerFee: string;
   pickupFee: string;
+  // Tổng giá các add-on khách đã trả tiền (chưa gồm 6%; phần 6% nằm chung trong customerFee).
+  addonAmount: string;
   customerTotal: string;
   refundAmount: string;
 }
@@ -17,6 +19,7 @@ export interface CustomerSettlement {
  * Dùng chung cho chi tiết đơn và response khách xác nhận nhận lại cây: hai chỗ luôn cùng một hình dạng
  * và không chỗ nào lộ phần của vườn (phí 12%, số vườn nhận) cho khách.
  * Đơn mẫu 2 cây × 200.000, phí lấy cây 60.000: 400.000 + 24.000 + 60.000 = 484.000.
+ * Thêm add-on 100.000 đã trả: addonAmount 100.000, customerFee 30.000, customerTotal 590.000.
  */
 export async function loadCustomerSettlement(
   manager: EntityManager,
@@ -35,7 +38,11 @@ export async function loadCustomerSettlement(
     );
   const packageAmount = amountOf('PACKAGE_PRICE');
   const pickupFee = amountOf('PICKUP_FEE');
-  // Cộng mọi dòng hoá đơn (hiện chỉ dòng PACKAGE_PRICE có phí, PICKUP_FEE = 0).
+  // Dòng ADD_ON chỉ sinh khi tiền add-on đã về → có dòng nào là khách đã trả dòng đó.
+  const addonAmount = components
+    .filter((component) => component.componentType === 'ADD_ON')
+    .reduce((sum, component) => sum + BigInt(component.amount), 0n);
+  // Cộng mọi dòng hoá đơn (PACKAGE_PRICE và ADD_ON có phí 6%, PICKUP_FEE = 0).
   const customerFee = components.reduce(
     (sum, component) => sum + BigInt(component.customerFee),
     0n,
@@ -51,7 +58,13 @@ export async function loadCustomerSettlement(
     packageAmount: packageAmount.toString(),
     customerFee: customerFee.toString(),
     pickupFee: pickupFee.toString(),
-    customerTotal: (packageAmount + customerFee + pickupFee).toString(),
+    addonAmount: addonAmount.toString(),
+    customerTotal: (
+      packageAmount +
+      customerFee +
+      pickupFee +
+      addonAmount
+    ).toString(),
     refundAmount: (-BigInt(refundRow?.sum ?? '0')).toString(),
   };
 }

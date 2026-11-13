@@ -15,6 +15,7 @@ import { escrowBalance } from '../payments/escrow-balance';
 import { loadCustomerSettlement } from '../payments/customer-settlement';
 import { settleCompletedOrder } from '../payments/settle-order';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
+import { closeAddonsForReturn } from './addon-expiry';
 import { AssessPlantDto } from './dto/assess-plant.dto';
 import { AssessReturnPlantDto } from './dto/assess-return-plant.dto';
 import { CancelReturnDto } from './dto/cancel-return.dto';
@@ -353,6 +354,7 @@ export class HandoverService {
   /**
    * POST /orders/:id/return/start — vườn bắt đầu trả cây (IN_CARE → RETURN_IN_PROGRESS).
    * Chỉ khi đã hết hạn chăm (care_due_at); trả sớm = dừng giữa chừng, làm sau.
+   * Còn add-on đã trả tiền mà chưa báo xong thì chưa trả cây được (ADDON_OPEN).
    */
   async startReturn(accountId: string, orderId: string) {
     const order = await this.getOrderAsProvider(accountId, orderId);
@@ -370,6 +372,9 @@ export class HandoverService {
         'IN_CARE',
         'RETURN_IN_PROGRESS',
       );
+      // Add-on khách đã trả tiền mà chưa làm xong → 409 ADDON_OPEN (huỷ cả transaction, đơn vẫn IN_CARE);
+      // đề xuất còn chờ trả lời / chờ trả tiền → đóng lại vì cây sắp về nhà khách.
+      await closeAddonsForReturn(manager, order.id, new Date());
       const handover = await manager.save(
         manager.create(Handover, {
           serviceOrderId: order.id,

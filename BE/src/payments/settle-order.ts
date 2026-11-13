@@ -6,7 +6,7 @@ import { Disbursement } from './entities/disbursement.entity';
 import { EscrowLedger } from './entities/escrow-ledger.entity';
 import { PaymentComponent } from './entities/payment-component.entity';
 import { escrowBalance } from './escrow-balance';
-import { computeSettlement } from './settlement';
+import { computeAddonSettlement, computeSettlement } from './settlement';
 
 // Khách có 3 ngày sau khi nhận lại cây để khiếu nại trước khi tiền được chuyển cho vườn.
 export const DISBURSE_HOLD_DAYS = 3;
@@ -19,6 +19,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *
  * Đơn mẫu 2 cây × 200.000, phí lấy cây 60.000: sổ 484.000 → PLATFORM_FEE −72.000,
  * PAYOUT −412.000 → 0; hoá đơn RELEASED; 1 lệnh chi PENDING 412.000 sau 3 ngày.
+ * Có add-on 100.000 đã làm xong: sổ 590.000 → PLATFORM_FEE −90.000, PAYOUT −500.000 → 0.
  * Sổ không đủ tiền để chia → 500 ESCROW_BALANCE_INSUFFICIENT, cả transaction huỷ.
  * Cố ý KHÔNG trả về số nào: nơi gọi là route của khách, phần của vườn (phí 12%, số vườn nhận)
  * không được lọt vào response — màn hình đọc qua customer-settlement.ts / chi tiết đơn.
@@ -32,7 +33,23 @@ export async function settleCompletedOrder(
     serviceAmount: BigInt(order.finalTotal ?? order.provisionalTotal),
     pickupFee: BigInt(order.pickupFeeSnapshot),
   });
-  const { platformFee, providerReceives } = settlement;
+  // Add-on khách đã trả tiền (lúc này đều đã làm xong: còn add-on dở thì vườn chưa bắt đầu trả cây được).
+  const addonComponents = await manager.find(PaymentComponent, {
+    where: {
+      serviceOrderId: order.id,
+      componentType: 'ADD_ON',
+      status: 'PAID',
+    },
+  });
+  const addons = computeAddonSettlement(
+    addonComponents.map((component) => ({
+      amount: BigInt(component.amount),
+      customerFee: BigInt(component.customerFee),
+    })),
+  );
+  const platformFee = settlement.platformFee + addons.platformFee;
+  const providerReceives =
+    settlement.providerReceives + addons.providerReceives;
 
   // Số dư = SUM mọi bút toán (2 dòng ghi cùng transaction có cùng created_at).
   let balance = await escrowBalance(manager, order.id);
@@ -49,7 +66,7 @@ export async function settleCompletedOrder(
     {
       type: 'PLATFORM_FEE',
       amount: platformFee,
-      note: `Nền tảng giữ phí 6% khách + 12% vườn của đơn ${order.orderCode}`,
+      note: `Nền tảng giữ phí 6% khách + 12% vườn của đơn ${order.orderCode}${addonComponents.length > 0 ? ' (gồm add-on)' : ''}`,
     },
     {
       type: 'PAYOUT',
@@ -84,6 +101,12 @@ export async function settleCompletedOrder(
     { serviceOrderId: order.id, componentType: 'PACKAGE_PRICE' },
     { providerFee: settlement.providerFee.toString() },
   );
+  // Add-on: mỗi dòng ghi phí 12% của riêng nó.
+  for (const [index, component] of addonComponents.entries()) {
+    await manager.update(PaymentComponent, component.id, {
+      providerFee: addons.providerFees[index].toString(),
+    });
+  }
 
   if (providerReceives > 0n) {
     // Chụp tài khoản nhận tiền lúc này; vườn chưa khai thì để null, admin bổ sung lúc chuyển (CP4).
