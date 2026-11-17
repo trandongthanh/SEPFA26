@@ -23,6 +23,7 @@ import {
   formatVnd,
   toDisputeError,
 } from '../dispute-ui';
+import { AddonsSection, CareReportsSection } from '../order-evidence';
 
 const NOTE_MAX = 4000;
 const fmtDate = (value: string | null | undefined) =>
@@ -342,6 +343,9 @@ export default function AdminDisputeDetailPage() {
                 <EvidenceColumn title="Nhà vườn" items={d.evidence.provider} plantName={plantName} />
               </div>
             </Section>
+
+            <CareReportsSection orderId={d.order.id} disputedPlantIds={disputedIds} />
+            <AddonsSection orderId={d.order.id} />
 
             <Section title="Lịch sử đề nghị thương lượng">
               {d.offers.length === 0 ? (

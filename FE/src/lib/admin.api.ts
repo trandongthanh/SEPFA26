@@ -1,4 +1,5 @@
 import { api } from './api';
+import type { CareReportItem } from './provider.api';
 
 // ===== TypeScript Interfaces (khớp với BE entity + service response) =====
 
@@ -180,6 +181,19 @@ export const adminApi = {
 
   replaceShippingRates: async (rates: ShippingRateInput[]) => {
     const res = await api.put<ShippingRate[]>('/api/v1/admin/shipping-rates', { rates });
+    return res.data;
+  },
+
+  // --- Bằng chứng của đơn: báo cáo chăm sóc + add-on (admin được xem mọi đơn) ---
+  listOrderCareReports: async (serviceOrderId: string) => {
+    const res = await api.get<CareReportItem[]>('/api/v1/care-reports', {
+      params: { serviceOrderId },
+    });
+    return res.data;
+  },
+
+  listOrderAddons: async (orderId: string) => {
+    const res = await api.get<OrderAddonItem[]>(`/api/v1/orders/${orderId}/addons`);
     return res.data;
   },
 
@@ -436,4 +450,34 @@ export interface EkycDocumentUrlResponse {
   url: string | null;
   expiresInSeconds: number;
   message: string;
+}
+
+// ===== Add-on của đơn — GET /orders/:orderId/addons (khớp BE addons.service toViews) =====
+
+export type AddonStatus = 'PENDING' | 'ACCEPTED' | 'PAID' | 'DONE' | 'REJECTED' | 'EXPIRED';
+
+export interface OrderAddonItem {
+  id: string;
+  orderId: string;
+  addonCode: string;
+  title: string;
+  reason: string | null;
+  photoUrls: string[] | null;
+  plant: { id: string; name: string | null } | null;
+  price: string;
+  customerFee: string;
+  amountDue: string;
+  status: AddonStatus;
+  respondDueAt: string | null;
+  decidedAt: string | null;
+  customerNote: string | null;
+  paymentDueAt: string | null;
+  paidAt: string | null;
+  doneAt: string | null;
+  donePhotoUrls: string[] | null;
+  doneNote: string | null;
+  donePlantHealth: 'GOOD' | 'AVERAGE' | 'POOR' | null;
+  expiredReason: 'NO_RESPONSE' | 'NOT_PAID' | 'ORDER_RETURNING' | null;
+  expiredAt: string | null;
+  createdAt: string;
 }

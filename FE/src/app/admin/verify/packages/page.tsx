@@ -157,7 +157,7 @@ export default function AdminPackagesPage() {
     };
     if (state === 'PENDING') {
       return (
-        <div className="flex justify-end gap-1.5">
+        <div style={{ display: 'flex', flexWrap: 'nowrap', justifyContent: 'flex-end', gap: 6 }}>
           <Button
             size="small"
             type="primary"
@@ -262,7 +262,7 @@ export default function AdminPackagesPage() {
         );
       },
     },
-    { title: 'Thao tác', key: 'action', align: 'right', render: (_, p) => rowActions(p) },
+    { title: 'Thao tác', key: 'action', align: 'right', width: 170, render: (_, p) => rowActions(p) },
   ];
 
   if (!isAdmin) {
