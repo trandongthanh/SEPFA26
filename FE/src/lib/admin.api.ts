@@ -138,6 +138,54 @@ export const adminApi = {
     return res.data;
   },
 
+  resetProviderPassword: async (providerId: string) => {
+    const res = await api.post<{ tempPassword: string }>(
+      `/api/v1/admin/providers/${providerId}/reset-password`,
+    );
+    return res.data;
+  },
+
+  deleteProvider: async (providerId: string) => {
+    const res = await api.delete<{ success: boolean; message: string }>(
+      `/api/v1/admin/providers/${providerId}`,
+    );
+    return res.data;
+  },
+
+  // --- Bảng phí lấy cây (Shipping rates) ---
+  listShippingRates: async () => {
+    const res = await api.get<ShippingRate[]>('/api/v1/admin/shipping-rates');
+    return res.data;
+  },
+
+  replaceShippingRates: async (rates: ShippingRateInput[]) => {
+    const res = await api.put<ShippingRate[]>('/api/v1/admin/shipping-rates', { rates });
+    return res.data;
+  },
+
+  // --- Tranh chấp (Disputes) ---
+  listDisputes: async (params?: {
+    status?: DisputeStatus;
+    page?: number;
+    limit?: number;
+  }) => {
+    const res = await api.get<DisputeListResponse>('/api/v1/admin/disputes', { params });
+    return res.data;
+  },
+
+  getDispute: async (disputeId: string) => {
+    const res = await api.get<AdminDisputeDetail>(`/api/v1/admin/disputes/${disputeId}`);
+    return res.data;
+  },
+
+  resolveDispute: async (disputeId: string, payload: ResolveDisputePayload) => {
+    const res = await api.post<ResolveDisputeResult>(
+      `/api/v1/admin/disputes/${disputeId}/resolve`,
+      payload,
+    );
+    return res.data;
+  },
+
   // --- Giải ngân cho nhà vườn (Disbursements) ---
   listDisbursements: async (params?: {
     status?: 'PENDING' | 'PAID';
@@ -190,4 +238,171 @@ export interface DisbursementListResponse {
   total: number;
   page: number;
   limit: number;
+}
+
+// ===== Tranh chấp (Disputes) — khớp BE disputes.service listForAdmin / getForAdmin / resolve =====
+
+export type DisputeStatus = 'NEGOTIATING' | 'ADMIN_REVIEW' | 'RESOLVED';
+export type DisputeOutcome = 'AGREED' | 'WITHDRAWN' | 'ADJUDICATED';
+export type DisputeVerdict = 'NOT_AT_FAULT' | 'SERVICE_FAULT' | 'VALUE_LOST';
+export type DisputeParty = 'CUSTOMER' | 'PROVIDER';
+
+export interface DisputeListItem {
+  id: string;
+  orderId: string;
+  orderCode: string;
+  status: DisputeStatus;
+  outcome: DisputeOutcome | null;
+  reason: string;
+  openedAt: string;
+  negotiationDueAt: string;
+  escalatedAt: string | null;
+  adminDueAt: string | null;
+  resolvedAt: string | null;
+  refundAmount: string | null;
+  compensationAmount: string | null;
+  isOverdue: boolean;
+}
+
+export interface DisputeListResponse {
+  data: DisputeListItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface DisputeEvidenceItem {
+  id: string;
+  plantId: string | null;
+  photoUrl: string;
+  caption: string | null;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface DisputeOfferItem {
+  id: string;
+  proposedBy: DisputeParty;
+  refundAmount: string;
+  compensationAmount: string;
+  customerReceives: string;
+  message: string | null;
+  status: 'PENDING' | 'ACCEPTED' | 'SUPERSEDED';
+  respondedAt: string | null;
+  createdAt: string;
+}
+
+export interface DisputeHandoverView {
+  status: string;
+  customerConfirmDueAt: string | null;
+  confirmedAt: string | null;
+  assessments: {
+    id: string;
+    plantId: string | null;
+    checklist: Record<string, unknown>;
+    note: string | null;
+    assessedAt: string;
+    photos: { photoUrl: string; caption: string | null }[];
+  }[];
+}
+
+export interface AdminDisputeDetail {
+  id: string;
+  orderId: string;
+  status: DisputeStatus;
+  outcome: DisputeOutcome | null;
+  reason: string;
+  description: string;
+  openedAt: string;
+  negotiationDueAt: string;
+  escalatedAt: string | null;
+  adminDueAt: string | null;
+  resolvedAt: string | null;
+  isOverdue: boolean;
+  plants: {
+    plantId: string;
+    name: string | null;
+    compensationCap: string | null;
+    verdict: DisputeVerdict | null;
+  }[];
+  evidence: { customer: DisputeEvidenceItem[]; provider: DisputeEvidenceItem[] };
+  handoverObjection: {
+    note: string | null;
+    photos: { photoUrl: string; caption: string | null; createdAt: string }[];
+  } | null;
+  offers: DisputeOfferItem[];
+  caps: { refundCap: string; compensationCap: string } | null;
+  refundAmount: string | null;
+  compensationAmount: string | null;
+  customerReceives: string | null;
+  resolvedByAccountId: string | null;
+  resolutionNote: string | null;
+  order: {
+    id: string;
+    orderCode: string;
+    status: string;
+    basePrice: string | null;
+    finalTotal: string | null;
+    pickupFee: string | null;
+    careStartedAt: string | null;
+    careDueAt: string | null;
+  };
+  customer: { id: string; fullName: string | null; lostDisputeCount: number };
+  provider: { id: string; displayName: string | null };
+  orderPlants: {
+    plantId: string;
+    name: string;
+    speciesName: string | null;
+    isValueDeclared: boolean;
+    declaredValue: string | null;
+    compensationCap: string | null;
+    handoverDecision: 'ACCEPT' | 'ACCEPT_HIGH_RISK' | 'REJECT' | null;
+    isHighRisk: boolean;
+  }[];
+  handoverIn: DisputeHandoverView | null;
+  handoverOut: DisputeHandoverView | null;
+  careReports: {
+    submittedCount: number;
+    reports: {
+      id: string;
+      periodIndex: number;
+      periodStart: string;
+      periodEnd: string;
+      submittedAt: string | null;
+    }[];
+  };
+}
+
+export interface ResolveDisputePayload {
+  plants: { plantId: string; verdict: DisputeVerdict }[];
+  note: string;
+}
+
+export interface ResolveDisputeResult {
+  status: DisputeStatus;
+  outcome: DisputeOutcome | null;
+  refundAmount: string | null;
+  compensationAmount: string | null;
+}
+
+// ===== Bảng phí lấy cây — khớp BE ShippingRate entity / ReplaceShippingRatesDto =====
+// Số trả về là string (numeric/bigint của Postgres); gửi lên là number.
+
+export interface ShippingRate {
+  id: string;
+  minKm: string;
+  maxKm: string | null;
+  baseFee: string;
+  perKmFee: string;
+  billingUnitKm: string | null;
+  isActive: boolean;
+}
+
+export interface ShippingRateInput {
+  minKm: number;
+  maxKm: number | null;
+  baseFee: number;
+  perKmFee: number;
+  billingUnitKm: number | null;
+  isActive?: boolean;
 }

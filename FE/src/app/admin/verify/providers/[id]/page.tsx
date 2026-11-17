@@ -25,6 +25,7 @@ import { adminApi } from '@/lib/admin.api';
 import type { AdminProviderItem, AdminServicePackage } from '@/lib/admin.api';
 import AdminSidebar from '../../../components/AdminSidebar';
 import AdminHeader from '../../../components/AdminHeader';
+import ProviderAccountActions from '../../../components/ProviderAccountActions';
 
 const STATUS_TAG: Record<string, { color: string; label: string }> = {
   PENDING: { color: 'warning', label: 'Chờ duyệt' },
@@ -377,6 +378,12 @@ export default function AdminProviderDetailPage() {
                         </div>
                       )}
                     </div>
+
+                    <ProviderAccountActions
+                      providerId={provider.id}
+                      displayName={provider.displayName}
+                      email={provider.account?.email}
+                    />
                   </div>
                 </div>
               </>

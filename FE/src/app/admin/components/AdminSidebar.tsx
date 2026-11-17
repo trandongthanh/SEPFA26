@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter } from 'next/navigation';
 import {
-  AppstoreOutlined,
+  CarOutlined,
   AuditOutlined,
   BarChartOutlined,
   CustomerServiceOutlined,
@@ -46,6 +46,7 @@ export default function AdminSidebar() {
     if (pathname.startsWith('/admin/verify/providers')) return ['/admin/verify/providers'];
     if (pathname.startsWith('/admin/verify/customers')) return ['/admin/verify/customers'];
     if (pathname.startsWith('/admin/users')) return ['/admin/users'];
+    if (pathname.startsWith('/admin/disputes')) return ['/admin/disputes'];
     return [pathname];
   };
 
@@ -82,7 +83,7 @@ export default function AdminSidebar() {
       key: '/admin/disputes',
       icon: <InteractionOutlined />,
       label: 'Tranh chấp',
-      onClick: comingSoon,
+      onClick: () => router.push('/admin/disputes'),
     },
     {
       key: '/admin/disbursements',
@@ -91,10 +92,10 @@ export default function AdminSidebar() {
       onClick: () => router.push('/admin/disbursements'),
     },
     {
-      key: '/admin/categories',
-      icon: <AppstoreOutlined />,
-      label: 'Danh mục',
-      onClick: comingSoon,
+      key: '/admin/shipping-rates',
+      icon: <CarOutlined />,
+      label: 'Phí lấy cây',
+      onClick: () => router.push('/admin/shipping-rates'),
     },
     {
       key: '/admin/reports',
