@@ -51,6 +51,11 @@ export class Plant extends BaseEntity {
   @Column({ type: 'bigint', name: 'declared_value', nullable: true })
   declaredValue!: string | null;
 
+  // Tiền bảo đảm khai giá KHÁCH nộp cho cây này (declared-deposit.ts) — chốt lúc tạo đơn:
+  // khai vượt 2 × giá gói → 10% giá khai, còn lại 0. Đơn mẫu: cây A 300.000, cây B 0.
+  @Column({ type: 'bigint', name: 'declared_deposit', default: '0' })
+  declaredDeposit!: string;
+
   // Mức đền của cây — chốt lúc vườn chốt biên bản nhận cây, cho MỌI cây được nhận:
   // có khai giá = declared_value, không khai = 2 × giá gói. Cây bị từ chối = null.
   @Column({ type: 'bigint', name: 'protection_cap', nullable: true })

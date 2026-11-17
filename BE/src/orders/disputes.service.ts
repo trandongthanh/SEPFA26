@@ -55,6 +55,8 @@ interface CloseDisputeInput {
   // R — tiền công hoàn; C — tiền đền.
   refund: bigint;
   compensation: bigint;
+  // Tiền bảo đảm khai giá của khách sang vườn — chỉ admin phân xử mới có; thoả thuận / khách rút = 0.
+  declaredForfeit?: bigint;
   resolvedByAccountId?: string;
   resolutionNote?: string;
 }
@@ -607,7 +609,9 @@ export class DisputesService {
    * R = Σ giá gói các cây vườn có lỗi, C = Σ mức đền các cây mất giá trị (dispute-rules.ts).
    * Đơn mẫu, cây A: NOT_AT_FAULT → 0 / 0 · SERVICE_FAULT → 200.000 / 0 (khách nhận 212.000) ·
    * VALUE_LOST → 200.000 / 3.000.000 (khách nhận 212.000 + 3.000.000).
-   * Mọi cây đều không lỗi = khách khiếu nại sai → hồ sơ khách +1 lần thua, không phạt tiền.
+   * Mọi cây đều không lỗi = khách khiếu nại sai → hồ sơ khách +1 lần thua.
+   * Cây nào NOT_AT_FAULT mà khách có nộp tiền bảo đảm khai giá → khoản của cây đó sang vườn
+   * (đơn mẫu cây A: 300.000); các cây khác trả đủ cho khách.
    */
   async resolve(
     adminAccountId: string,
@@ -652,10 +656,14 @@ export class DisputesService {
       const capOf = new Map(
         plants.map((plant) => [plant.id, BigInt(plant.protectionCap ?? '0')]),
       );
+      const depositOf = new Map(
+        plants.map((plant) => [plant.id, BigInt(plant.declaredDeposit ?? '0')]),
+      );
       const amounts = computeVerdictAmounts(
         disputePlants.map((row) => ({
           verdict: row.verdict!,
           protectionCap: capOf.get(row.plantId) ?? 0n,
+          declaredDeposit: depositOf.get(row.plantId) ?? 0n,
         })),
         BigInt(locked.basePriceSnapshot),
       );
@@ -673,10 +681,21 @@ export class DisputesService {
         amounts.compensation,
         await escrowBalance(manager, locked.id, 'SECURITY'),
       );
+      // Cùng lý do: chỉ lấy được tối đa số dư sổ khai giá (đơn cũ sổ trống → 0).
+      const declaredBalance = await escrowBalance(
+        manager,
+        locked.id,
+        'DECLARED',
+      );
+      const declaredForfeit =
+        amounts.declaredForfeit > declaredBalance
+          ? declaredBalance
+          : amounts.declaredForfeit;
       await this.closeDispute(manager, locked, dispute, new Date(), {
         outcome: 'ADJUDICATED',
         refund: amounts.refund,
         compensation,
+        declaredForfeit,
         resolvedByAccountId: adminAccountId,
         resolutionNote: dto.note,
       });
@@ -685,6 +704,7 @@ export class DisputesService {
         outcome: dispute.outcome,
         refundAmount: dispute.refundAmount,
         compensationAmount: dispute.compensationAmount,
+        declaredForfeitAmount: dispute.declaredForfeitAmount,
       };
     });
   }
@@ -714,6 +734,7 @@ export class DisputesService {
     dispute.outcome = input.outcome;
     dispute.refundAmount = input.refund.toString();
     dispute.compensationAmount = input.compensation.toString();
+    dispute.declaredForfeitAmount = (input.declaredForfeit ?? 0n).toString();
     dispute.resolvedAt = now;
     dispute.resolvedByAccountId = input.resolvedByAccountId ?? null;
     dispute.resolutionNote = input.resolutionNote ?? null;
@@ -733,6 +754,7 @@ export class DisputesService {
     await settleOrder(manager, locked, now, {
       refund: input.refund,
       compensation: input.compensation,
+      declaredForfeit: input.declaredForfeit,
     });
   }
 
@@ -948,9 +970,11 @@ export class DisputesService {
             compensationCap: caps.compensationCap.toString(),
           }
         : null,
-      // Ba số chỉ có khi đã xong (RESOLVED); trước đó null.
+      // Các số chỉ có khi đã xong (RESOLVED); trước đó null.
       refundAmount: dispute.refundAmount,
       compensationAmount: dispute.compensationAmount,
+      // Tiền bảo đảm khai giá của khách chuyển sang vườn (admin phán vườn không lỗi); không có → "0".
+      declaredForfeitAmount: dispute.declaredForfeitAmount,
       customerReceives: resolved
         ? customerReceives(
             BigInt(dispute.refundAmount ?? '0'),

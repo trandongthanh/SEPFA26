@@ -721,6 +721,9 @@ describe('Add-on: đề xuất, trả tiền, báo xong, chia tiền (e2e)', () 
         customerTotal: '590000',
         refundAmount: '0',
         compensationAmount: '0',
+        declaredDeposit: '0',
+        declaredDepositReturned: '0',
+        declaredDepositForfeited: '0',
       });
       // Vườn: giá dịch vụ đã làm 500.000, bị trừ 12% = 60.000, nhận 500.000 (gồm phí lấy cây 60.000).
       const providerView = (await detail(c.order.orderId, c.provider.auth))

@@ -7,6 +7,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, In, Not, Repository } from 'typeorm';
@@ -25,12 +26,17 @@ import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { ServicePackage } from '../providers/entities/service-package.entity';
 import { ADDON_OPEN_STATUSES, overdueReason } from './addon-rules';
 import { sumCompensationCaps } from './compensation-cap';
+import {
+  declaredDepositFor,
+  type DeclaredDepositRule,
+} from './declared-deposit';
 import { DistanceService } from './distance.service';
 import { PlantRecognitionService } from './plant-recognition.service';
 import { ContractTemplateService } from './contract-template.service';
 import { AddInitialPhotoDto } from './dto/add-initial-photo.dto';
 import { CreateOrderDto, CreateOrderPlantDto } from './dto/create-order.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
+import { QueryPickupFeeQuoteDto } from './dto/query-pickup-fee-quote.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
 import { ShippingRateInputDto } from './dto/replace-shipping-rates.dto';
 import { computeCareReportSchedule } from './care-report-schedule';
@@ -86,7 +92,27 @@ export class OrdersService {
     private readonly dataSource: DataSource,
     private readonly crypto: CryptoService,
     private readonly orderState: OrderStateService,
+    private readonly config: ConfigService,
   ) {}
+
+  // Luật tiền bảo đảm khai giá đọc từ env (mặc định 10%, ngưỡng 2 × giá gói; 0% = tắt).
+  private declaredDepositRule(): DeclaredDepositRule {
+    return {
+      percent: BigInt(
+        this.config.get<number>('DECLARED_DEPOSIT_PERCENT') ?? 10,
+      ),
+      minMultiplier: BigInt(
+        this.config.get<number>('DECLARED_DEPOSIT_MIN_MULTIPLIER') ?? 2,
+      ),
+    };
+  }
+
+  // Tổng tiền bảo đảm khai giá của đơn = Σ số đã chốt trên từng cây (đơn mẫu: 300.000 + 0).
+  private sumDeclaredDeposit(plants: Plant[]): string {
+    return plants
+      .reduce((sum, plant) => sum + BigInt(plant.declaredDeposit ?? '0'), 0n)
+      .toString();
+  }
 
   // Giải mã cột nhạy cảm (phone/CCCD). Dữ liệu seed cũ có thể còn là bản rõ →
   // decrypt ném lỗi authTag; khi đó trả nguyên giá trị thay vì làm hỏng cả hợp đồng.
@@ -140,6 +166,64 @@ export class OrdersService {
   }
 
   /**
+   * GET /orders/pickup-fee-quote — xem trước phí lấy cây trước khi đặt đơn.
+   * Cùng gói/điều kiện/cách đo/bảng phí với `createOrder` nên số xem trước = số sẽ chụp vào đơn
+   * (trừ khi admin đổi bảng phí hoặc Google đổi tuyến giữa 2 lần gọi). Chỉ để xem, không giữ chỗ;
+   * không đòi khách đã eKYC.
+   */
+  async quotePickupFee(
+    dto: QueryPickupFeeQuoteDto,
+  ): Promise<{ distanceKm: number; pickupFee: string }> {
+    const pkg = await this.findOrderablePackage(dto.servicePackageId);
+    const distanceKm = await this.distanceService.getKm(
+      { lat: dto.pickupGpsLat, lng: dto.pickupGpsLng },
+      { lat: Number(pkg.provider.gpsLat), lng: Number(pkg.provider.gpsLng) },
+    );
+    const pickupFee = await this.computePickupFeeForKm(distanceKm);
+    return { distanceKm, pickupFee: String(pickupFee) };
+  }
+
+  /**
+   * Gói đặt được: tồn tại, đang bán, vườn đã APPROVED — với khách, gói chưa đạt các điều kiện
+   * này coi như không tồn tại (404, không lộ lý do). Vườn chưa ghim GPS → 503 (lỗi dữ liệu phía
+   * hệ thống, không phải lỗi khách).
+   */
+  private async findOrderablePackage(packageId: string) {
+    const pkg = await this.packageRepo.findOne({
+      where: { id: packageId, isActive: true },
+      relations: { provider: true },
+    });
+    if (!pkg || pkg.provider.verificationStatus !== 'APPROVED') {
+      throw new NotFoundException('SERVICE_PACKAGE_NOT_FOUND');
+    }
+    if (pkg.provider.gpsLat === null || pkg.provider.gpsLng === null) {
+      throw new ServiceUnavailableException('PROVIDER_GPS_MISSING');
+    }
+    return pkg;
+  }
+
+  /** Phí lấy cây (đồng) theo bảng bậc đang bật — một lần cho cả đơn, không nhân số cây. */
+  private async computePickupFeeForKm(km: number): Promise<number> {
+    const tiers = await this.shippingRateRepo.find({
+      where: { isActive: true },
+      order: { minKm: 'ASC' },
+    });
+    if (tiers.length === 0) {
+      // Chưa cấu hình bảng phí (dev/staging): không chặn khách, phí = 0 + cảnh báo.
+      // Production phải seed bảng phí (npm run seed:shipping-rates).
+      console.warn(
+        'No active shipping rates configured — defaulting pickup fee to 0.',
+      );
+      return 0;
+    }
+    const tier = pickTier(tiers, km);
+    if (!tier) {
+      throw new ServiceUnavailableException('SHIPPING_RATE_NOT_CONFIGURED');
+    }
+    return computeShippingFee(tier, km);
+  }
+
+  /**
    * POST /orders — tạo đơn DRAFT.
    * 9 bước theo docs/sequence-diagrams/orders-create.md: lỗi rẻ check trước,
    * gọi Google (tốn tiền/chậm) gần cuối, ghi DB trong 1 transaction sau cùng.
@@ -165,20 +249,8 @@ export class OrdersService {
       throw new BadRequestException('PICKUP_TIME_IN_PAST');
     }
 
-    // 3+4. Gói tồn tại, đang bán, provider đã APPROVED — với khách, gói chưa đạt
-    // các điều kiện này coi như không tồn tại (404, không lộ lý do).
-    const pkg = await this.packageRepo.findOne({
-      where: { id: dto.servicePackageId, isActive: true },
-      relations: { provider: true },
-    });
-    if (!pkg || pkg.provider.verificationStatus !== 'APPROVED') {
-      throw new NotFoundException('SERVICE_PACKAGE_NOT_FOUND');
-    }
-
-    // 5. Provider phải đã ghim GPS — lỗi dữ liệu phía hệ thống, không phải lỗi khách.
-    if (pkg.provider.gpsLat === null || pkg.provider.gpsLng === null) {
-      throw new ServiceUnavailableException('PROVIDER_GPS_MISSING');
-    }
+    // 3+4+5. Gói đặt được + vườn đã ghim GPS (dùng chung với API xem trước phí).
+    const pkg = await this.findOrderablePackage(dto.servicePackageId);
 
     // 6. Số cây trong giới hạn gói.
     if (dto.plants.length > pkg.maxPlants) {
@@ -190,43 +262,25 @@ export class OrdersService {
       this.assertDeclaredValueInRange(plant, pkg);
     }
 
-    // 8. Đo km (Google, lỗi → 503) rồi tính phí theo bậc giá trong DB.
+    // 8. Đo km (Google, lỗi → 503) rồi tính phí theo bậc giá trong DB — 1 lần cho cả đơn.
     const km = await this.distanceService.getKm(
       { lat: dto.pickupGpsLat, lng: dto.pickupGpsLng },
       { lat: Number(pkg.provider.gpsLat), lng: Number(pkg.provider.gpsLng) },
     );
-    const tiers = await this.shippingRateRepo.find({
-      where: { isActive: true },
-      order: { minKm: 'ASC' },
-    });
-
-    let pickupFee: number;
-    if (tiers.length === 0) {
-      // Fallback: if no shipping rates configured in DB, avoid blocking customer
-      // flows in dev/staging. Default to zero pickup fee and log a warning.
-      // Production should seed shipping rates properly.
-      // TODO: consider returning a warning to FE so admins can be alerted.
-      console.warn(
-        'No active shipping rates configured — defaulting pickup fee to 0.',
-      );
-      pickupFee = 0;
-    } else {
-      const tier = pickTier(tiers, km);
-      if (!tier) {
-        throw new ServiceUnavailableException('SHIPPING_RATE_NOT_CONFIGURED');
-      }
-      pickupFee = computeShippingFee(tier, km, dto.plants.length);
-    }
+    const pickupFee = await this.computePickupFeeForKm(km);
 
     // 9. Tính tiền (BigInt — tiền bigint không đi qua number) + ghi trong 1 transaction.
     // provisionalTotal KHÔNG gồm ship — ship nằm riêng ở pickupFeeSnapshot (component PICKUP_FEE sau này).
     const provisionalTotal = BigInt(pkg.basePrice) * BigInt(dto.plants.length);
+    // Tiền bảo đảm khai giá chốt vào từng cây ngay lúc tạo đơn (không có route sửa đơn nháp):
+    // khách thấy số trước khi gửi đơn, đổi env về sau không ảnh hưởng đơn đã tạo.
+    const depositRule = this.declaredDepositRule();
 
     // D12: vòng retry NẰM NGOÀI transaction — mỗi lần thử là 1 transaction riêng.
     // (Trong 1 transaction, INSERT trùng làm transaction hỏng → lần thử sau cũng lỗi.)
     for (let attempt = 1; attempt <= ORDER_CODE_MAX_RETRY; attempt++) {
       try {
-        return await this.dataSource.transaction((manager) => {
+        return await this.dataSource.transaction(async (manager) => {
           const order = manager.create(ServiceOrder, {
             orderCode: generateOrderCode(),
             customerId: customer.id,
@@ -244,19 +298,30 @@ export class OrdersService {
             pickupGpsLat: String(dto.pickupGpsLat),
             pickupGpsLng: String(dto.pickupGpsLng),
             customerNote: dto.customerNote ?? null,
-            plants: dto.plants.map((plant) =>
-              manager.create(Plant, {
+            plants: dto.plants.map((plant) => {
+              // Khai giá mà quên set cờ → server tự hiểu là có khai.
+              const isValueDeclared =
+                plant.declaredValue !== undefined ||
+                (plant.isValueDeclared ?? false);
+              const declaredValue = plant.declaredValue ?? null;
+              return manager.create(Plant, {
                 name: plant.name,
                 speciesName: plant.speciesName ?? null,
-                // Khai giá mà quên set cờ → server tự hiểu là có khai.
-                isValueDeclared:
-                  plant.declaredValue !== undefined ||
-                  (plant.isValueDeclared ?? false),
-                declaredValue: plant.declaredValue ?? null,
-              }),
-            ),
+                isValueDeclared,
+                declaredValue,
+                declaredDeposit: declaredDepositFor(
+                  { isValueDeclared, declaredValue },
+                  BigInt(pkg.basePrice),
+                  depositRule,
+                ).toString(),
+              });
+            }),
           });
-          return manager.save(order); // cascade insert plants cùng transaction
+          const saved = await manager.save(order); // cascade insert plants cùng transaction
+          return {
+            ...saved,
+            declaredDepositTotal: this.sumDeclaredDeposit(saved.plants),
+          };
         });
       } catch (err) {
         if (
@@ -554,6 +619,8 @@ export class OrdersService {
     return {
       ...order,
       settlement,
+      // Tiền bảo đảm khai giá khách nộp cùng tiền đơn (từng cây ở plants[].declaredDeposit).
+      declaredDepositTotal: this.sumDeclaredDeposit(order.plants),
       openAddonCount,
       dispute: dispute
         ? {
@@ -995,7 +1062,7 @@ export class OrdersService {
    * POST /orders/:id/agreement/sign — 1 endpoint cho cả 2 vai, signerRole lấy
    * từ JWT (không ký hộ được). Idempotent nhờ UNIQUE(agreement, role, phase).
    * Chữ ký thứ 2 (1 transaction): hợp đồng SIGNED + sinh payment components
-   * (PACKAGE_PRICE + PICKUP_FEE nếu > 0) + khóa giá tạm + đơn → AWAITING_PAYMENT.
+   * (PACKAGE_PRICE + PICKUP_FEE nếu > 0 + DECLARED_DEPOSIT nếu > 0) + khóa giá tạm + đơn → AWAITING_PAYMENT.
    */
   async signAgreement(
     accountId: string,
@@ -1089,6 +1156,23 @@ export class OrdersService {
           }),
         );
       }
+      // Tiền bảo đảm khai giá (đã chốt trên từng cây lúc tạo đơn): tổng > 0 mới có dòng, không phí 6%.
+      // Đơn mẫu: cây A khai 3.000.000 → 300.000, QR 484.000 + 300.000 = 784.000.
+      const declaredDeposit = BigInt(
+        this.sumDeclaredDeposit(
+          await manager.find(Plant, { where: { serviceOrderId: locked.id } }),
+        ),
+      );
+      if (declaredDeposit > 0n) {
+        components.push(
+          manager.create(PaymentComponent, {
+            serviceOrderId: locked.id,
+            componentType: 'DECLARED_DEPOSIT' as const,
+            amount: declaredDeposit.toString(),
+            status: 'PENDING' as const,
+          }),
+        );
+      }
       await manager.save(components);
 
       locked.provisionalLockedAt = new Date();
@@ -1097,12 +1181,14 @@ export class OrdersService {
       const amountDue = (
         BigInt(locked.provisionalTotal) +
         customerFee +
-        BigInt(locked.pickupFeeSnapshot)
+        BigInt(locked.pickupFeeSnapshot) +
+        declaredDeposit
       ).toString();
       return {
         status: locked.status,
         amountDue,
         customerFee: customerFee.toString(),
+        declaredDeposit: declaredDeposit.toString(),
       };
     });
   }

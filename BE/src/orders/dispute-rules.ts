@@ -164,6 +164,8 @@ export interface VerdictPlant {
   verdict: DisputeVerdict;
   // Mức đền của cây (plants.protection_cap).
   protectionCap: bigint;
+  // Tiền bảo đảm khai giá khách đã nộp cho cây này (plants.declared_deposit). Không truyền = 0.
+  declaredDeposit?: bigint;
 }
 
 export interface VerdictAmounts {
@@ -171,26 +173,40 @@ export interface VerdictAmounts {
   refund: bigint;
   // C — tiền đền = Σ mức đền của các cây VALUE_LOST.
   compensation: bigint;
-  // Mọi cây bị khiếu nại đều không lỗi = khách khiếu nại sai → ghi một lần thua (không phạt tiền).
+  // Mọi cây bị khiếu nại đều không lỗi = khách khiếu nại sai → ghi một lần thua.
   allNotAtFault: boolean;
+  // Tiền bảo đảm khai giá của khách chuyển sang vườn = Σ declared_deposit các cây NOT_AT_FAULT
+  // (tính theo TỪNG cây, không cần mọi cây đều không lỗi).
+  declaredForfeit: bigint;
 }
 
 /**
  * Admin chỉ kết luận từng cây, hệ thống tự ra tiền. Add-on không vào phần admin xử.
  * Đơn mẫu, khiếu nại cây A: NOT_AT_FAULT → R 0, C 0 · SERVICE_FAULT → R 200.000, C 0 ·
  * VALUE_LOST → R 200.000, C 3.000.000. Cả hai cây VALUE_LOST → R 400.000, C 3.400.000.
+ * Khách đã nộp 300.000 tiền bảo đảm khai giá cho cây A: NOT_AT_FAULT → 300.000 sang vườn;
+ * SERVICE_FAULT / VALUE_LOST → 0 (trả đủ cho khách).
  */
 export function computeVerdictAmounts(
   plants: VerdictPlant[],
   basePrice: bigint,
 ): VerdictAmounts {
-  if (basePrice < 0n || plants.some((plant) => plant.protectionCap < 0n)) {
+  if (
+    basePrice < 0n ||
+    plants.some(
+      (plant) => plant.protectionCap < 0n || (plant.declaredDeposit ?? 0n) < 0n,
+    )
+  ) {
     throw new RangeError('computeVerdictAmounts chỉ nhận số không âm');
   }
   let refund = 0n;
   let compensation = 0n;
+  let declaredForfeit = 0n;
   for (const plant of plants) {
-    if (plant.verdict === 'NOT_AT_FAULT') continue;
+    if (plant.verdict === 'NOT_AT_FAULT') {
+      declaredForfeit += plant.declaredDeposit ?? 0n;
+      continue;
+    }
     refund += basePrice;
     if (plant.verdict === 'VALUE_LOST') {
       compensation += plant.protectionCap;
@@ -199,6 +215,7 @@ export function computeVerdictAmounts(
   return {
     refund,
     compensation,
+    declaredForfeit,
     allNotAtFault:
       plants.length > 0 &&
       plants.every((plant) => plant.verdict === 'NOT_AT_FAULT'),

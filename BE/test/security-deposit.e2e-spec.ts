@@ -549,6 +549,7 @@ describe('Tiền bảo đảm lúc nhận cây + huỷ tại chỗ (e2e)', () =>
     expect(declined.body).toEqual({
       status: 'CANCELLED',
       refundAmount: '424000',
+      declaredDepositReturned: '0',
     });
 
     const order = await orderRow(id);
@@ -765,6 +766,9 @@ describe('Tiền bảo đảm lúc nhận cây + huỷ tại chỗ (e2e)', () =>
       customerTotal: '484000',
       refundAmount: '0',
       compensationAmount: '0',
+      declaredDeposit: '0',
+      declaredDepositReturned: '0',
+      declaredDepositForfeited: '0',
     });
 
     // Sổ đơn chia như đơn thường; sổ bảo đảm trả lại vườn toàn bộ → cả hai về 0.

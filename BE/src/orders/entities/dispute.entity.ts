@@ -38,6 +38,10 @@ import { ServiceOrder } from './service-order.entity';
   'CHK_disputes_compensation_amount',
   `"compensation_amount" IS NULL OR "compensation_amount" >= 0`,
 )
+@Check(
+  'CHK_disputes_declared_forfeit_amount',
+  `"declared_forfeit_amount" IS NULL OR "declared_forfeit_amount" >= 0`,
+)
 // Mỗi đơn tối đa một tranh chấp.
 @Index('UQ_disputes_service_order_id', ['serviceOrderId'], { unique: true })
 // Bộ quét hạn 3 ngày: lọc NEGOTIATING theo negotiation_due_at.
@@ -89,6 +93,11 @@ export class Dispute extends BaseEntity {
 
   @Column({ type: 'bigint', name: 'compensation_amount', nullable: true })
   compensationAmount!: string | null;
+
+  // Tiền bảo đảm khai giá của khách chuyển sang vườn = Σ declared_deposit các cây admin phán NOT_AT_FAULT.
+  // Thoả thuận / khách rút → 0. Lấy từ sổ DECLARED.
+  @Column({ type: 'bigint', name: 'declared_forfeit_amount', nullable: true })
+  declaredForfeitAmount!: string | null;
 
   @Column({ type: 'timestamptz', name: 'resolved_at', nullable: true })
   resolvedAt!: Date | null;

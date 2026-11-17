@@ -190,6 +190,9 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
       customerTotal: '484000',
       refundAmount: '0',
       compensationAmount: '0',
+      declaredDeposit: '0',
+      declaredDepositReturned: '0',
+      declaredDepositForfeited: '0',
     });
     // CP3: chia tiền trong cùng transaction — 484.000 = nền tảng 72.000 + vườn 412.000 (kiểm trong DB).
     const m = await money(id);
@@ -322,6 +325,9 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
       customerTotal: '484000',
       refundAmount: '212000',
       compensationAmount: '0',
+      declaredDeposit: '0',
+      declaredDepositReturned: '0',
+      declaredDepositForfeited: '0',
     });
     // S = 200.000: nền tảng giữ 6% (12.000) + 12% (24.000) = 36.000; vườn 200.000 − 24.000 + 60.000.
     const m = await money(id);

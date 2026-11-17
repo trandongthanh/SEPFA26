@@ -124,6 +124,7 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
       status: 'AWAITING_PAYMENT',
       amountDue: c.order.amountDue,
       customerFee: c.order.customerFee,
+      declaredDeposit: '0',
     });
 
     const paid = await pay(c);
@@ -262,6 +263,7 @@ describe('Order flow DRAFT → IN_CARE (e2e)', () => {
       status: 'AWAITING_PAYMENT',
       amountDue: '484000',
       customerFee: '24000',
+      declaredDeposit: '0',
     });
 
     const qr = await post(

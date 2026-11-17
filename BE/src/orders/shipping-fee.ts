@@ -48,16 +48,13 @@ export function pickTier<T extends ShippingTier>(
 }
 
 // Phí = baseFee + (km − minKm) × perKmFee, làm tròn HALF_UP về đồng nguyên (NĐ 174/2016).
-export function computeShippingFee(
-  tier: ShippingTier,
-  km: number,
-  plantCount = 1,
-): number {
+// Tính MỘT LẦN cho cả đơn (chốt 14/11/2026): vườn đi 1 chuyến lấy hết cây, không nhân số cây.
+export function computeShippingFee(tier: ShippingTier, km: number): number {
   const exceeded = Math.max(0, km - Number(tier.minKm));
   const unitKm = Number(tier.billingUnitKm || 0);
   const extra =
     unitKm > 0
       ? Math.ceil(exceeded / unitKm) * Number(tier.perKmFee)
       : exceeded * Number(tier.perKmFee);
-  return Math.round((Number(tier.baseFee) + extra) * plantCount);
+  return Math.round(Number(tier.baseFee) + extra);
 }

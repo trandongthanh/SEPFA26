@@ -23,6 +23,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *   PROVIDER (vườn không nộp tiền bảo đảm): REFUND −484.000 → 0; mọi dòng hoá đơn → REFUNDED;
  *     1 lệnh chi REFUND 484.000 cho khách.
  * Lúc này chưa có tiền bảo đảm nào trong sổ SECURITY nên không đụng sổ đó.
+ * Sổ bảo đảm khai giá (DECLARED): cả hai nhánh đều trả HẾT cho khách — chưa ai kết luận khách sai.
+ *   Đơn mẫu khách đã nộp 300.000: DECLARED_RETURN −300.000 → 0, lệnh chi DECLARED_RETURN chi ngay,
+ *   dòng hoá đơn DECLARED_DEPOSIT → REFUNDED.
  * Trả về số tiền hoàn cho khách (route của khách được hiện đúng số của khách).
  */
 export async function refundCancelledHandover(
@@ -30,7 +33,7 @@ export async function refundCancelledHandover(
   order: ServiceOrder,
   now: Date,
   cancelledBy: 'CUSTOMER' | 'PROVIDER',
-): Promise<{ customerRefund: bigint }> {
+): Promise<{ customerRefund: bigint; declaredReturn: bigint }> {
   const components = await manager.find(PaymentComponent, {
     where: { serviceOrderId: order.id, status: 'PAID' },
   });
@@ -106,5 +109,27 @@ export async function refundCancelledHandover(
     providerReceives,
     eligibleAt,
   );
-  return { customerRefund };
+
+  // Sổ bảo đảm khai giá: trả hết cho khách (đơn không có khoản này → số dư 0, không ghi gì).
+  const declaredReturn = await escrowBalance(manager, order.id, 'DECLARED');
+  await writeLedgerEntries(manager, order.id, 'DECLARED', declaredReturn, [
+    {
+      type: 'DECLARED_RETURN',
+      amount: declaredReturn,
+      note: `Trả lại tiền bảo đảm khai giá cho khách đơn ${order.orderCode} (đơn huỷ lúc nhận cây)`,
+    },
+  ]);
+  await manager.update(
+    PaymentComponent,
+    { serviceOrderId: order.id, componentType: 'DECLARED_DEPOSIT' },
+    { status: 'REFUNDED', disburseBufferUntilAt: null },
+  );
+  await createCustomerDisbursement(
+    manager,
+    order,
+    'DECLARED_RETURN',
+    declaredReturn,
+    now,
+  );
+  return { customerRefund, declaredReturn };
 }
