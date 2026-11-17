@@ -293,7 +293,7 @@ export default function AdminShippingRatesPage() {
                               disabled={index > 0}
                               title={index > 0 ? 'Tự lấy theo "Đến km" của bậc trước' : undefined}
                               onChange={(v) => update(index, { minKm: Number(v ?? 0) })}
-                              addonAfter="km"
+                              suffix="km"
                               className="!w-full"
                             />
                           </td>
@@ -308,7 +308,7 @@ export default function AdminShippingRatesPage() {
                                 precision={2}
                                 status={invalidRow(index) ? 'error' : undefined}
                                 onChange={(v) => update(index, { maxKm: v === null ? null : Number(v) })}
-                                addonAfter="km"
+                                suffix="km"
                                 className="!w-full"
                               />
                             )}
@@ -321,7 +321,7 @@ export default function AdminShippingRatesPage() {
                               formatter={moneyFormatter}
                               parser={moneyParser}
                               onChange={(v) => update(index, { baseFee: Number(v ?? 0) })}
-                              addonAfter="đ"
+                              suffix="đ"
                               className="!w-full"
                             />
                           </td>
@@ -333,7 +333,7 @@ export default function AdminShippingRatesPage() {
                               formatter={moneyFormatter}
                               parser={moneyParser}
                               onChange={(v) => update(index, { perKmFee: Number(v ?? 0) })}
-                              addonAfter="đ"
+                              suffix="đ"
                               className="!w-full"
                             />
                             <div className="text-[11px] text-[#8B86A4] mt-1">
@@ -352,7 +352,7 @@ export default function AdminShippingRatesPage() {
                               onChange={(v) =>
                                 update(index, { billingUnitKm: v === null || Number(v) === 0 ? null : Number(v) })
                               }
-                              addonAfter="km"
+                              suffix="km"
                               className="!w-full"
                             />
                             <div className="text-[11px] text-[#8B86A4] mt-1">
@@ -387,7 +387,8 @@ export default function AdminShippingRatesPage() {
             </div>
           </div>
 
-          {errors.length > 0 && (
+          {/* Chỉ báo lỗi khi admin đã sửa — bảng trống lúc mới mở đã có thông báo riêng trong bảng */}
+          {dirty && errors.length > 0 && (
             <Alert type="error" showIcon message="Bảng phí chưa hợp lệ" description={
               <ul className="list-disc pl-4 m-0">{errors.map((e) => <li key={e}>{e}</li>)}</ul>
             } />
@@ -398,11 +399,11 @@ export default function AdminShippingRatesPage() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
               <div>
                 <label htmlFor="calc-km" className="text-xs text-[#6E6A8A] block mb-1">Khoảng cách</label>
-                <InputNumber id="calc-km" value={calcKm} min={0} step={0.5} onChange={(v) => setCalcKm(Number(v ?? 0))} addonAfter="km" className="!w-full" />
+                <InputNumber id="calc-km" value={calcKm} min={0} step={0.5} onChange={(v) => setCalcKm(Number(v ?? 0))} suffix="km" className="!w-full" />
               </div>
               <div>
                 <label htmlFor="calc-plants" className="text-xs text-[#6E6A8A] block mb-1">Số cây</label>
-                <InputNumber id="calc-plants" value={calcPlants} min={1} step={1} precision={0} onChange={(v) => setCalcPlants(Number(v ?? 1))} addonAfter="cây" className="!w-full" />
+                <InputNumber id="calc-plants" value={calcPlants} min={1} step={1} precision={0} onChange={(v) => setCalcPlants(Number(v ?? 1))} suffix="cây" className="!w-full" />
               </div>
               <div>
                 <p className="text-xs text-[#6E6A8A] m-0">Phí lấy cây (theo bảng đang sửa)</p>

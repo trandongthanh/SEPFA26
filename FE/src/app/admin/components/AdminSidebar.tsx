@@ -18,7 +18,9 @@ import type { MenuProps } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { authApi } from '@/lib/api';
 
-export default function AdminSidebar() {
+// variant "fixed": cột trái cố định, chỉ hiện từ màn hình lg (≥1024px).
+// variant "drawer": nội dung menu đặt trong ngăn kéo do AdminHeader mở ở màn hình nhỏ.
+export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' | 'drawer' }) {
   const router = useRouter();
   const pathname = usePathname();
   const { message } = App.useApp();
@@ -141,7 +143,11 @@ export default function AdminSidebar() {
 
   return (
     <aside
-      className="w-64 h-screen border-r border-[#ECE7FA] flex flex-col justify-between flex-shrink-0 bg-white z-20 overflow-hidden"
+      className={
+        variant === 'drawer'
+          ? 'w-full h-full flex flex-col justify-between bg-white overflow-hidden'
+          : 'w-64 h-screen border-r border-[#ECE7FA] hidden lg:flex flex-col justify-between flex-shrink-0 bg-white z-20 overflow-hidden sticky top-0'
+      }
     >
       {/* Top Section */}
       <div className="flex flex-col flex-1 overflow-y-auto">

@@ -316,18 +316,20 @@ export default function AdminPackagesPage() {
 
           <div className="bg-white rounded-2xl border border-[#ECE7FA] p-5 shadow-xs space-y-4">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-              <Segmented
-                value={filter}
-                onChange={(v) => setFilter(v as Filter)}
-                options={[
-                  { label: `Chờ duyệt (${counts.PENDING})`, value: 'PENDING' },
-                  { label: `Đang bán (${counts.LIVE})`, value: 'LIVE' },
-                  { label: `Tạm ngưng (${counts.PAUSED})`, value: 'PAUSED' },
-                  { label: `Từ chối (${counts.REJECTED})`, value: 'REJECTED' },
-                  { label: `Tất cả (${packages.length})`, value: 'ALL' },
-                ]}
-                className="!bg-[#F6F4FC] font-semibold text-xs"
-              />
+              <div className="max-w-full overflow-x-auto">
+                <Segmented
+                  value={filter}
+                  onChange={(v) => setFilter(v as Filter)}
+                  options={[
+                    { label: `Chờ duyệt (${counts.PENDING})`, value: 'PENDING' },
+                    { label: `Đang bán (${counts.LIVE})`, value: 'LIVE' },
+                    { label: `Tạm ngưng (${counts.PAUSED})`, value: 'PAUSED' },
+                    { label: `Từ chối (${counts.REJECTED})`, value: 'REJECTED' },
+                    { label: `Tất cả (${packages.length})`, value: 'ALL' },
+                  ]}
+                  className="!bg-[#F6F4FC] font-semibold text-xs"
+                />
+              </div>
               <Input
                 allowClear
                 prefix={<SearchOutlined className="text-[#8B86A4]" />}

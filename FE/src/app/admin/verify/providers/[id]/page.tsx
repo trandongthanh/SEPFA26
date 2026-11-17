@@ -230,7 +230,7 @@ export default function AdminProviderDetailPage() {
                         <FileProtectOutlined className="text-[#6027D2]" /> Tài liệu pháp lý
                       </h3>
                       <Image.PreviewGroup>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <DocumentCard label="Giấy phép kinh doanh" url={provider.businessLicenseUrl} />
                           <DocumentCard label="CCCD (Mặt trước)" url={provider.cccdFrontUrl} />
                           <DocumentCard label="CCCD (Mặt sau)" url={provider.cccdBackUrl} />

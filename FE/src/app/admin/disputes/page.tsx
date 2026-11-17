@@ -307,20 +307,22 @@ export default function AdminDisputesPage() {
           </div>
 
           <div className="bg-white rounded-2xl border border-[#ECE7FA] p-5 shadow-xs space-y-4">
-            <Segmented
-              value={statusFilter}
-              onChange={(val) => {
-                setPage(1);
-                setStatusFilter(val as FilterStatus);
-              }}
-              options={[
-                { label: 'Chờ phân xử', value: 'ADMIN_REVIEW' },
-                { label: 'Đang thương lượng', value: 'NEGOTIATING' },
-                { label: 'Đã giải quyết', value: 'RESOLVED' },
-                { label: 'Tất cả', value: 'ALL' },
-              ]}
-              className="!bg-[#F6F4FC] font-semibold text-xs"
-            />
+            <div className="max-w-full overflow-x-auto">
+              <Segmented
+                value={statusFilter}
+                onChange={(val) => {
+                  setPage(1);
+                  setStatusFilter(val as FilterStatus);
+                }}
+                options={[
+                  { label: 'Chờ phân xử', value: 'ADMIN_REVIEW' },
+                  { label: 'Đang thương lượng', value: 'NEGOTIATING' },
+                  { label: 'Đã giải quyết', value: 'RESOLVED' },
+                  { label: 'Tất cả', value: 'ALL' },
+                ]}
+                className="!bg-[#F6F4FC] font-semibold text-xs"
+              />
+            </div>
 
             <Table
               rowKey="id"
