@@ -100,6 +100,21 @@ export default function AdminProviderDetailPage() {
     }
   };
 
+  // Tạm ngưng / mở bán lại gói đã duyệt: giữ approvalStatus = APPROVED, chỉ đổi isActive.
+  // (Trước đây gửi REJECTED nên gói bị chuyển hẳn sang "Từ chối".)
+  const handleTogglePackage = async (packageId: string, nextActive: boolean) => {
+    setActionLoadingPkg(packageId);
+    try {
+      await adminApi.verifyPackage(packageId, { decision: 'APPROVED', isActive: nextActive });
+      message.success(nextActive ? 'Đã mở bán lại gói dịch vụ.' : 'Đã tạm ngưng gói dịch vụ.');
+      fetchDetail();
+    } catch {
+      message.error('Thao tác thất bại. Vui lòng thử lại.');
+    } finally {
+      setActionLoadingPkg(null);
+    }
+  };
+
   const handleVerify = async (decision: 'APPROVED' | 'REJECTED') => {
     if (decision === 'REJECTED' && !note.trim()) {
       message.warning('Vui lòng nhập lý do từ chối.');
@@ -278,7 +293,7 @@ export default function AdminProviderDetailPage() {
                                     size="small"
                                     type={pkg.isActive ? 'default' : 'primary'}
                                     className={pkg.isActive ? '!text-xs !rounded-lg' : '!bg-[#6027D2] !text-xs !rounded-lg'}
-                                    onClick={() => handleVerifyPackage(pkg.id, pkg.isActive ? 'REJECTED' : 'APPROVED')}
+                                    onClick={() => handleTogglePackage(pkg.id, !pkg.isActive)}
                                     loading={actionLoadingPkg === pkg.id}
                                   >
                                     {pkg.isActive ? 'Tạm ngưng gói' : 'Kích hoạt bán'}

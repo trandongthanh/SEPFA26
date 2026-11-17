@@ -58,11 +58,17 @@ export interface AdminServicePackage {
   reportFrequencyDays: number;
   maxPlants: number;
   basePrice: string;
-  minDeclaredValue: string;
-  maxDeclaredValue: string;
+  minDeclaredValue: string | null;
+  maxDeclaredValue: string | null;
   isActive: boolean;
   approvalStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
+  rejectionReason?: string | null;
   createdAt: string;
+}
+
+// GET /admin/providers/packages — mỗi gói kèm hồ sơ nhà vườn (relation provider).
+export interface AdminPackageWithProvider extends AdminServicePackage {
+  provider: Pick<AdminProviderItem, 'id' | 'displayName' | 'verificationStatus'> | null;
 }
 
 export interface AdminCustomerItem {
@@ -105,6 +111,11 @@ export const adminApi = {
 
   verifyProvider: async (providerId: string, payload: VerifyDecisionPayload) => {
     const res = await api.post(`/api/v1/admin/providers/${providerId}/verify`, payload);
+    return res.data;
+  },
+
+  listAllPackages: async () => {
+    const res = await api.get<AdminPackageWithProvider[]>('/api/v1/admin/providers/packages');
     return res.data;
   },
 

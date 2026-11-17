@@ -45,6 +45,7 @@ export default function AdminSidebar() {
   const getSelectedKeys = (): string[] => {
     if (pathname.startsWith('/admin/verify/providers')) return ['/admin/verify/providers'];
     if (pathname.startsWith('/admin/verify/customers')) return ['/admin/verify/customers'];
+    if (pathname.startsWith('/admin/verify/packages')) return ['/admin/verify/packages'];
     if (pathname.startsWith('/admin/users')) return ['/admin/users'];
     if (pathname.startsWith('/admin/disputes')) return ['/admin/disputes'];
     return [pathname];
@@ -76,6 +77,11 @@ export default function AdminSidebar() {
           key: '/admin/verify/customers',
           label: 'Khách hàng',
           onClick: () => router.push('/admin/verify/customers'),
+        },
+        {
+          key: '/admin/verify/packages',
+          label: 'Gói dịch vụ',
+          onClick: () => router.push('/admin/verify/packages'),
         },
       ],
     },
