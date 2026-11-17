@@ -31,6 +31,7 @@ import { ContractTemplateService } from './contract-template.service';
 import { AddInitialPhotoDto } from './dto/add-initial-photo.dto';
 import { CreateOrderDto, CreateOrderPlantDto } from './dto/create-order.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
+import { QueryPickupFeeQuoteDto } from './dto/query-pickup-fee-quote.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
 import { ShippingRateInputDto } from './dto/replace-shipping-rates.dto';
 import { computeCareReportSchedule } from './care-report-schedule';
@@ -137,6 +138,24 @@ export class OrdersService {
       );
       return saved.sort((a, b) => Number(a.minKm) - Number(b.minKm));
     });
+  }
+
+  /**
+   * GET /orders/pickup-fee-quote — xem trước phí lấy cây trước khi đặt đơn.
+   * Cùng gói/điều kiện/cách đo/bảng phí với `createOrder` nên số xem trước = số sẽ chụp vào đơn
+   * (trừ khi admin đổi bảng phí hoặc Google đổi tuyến giữa 2 lần gọi). Chỉ để xem, không giữ chỗ;
+   * không đòi khách đã eKYC.
+   */
+  async quotePickupFee(
+    dto: QueryPickupFeeQuoteDto,
+  ): Promise<{ distanceKm: number; pickupFee: string }> {
+    const pkg = await this.findOrderablePackage(dto.servicePackageId);
+    const distanceKm = await this.distanceService.getKm(
+      { lat: dto.pickupGpsLat, lng: dto.pickupGpsLng },
+      { lat: Number(pkg.provider.gpsLat), lng: Number(pkg.provider.gpsLng) },
+    );
+    const pickupFee = await this.computePickupFeeForKm(distanceKm);
+    return { distanceKm, pickupFee: String(pickupFee) };
   }
 
   /**

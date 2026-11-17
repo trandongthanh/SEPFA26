@@ -15,7 +15,9 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { RATE_LIMIT_WINDOW_MS } from '../common/throttle';
 import { Roles } from '../auth/decorators/roles.decorator';
 import type { CurrentUserData } from '../auth/types/current-user.type';
 import { AddInitialPhotoDto } from './dto/add-initial-photo.dto';
@@ -28,6 +30,7 @@ import { ConfirmHandoverDto } from './dto/confirm-handover.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { DeclineHandoverDto } from './dto/decline-handover.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
+import { QueryPickupFeeQuoteDto } from './dto/query-pickup-fee-quote.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
 import { ContractTemplateService } from './contract-template.service';
 import { HandoverService } from './handover.service';
@@ -363,6 +366,33 @@ export class OrdersController {
       user.role,
       orderId,
     );
+  }
+
+  // PHẢI đứng trước @Get(':orderId') — không thì 'pickup-fee-quote' bị hiểu là orderId (400 UUID).
+  @Roles('CUSTOMER')
+  @Get('pickup-fee-quote')
+  // Mỗi lần gọi = 1 request Google tính tiền → giới hạn chặt hơn mức chung 100/phút.
+  @Throttle({ default: { limit: 20, ttl: RATE_LIMIT_WINDOW_MS } })
+  @ApiOperation({
+    summary: 'Xem trước phí lấy cây (đo km đường bộ, tính 1 lần cho cả đơn)',
+    description:
+      'Chỉ để hiển thị trước khi đặt đơn, không giữ chỗ. POST /orders đo và tính lại rồi chụp vào đơn.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: '{ distanceKm: number, pickupFee: string (VNĐ) }',
+  })
+  @ApiResponse({ status: 400, description: 'Query sai (UUID, toạ độ)' })
+  @ApiResponse({ status: 404, description: 'SERVICE_PACKAGE_NOT_FOUND' })
+  @ApiResponse({ status: 422, description: 'PICKUP_ROUTE_NOT_FOUND' })
+  @ApiResponse({ status: 429, description: 'Quá 20 lần/phút' })
+  @ApiResponse({
+    status: 503,
+    description:
+      'DISTANCE_SERVICE_UNAVAILABLE | PROVIDER_GPS_MISSING | SHIPPING_RATE_NOT_CONFIGURED',
+  })
+  quotePickupFee(@Query() query: QueryPickupFeeQuoteDto) {
+    return this.ordersService.quotePickupFee(query);
   }
 
   @Roles('CUSTOMER', 'PROVIDER')
