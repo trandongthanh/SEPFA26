@@ -15,6 +15,7 @@ import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { useAuthStore } from '@/lib/auth.store';
 import { AdminPackageWithProvider, adminApi } from '@/lib/admin.api';
+import { getApiErrorCode } from '@/lib/api';
 import AdminSidebar from '../../components/AdminSidebar';
 import AdminHeader from '../../components/AdminHeader';
 
@@ -139,7 +140,7 @@ export default function AdminPackagesPage() {
       setRejecting(false);
       await fetchPackages();
     } catch (err: any) {
-      const code = err?.response?.data?.message;
+      const code = getApiErrorCode(err);
       message.error(
         code === 'PACKAGE_NOT_FOUND' ? 'Gói này không còn tồn tại.' : 'Thao tác thất bại. Vui lòng thử lại.'
       );

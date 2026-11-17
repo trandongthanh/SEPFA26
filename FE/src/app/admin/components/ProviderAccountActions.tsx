@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { CopyOutlined, DeleteOutlined, KeyOutlined } from '@ant-design/icons';
 import { Alert, App, Button, Input, Modal } from 'antd';
 import { adminApi } from '@/lib/admin.api';
+import { getApiErrorCode } from '@/lib/api';
 
 interface Props {
   providerId: string;
@@ -35,7 +36,7 @@ export default function ProviderAccountActions({ providerId, displayName, email 
       setResetConfirmOpen(false);
       setTempPassword(res.tempPassword);
     } catch (err: any) {
-      const code = err?.response?.data?.message;
+      const code = getApiErrorCode(err);
       message.error(
         code === 'PROVIDER_NOT_FOUND'
           ? 'Không tìm thấy nhà vườn này.'
@@ -72,7 +73,7 @@ export default function ProviderAccountActions({ providerId, displayName, email 
       router.push('/admin/verify/providers');
     } catch (err: any) {
       const status = err?.response?.status;
-      const code = err?.response?.data?.message;
+      const code = getApiErrorCode(err);
       // BE chưa bắt lỗi khóa ngoại: nhà vườn đã có đơn hàng / dữ liệu liên quan → 500.
       setDeleteError(
         code === 'PROVIDER_NOT_FOUND'

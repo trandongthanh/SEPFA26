@@ -12,6 +12,7 @@ import {
 import { Alert, App, Button, InputNumber, Modal, Spin } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { ShippingRate, ShippingRateInput, adminApi } from '@/lib/admin.api';
+import { getApiErrorCode } from '@/lib/api';
 import AdminSidebar from '../components/AdminSidebar';
 import AdminHeader from '../components/AdminHeader';
 
@@ -182,9 +183,8 @@ export default function AdminShippingRatesPage() {
       setConfirmOpen(false);
       message.success('Đã lưu bảng phí lấy cây.');
     } catch (err: any) {
-      const raw = err?.response?.data?.message;
-      const code = Array.isArray(raw) ? raw[0] : raw;
-      message.error((code && ERROR_MESSAGES[code]) || code || 'Lưu bảng phí thất bại.');
+      const code = getApiErrorCode(err);
+      message.error((code && ERROR_MESSAGES[code]) || err?.response?.data?.message || 'Lưu bảng phí thất bại.');
     } finally {
       setSaving(false);
     }

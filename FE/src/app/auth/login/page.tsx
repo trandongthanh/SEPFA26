@@ -253,13 +253,13 @@ export default function LoginPage() {
                   </span>
                 </Checkbox>
               </Form.Item>
-              <button
-                type="button"
-                onClick={() => message.info('Tính năng quên mật khẩu đang được phát triển.')}
-                className="text-[12px] font-semibold text-[#6027D2] hover:text-[#4e1ba8] transition-colors cursor-pointer bg-transparent border-none p-0"
+              <Link
+                href="/auth/forgot-password"
+                id="login-forgot-link"
+                className="text-[12px] font-semibold text-[#6027D2] hover:text-[#4e1ba8] transition-colors"
               >
                 Quên mật khẩu?
-              </button>
+              </Link>
             </div>
 
             {/* Submit Button */}

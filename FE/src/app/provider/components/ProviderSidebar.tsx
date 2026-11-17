@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   AppstoreOutlined,
@@ -8,6 +8,7 @@ import {
   CustomerServiceOutlined,
   DashboardOutlined,
   HistoryOutlined,
+  KeyOutlined,
   LogoutOutlined,
   PlusOutlined,
   SettingOutlined,
@@ -17,6 +18,7 @@ import { Avatar, Button, Dropdown, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { authApi } from '@/lib/api';
 import { ProviderProfileResponse } from '@/lib/provider.api';
+import ChangePasswordModal from '@/features/auth/components/ChangePasswordModal';
 
 interface ProviderSidebarProps {
   profile: ProviderProfileResponse | null;
@@ -33,6 +35,7 @@ export default function ProviderSidebar({
   const user = useAuthStore((state) => state.user);
   const refreshToken = useAuthStore((state) => state.refreshToken);
   const clearAuth = useAuthStore((state) => state.clearAuth);
+  const [passwordOpen, setPasswordOpen] = useState(false);
 
   const handleLogout = async () => {
     try {
@@ -165,6 +168,12 @@ export default function ProviderSidebar({
                 onClick: () => router.push('/provider/profile'),
               },
               {
+                key: 'change-password',
+                icon: <KeyOutlined />,
+                label: 'Đổi mật khẩu',
+                onClick: () => setPasswordOpen(true),
+              },
+              {
                 key: 'settings',
                 icon: <SettingOutlined />,
                 label: 'Cài đặt tài khoản',
@@ -210,6 +219,7 @@ export default function ProviderSidebar({
           </div>
         </Dropdown>
       </div>
+      <ChangePasswordModal open={passwordOpen} onClose={() => setPasswordOpen(false)} />
     </aside>
   );
 }

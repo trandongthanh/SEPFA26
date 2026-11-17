@@ -20,6 +20,7 @@ import { App, Button, Image, Input, Spin, Tag } from 'antd';
 import dayjs from 'dayjs';
 import { useAuthStore } from '@/lib/auth.store';
 import { adminApi } from '@/lib/admin.api';
+import { getApiErrorCode } from '@/lib/api';
 import type { AdminCustomerItem, EkycDocumentField } from '@/lib/admin.api';
 import AdminSidebar from '../../../components/AdminSidebar';
 import AdminHeader from '../../../components/AdminHeader';
@@ -89,8 +90,8 @@ export default function AdminCustomerDetailPage() {
           const res = await adminApi.getEkycDocumentUrl(field, data.accountId);
           return [field, { url: res.url, loading: false, note: res.url ? undefined : res.message }];
         } catch (err: any) {
-          const code = err?.response?.data?.message;
-          return [field, { url: null, loading: false, note: EKYC_ERROR_NOTES[code] || 'Không lấy được ảnh' }];
+          const code = getApiErrorCode(err);
+          return [field, { url: null, loading: false, note: (code && EKYC_ERROR_NOTES[code]) || 'Không lấy được ảnh' }];
         }
       })
     );

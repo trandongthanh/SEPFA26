@@ -17,6 +17,9 @@ import { App, Avatar, Dropdown, Menu } from 'antd';
 import type { MenuProps } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { authApi } from '@/lib/api';
+import { useState } from 'react';
+import { KeyOutlined } from '@ant-design/icons';
+import ChangePasswordModal from '@/features/auth/components/ChangePasswordModal';
 
 // variant "fixed": cột trái cố định, chỉ hiện từ màn hình lg (≥1024px).
 // variant "drawer": nội dung menu đặt trong ngăn kéo do AdminHeader mở ở màn hình nhỏ.
@@ -42,6 +45,7 @@ export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' 
   };
 
   const comingSoon = () => message.info('Tính năng đang phát triển');
+  const [passwordOpen, setPasswordOpen] = useState(false);
 
   // Xác định selectedKeys và openKeys dựa trên pathname
   const getSelectedKeys = (): string[] => {
@@ -198,6 +202,12 @@ export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' 
           menu={{
             items: [
               {
+                key: 'change-password',
+                icon: <KeyOutlined />,
+                label: 'Đổi mật khẩu',
+                onClick: () => setPasswordOpen(true),
+              },
+              {
                 key: 'settings',
                 icon: <SettingOutlined />,
                 label: 'Cài đặt tài khoản',
@@ -232,6 +242,7 @@ export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' 
           </div>
         </Dropdown>
       </div>
+      <ChangePasswordModal open={passwordOpen} onClose={() => setPasswordOpen(false)} />
     </aside>
   );
 }

@@ -325,4 +325,36 @@ export const authApi = {
     const res = await api.post<GoogleAuthResponse>('/api/v1/auth/google', payload);
     return res.data;
   },
+
+  // Quên mật khẩu: BE luôn trả 200 (kể cả email không tồn tại) để không lộ email nào có tài khoản.
+  // Giới hạn: mỗi tài khoản 3 lần, mỗi IP 10 lần → quá thì 429.
+  forgotPassword: async (email: string) => {
+    const res = await api.post<{ message?: string }>('/api/v1/auth/forgot-password', { email });
+    return res.data;
+  },
+
+  // Đặt lại mật khẩu bằng token trong link mail (hạn 30 phút, dùng 1 lần) → 204.
+  // Sai / hết hạn / đã dùng → 400 RESET_TOKEN_INVALID. Thành công: mọi phiên bị đăng xuất.
+  resetPassword: async (token: string, newPassword: string) => {
+    await api.post('/api/v1/auth/reset-password', { token, newPassword });
+  },
+
+  // Đổi mật khẩu khi đang đăng nhập → 204. Sai mật khẩu hiện tại → 400 CURRENT_PASSWORD_INCORRECT.
+  // Thành công: MỌI phiên (kể cả thiết bị hiện tại) bị đăng xuất → FE phải về trang đăng nhập.
+  changePassword: async (currentPassword: string, newPassword: string) => {
+    await api.patch('/api/v1/accounts/me/password', { currentPassword, newPassword });
+  },
 };
+
+// Mã lỗi gốc của BE (vd "RESET_TOKEN_INVALID"). Interceptor đã đổi data.message thành câu tiếng Việt
+// và cất mã gốc vào data.rawCode → so sánh mã lỗi phải dùng hàm này, không đọc data.message.
+export function getApiErrorCode(err: unknown): string | undefined {
+  const data = (err as { response?: { data?: { rawCode?: unknown; message?: unknown } } })?.response?.data;
+  const raw = data?.rawCode ?? data?.message;
+  const code = Array.isArray(raw) ? raw[0] : raw;
+  return typeof code === 'string' ? code : undefined;
+}
+
+// Quy tắc mật khẩu của BE (ChangePasswordDto / ResetPasswordDto): 8–64 ký tự.
+export const PASSWORD_MIN = 8;
+export const PASSWORD_MAX = 64;

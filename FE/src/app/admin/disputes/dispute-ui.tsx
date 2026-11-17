@@ -7,6 +7,7 @@ import {
   InteractionOutlined,
 } from '@ant-design/icons';
 import type { DisputeOutcome, DisputeStatus, DisputeVerdict } from '@/lib/admin.api';
+import { getApiErrorCode } from '@/lib/api';
 
 export const formatVnd = (value: string | number | null | undefined) =>
   `${Number(value || 0).toLocaleString('vi-VN')} VNĐ`;
@@ -53,9 +54,9 @@ export const DISPUTE_ERROR_MESSAGES: Record<string, string> = {
 };
 
 export const toDisputeError = (err: any, fallback: string) => {
-  const raw = err?.response?.data?.message;
-  const code = Array.isArray(raw) ? raw[0] : raw;
-  return (code && DISPUTE_ERROR_MESSAGES[code]) || code || fallback;
+  const code = getApiErrorCode(err);
+  // Mã chưa có trong bảng trên → dùng câu tiếng Việt interceptor đã dịch sẵn.
+  return (code && DISPUTE_ERROR_MESSAGES[code]) || err?.response?.data?.message || fallback;
 };
 
 export function DisputeStatusTag({
