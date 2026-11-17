@@ -106,6 +106,31 @@ describe('envValidationSchema — GOOGLE_MAPS_API_KEY', () => {
   });
 });
 
+describe('envValidationSchema — tiền bảo đảm khai giá', () => {
+  it('không khai gì → mặc định 10% và ngưỡng 2 × giá gói', () => {
+    const result = envValidationSchema.validate(BASE);
+    const value = result.value as Record<string, unknown>;
+    expect(result.error).toBeUndefined();
+    expect(value.DECLARED_DEPOSIT_PERCENT).toBe(10);
+    expect(value.DECLARED_DEPOSIT_MIN_MULTIPLIER).toBe(2);
+  });
+
+  it('PERCENT = 0 (tắt tính năng) hợp lệ; âm hoặc trên 100 → lỗi', () => {
+    expect(
+      envValidationSchema.validate({ ...BASE, DECLARED_DEPOSIT_PERCENT: '0' })
+        .error,
+    ).toBeUndefined();
+    expect(
+      envValidationSchema.validate({ ...BASE, DECLARED_DEPOSIT_PERCENT: -1 })
+        .error,
+    ).toBeDefined();
+    expect(
+      envValidationSchema.validate({ ...BASE, DECLARED_DEPOSIT_PERCENT: 101 })
+        .error,
+    ).toBeDefined();
+  });
+});
+
 describe('envValidationSchema — video call', () => {
   const validated = (env: Record<string, unknown>) =>
     envValidationSchema.validate(env, { abortEarly: false }).value as Record<

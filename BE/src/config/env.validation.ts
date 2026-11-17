@@ -80,7 +80,9 @@ export const envValidationSchema = Joi.object({
     .max(14400)
     .default(3600),
 
-  CLOUDINARY_URL: Joi.string().pattern(/^cloudinary:\/\//).optional(),
+  CLOUDINARY_URL: Joi.string()
+    .pattern(/^cloudinary:\/\//)
+    .optional(),
   APP_BASE_URL: Joi.string().uri().when('SMTP_HOST', {
     is: SMTP_ENABLED,
     then: Joi.required(),
@@ -105,6 +107,10 @@ export const envValidationSchema = Joi.object({
     then: Joi.string().min(1).required(),
     otherwise: Joi.string().allow('').optional(),
   }),
+  // Tiền bảo đảm khai giá của khách: khai vượt MIN_MULTIPLIER × giá gói thì nộp PERCENT % giá khai.
+  // PERCENT = 0 → tắt tính năng. Số chốt vào từng cây lúc tạo đơn, đổi env không ảnh hưởng đơn đã tạo.
+  DECLARED_DEPOSIT_PERCENT: Joi.number().integer().min(0).max(100).default(10),
+  DECLARED_DEPOSIT_MIN_MULTIPLIER: Joi.number().integer().min(0).default(2),
   PLANTNET_API_KEY: Joi.string().allow('').optional(),
   PLANTNET_PROJECT: Joi.string().default('all'),
   PLANT_ID_API_KEY: Joi.string().allow('').optional(),

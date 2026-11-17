@@ -22,12 +22,13 @@ import { ProviderProfile } from '../../providers/entities/provider-profile.entit
  * khi vườn có lỗi — kèm 6% tương ứng; chi được ngay (`eligible_at` = lúc chia tiền).
  * COMPENSATION (khách) / SECURITY_RETURN (vườn): hai dòng của sổ bảo đảm, khai sẵn kiểu, ghi từ
  * đợt tiền bảo đảm.
+ * DECLARED_RETURN (khách, chi ngay) / DECLARED_FORFEIT (vườn, chờ 3 ngày): hai dòng của sổ bảo đảm khai giá.
  * Tên ràng buộc cố định để DB synchronize và DB chạy SQL tay giống nhau.
  */
 @Entity({ name: 'disbursements' })
 @Check(
   'CHK_disbursements_type',
-  `"type" IN ('PAYOUT','REFUND','SECURITY_RETURN','COMPENSATION')`,
+  `"type" IN ('PAYOUT','REFUND','SECURITY_RETURN','COMPENSATION','DECLARED_RETURN','DECLARED_FORFEIT')`,
 )
 // Đúng một trong hai có giá trị: lệnh chi không người nhận hoặc hai người nhận đều là lỗi.
 @Check(
@@ -69,7 +70,13 @@ export class Disbursement extends BaseEntity {
   customer!: CustomerProfile | null;
 
   @Column({ type: 'varchar', length: 20 })
-  type!: 'PAYOUT' | 'REFUND' | 'SECURITY_RETURN' | 'COMPENSATION';
+  type!:
+    | 'PAYOUT'
+    | 'REFUND'
+    | 'SECURITY_RETURN'
+    | 'COMPENSATION'
+    | 'DECLARED_RETURN'
+    | 'DECLARED_FORFEIT';
 
   @Column({ type: 'bigint' })
   amount!: string;
