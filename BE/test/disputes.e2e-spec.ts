@@ -663,6 +663,9 @@ describe('Tranh chấp lúc trả cây (e2e)', () => {
         customerTotal: '484000',
         refundAmount: '106000',
         compensationAmount: '1000000',
+        declaredDeposit: '0',
+        declaredDepositReturned: '0',
+        declaredDepositForfeited: '0',
       },
     });
 
@@ -1198,6 +1201,7 @@ describe('Tranh chấp lúc trả cây (e2e)', () => {
       outcome: 'ADJUDICATED',
       refundAmount: '400000',
       compensationAmount: '3400000',
+      declaredForfeitAmount: '0',
     });
     expect(await ledger(second.order.orderId, 'ORDER')).toEqual([
       { entry_type: 'DEPOSIT', amount: '484000', balance_after: '484000' },
@@ -1313,6 +1317,7 @@ describe('Tranh chấp lúc trả cây (e2e)', () => {
         outcome: 'ADJUDICATED',
         refundAmount: expected.refund,
         compensationAmount: expected.compensation,
+        declaredForfeitAmount: '0',
       });
       expect(
         await sql(
@@ -1358,6 +1363,7 @@ describe('Tranh chấp lúc trả cây (e2e)', () => {
         outcome: 'ADJUDICATED',
         refundAmount: expected.refund,
         compensationAmount: expected.compensation,
+        declaredForfeitAmount: '0',
         customerReceives: expected.receives,
         plants: [{ plantId: c.plantA, verdict: expected.verdict }],
       });
@@ -1415,6 +1421,7 @@ describe('Tranh chấp lúc trả cây (e2e)', () => {
       outcome: 'ADJUDICATED',
       refundAmount: '200000',
       compensationAmount: '0',
+      declaredForfeitAmount: '0',
     });
     expect(await orderStatus(id)).toBe('COMPLETED');
     expect(await ledger(id, 'SECURITY')).toEqual([]);

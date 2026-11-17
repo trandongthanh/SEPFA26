@@ -80,7 +80,9 @@ export const envValidationSchema = Joi.object({
     .max(14400)
     .default(3600),
 
-  CLOUDINARY_URL: Joi.string().pattern(/^cloudinary:\/\//).optional(),
+  CLOUDINARY_URL: Joi.string()
+    .pattern(/^cloudinary:\/\//)
+    .optional(),
   APP_BASE_URL: Joi.string().uri().when('SMTP_HOST', {
     is: SMTP_ENABLED,
     then: Joi.required(),
@@ -98,10 +100,17 @@ export const envValidationSchema = Joi.object({
   // Webhook SePay xác thực bằng API key (so sánh constant-time) — KHÔNG JWT.
   SEPAY_WEBHOOK_KEY: Joi.string().min(16).required(),
 
-  // Có key → đo qua Google Distance Matrix; để trống → fallback đường chim bay × 1.3.
-  GOOGLE_MAPS_API_KEY: Joi.string().allow('').optional(),
-  ROUTING_PROVIDER: Joi.string().valid('osrm', 'google').default('osrm'),
-  OSRM_BASE_URL: Joi.string().uri().allow('').optional(),
+  // Đo km lấy cây qua Google Routes API. Production BẮT BUỘC (thiếu key = phí sai âm thầm);
+  // development/test để trống → đường chim bay × 1.3 (cách lấy key: .env.example).
+  GOOGLE_MAPS_API_KEY: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().min(1).required(),
+    otherwise: Joi.string().allow('').optional(),
+  }),
+  // Tiền bảo đảm khai giá của khách: khai vượt MIN_MULTIPLIER × giá gói thì nộp PERCENT % giá khai.
+  // PERCENT = 0 → tắt tính năng. Số chốt vào từng cây lúc tạo đơn, đổi env không ảnh hưởng đơn đã tạo.
+  DECLARED_DEPOSIT_PERCENT: Joi.number().integer().min(0).max(100).default(10),
+  DECLARED_DEPOSIT_MIN_MULTIPLIER: Joi.number().integer().min(0).default(2),
   PLANTNET_API_KEY: Joi.string().allow('').optional(),
   PLANTNET_PROJECT: Joi.string().default('all'),
   PLANT_ID_API_KEY: Joi.string().allow('').optional(),

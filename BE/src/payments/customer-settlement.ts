@@ -16,6 +16,11 @@ export interface CustomerSettlement {
   refundAmount: string;
   // Tiền đền giá trị cây từ sổ bảo đảm (chỉ có sau tranh chấp vườn phải đền) — không dính phí.
   compensationAmount: string;
+  // Tiền bảo đảm khai giá khách nộp cùng tiền đơn (đã nằm trong customerTotal); không có → "0".
+  declaredDeposit: string;
+  // Phần đã trả lại khách / đã chuyển sang vườn (khách khiếu nại sai) — ghi lúc đơn kết thúc, trước đó "0".
+  declaredDepositReturned: string;
+  declaredDepositForfeited: string;
 }
 
 // Phần vườn thấy thêm khi đơn đã chia tiền (COMPLETED).
@@ -23,6 +28,8 @@ export interface ProviderSettlement extends CustomerSettlement {
   serviceAmount: string;
   providerFee: string;
   providerReceives: string;
+  // Tiền bảo đảm khai giá của khách chuyển sang vườn (lệnh chi riêng, không nằm trong providerReceives).
+  declaredForfeitReceived: string;
   payout: {
     status: Disbursement['status'];
     eligibleAt: Date;
@@ -55,6 +62,8 @@ async function sumLedgerOut(
  * Đơn mẫu 2 cây × 200.000, phí lấy cây 60.000: 400.000 + 24.000 + 60.000 = 484.000.
  * Thêm add-on 100.000 đã trả: addonAmount 100.000, customerFee 30.000, customerTotal 590.000.
  * Sau tranh chấp thoả thuận hoàn công 100.000 + đền 1.000.000: refundAmount 106.000, compensationAmount 1.000.000.
+ * Cây A khai 3.000.000: declaredDeposit 300.000, customerTotal 784.000 (= số trên QR); đơn xong không
+ * tranh chấp → declaredDepositReturned 300.000.
  */
 export async function loadCustomerSettlement(
   manager: EntityManager,
@@ -92,6 +101,19 @@ export async function loadCustomerSettlement(
     'SECURITY',
     'COMPENSATION',
   );
+  const declaredDeposit = amountOf('DECLARED_DEPOSIT');
+  const declaredDepositReturned = await sumLedgerOut(
+    manager,
+    orderId,
+    'DECLARED',
+    'DECLARED_RETURN',
+  );
+  const declaredDepositForfeited = await sumLedgerOut(
+    manager,
+    orderId,
+    'DECLARED',
+    'DECLARED_FORFEIT',
+  );
   return {
     packageAmount: packageAmount.toString(),
     customerFee: customerFee.toString(),
@@ -101,10 +123,14 @@ export async function loadCustomerSettlement(
       packageAmount +
       customerFee +
       pickupFee +
-      addonAmount
+      addonAmount +
+      declaredDeposit
     ).toString(),
     refundAmount: refundAmount.toString(),
     compensationAmount: compensationAmount.toString(),
+    declaredDeposit: declaredDeposit.toString(),
+    declaredDepositReturned: declaredDepositReturned.toString(),
+    declaredDepositForfeited: declaredDepositForfeited.toString(),
   };
 }
 
@@ -136,6 +162,7 @@ export async function loadProviderSettlement(
       .reduce((sum, component) => sum + BigInt(component.providerFee), 0n)
       .toString(),
     providerReceives: payout?.amount ?? '0',
+    declaredForfeitReceived: customerPart.declaredDepositForfeited,
     payout: payout
       ? {
           status: payout.status,

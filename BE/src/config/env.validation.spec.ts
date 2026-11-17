@@ -59,6 +59,9 @@ describe('envValidationSchema — SMTP', () => {
   });
 });
 
+// Production bắt buộc thêm key Google (14/11/2026) — các ca production khác phải có sẵn key.
+const PROD = { ...BASE, NODE_ENV: 'production', GOOGLE_MAPS_API_KEY: 'k' };
+
 describe('envValidationSchema — THROTTLE_DISABLED', () => {
   it('dev/test được tắt rate limit', () => {
     expect(
@@ -67,20 +70,64 @@ describe('envValidationSchema — THROTTLE_DISABLED', () => {
   });
 
   it('production KHÔNG được tắt rate limit → app không khởi động', () => {
-    expect(
-      errorKeys({ ...BASE, NODE_ENV: 'production', THROTTLE_DISABLED: 'true' }),
-    ).toEqual(['THROTTLE_DISABLED']);
+    expect(errorKeys({ ...PROD, THROTTLE_DISABLED: 'true' })).toEqual([
+      'THROTTLE_DISABLED',
+    ]);
   });
 
   it('production để false hoặc bỏ trống → hợp lệ', () => {
+    expect(errorKeys({ ...PROD, THROTTLE_DISABLED: 'false' })).toEqual([]);
+    expect(errorKeys(PROD)).toEqual([]);
+  });
+});
+
+describe('envValidationSchema — GOOGLE_MAPS_API_KEY', () => {
+  it('production thiếu key → app không khởi động', () => {
+    expect(errorKeys({ ...BASE, NODE_ENV: 'production' })).toEqual([
+      'GOOGLE_MAPS_API_KEY',
+    ]);
+  });
+
+  it('production key rỗng → app không khởi động', () => {
+    expect(errorKeys({ ...PROD, GOOGLE_MAPS_API_KEY: '' })).toEqual([
+      'GOOGLE_MAPS_API_KEY',
+    ]);
+  });
+
+  it('production có key → hợp lệ', () => {
+    expect(errorKeys(PROD)).toEqual([]);
+  });
+
+  it('dev/test thiếu hoặc rỗng key → hợp lệ (đo km bằng chim bay × 1.3)', () => {
+    expect(errorKeys(BASE)).toEqual([]);
     expect(
-      errorKeys({
-        ...BASE,
-        NODE_ENV: 'production',
-        THROTTLE_DISABLED: 'false',
-      }),
+      errorKeys({ ...BASE, NODE_ENV: 'test', GOOGLE_MAPS_API_KEY: '' }),
     ).toEqual([]);
-    expect(errorKeys({ ...BASE, NODE_ENV: 'production' })).toEqual([]);
+  });
+});
+
+describe('envValidationSchema — tiền bảo đảm khai giá', () => {
+  it('không khai gì → mặc định 10% và ngưỡng 2 × giá gói', () => {
+    const result = envValidationSchema.validate(BASE);
+    const value = result.value as Record<string, unknown>;
+    expect(result.error).toBeUndefined();
+    expect(value.DECLARED_DEPOSIT_PERCENT).toBe(10);
+    expect(value.DECLARED_DEPOSIT_MIN_MULTIPLIER).toBe(2);
+  });
+
+  it('PERCENT = 0 (tắt tính năng) hợp lệ; âm hoặc trên 100 → lỗi', () => {
+    expect(
+      envValidationSchema.validate({ ...BASE, DECLARED_DEPOSIT_PERCENT: '0' })
+        .error,
+    ).toBeUndefined();
+    expect(
+      envValidationSchema.validate({ ...BASE, DECLARED_DEPOSIT_PERCENT: -1 })
+        .error,
+    ).toBeDefined();
+    expect(
+      envValidationSchema.validate({ ...BASE, DECLARED_DEPOSIT_PERCENT: 101 })
+        .error,
+    ).toBeDefined();
   });
 });
 

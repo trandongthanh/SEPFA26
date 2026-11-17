@@ -174,6 +174,63 @@ describe('dispute-rules', () => {
   });
 
   describe('computeVerdictAmounts', () => {
+    // Khách đã nộp 300.000 tiền bảo đảm khai giá cho cây A (10% của 3.000.000); cây B không có.
+    it.each([
+      ['NOT_AT_FAULT', 300_000n],
+      ['SERVICE_FAULT', 0n],
+      ['VALUE_LOST', 0n],
+    ] as const)(
+      'tiền bảo đảm khai giá cây A, kết luận %s → sang vườn %s',
+      (verdict, declaredForfeit) => {
+        expect(
+          computeVerdictAmounts(
+            [{ verdict, protectionCap: CAP_A, declaredDeposit: 300_000n }],
+            BASE_PRICE,
+          ).declaredForfeit,
+        ).toBe(declaredForfeit);
+      },
+    );
+
+    it('tính theo từng cây: A không lỗi, B vườn lỗi → vẫn mất 300.000 của cây A, không tính là thua', () => {
+      expect(
+        computeVerdictAmounts(
+          [
+            {
+              verdict: 'NOT_AT_FAULT',
+              protectionCap: CAP_A,
+              declaredDeposit: 300_000n,
+            },
+            {
+              verdict: 'SERVICE_FAULT',
+              protectionCap: CAP_B,
+              declaredDeposit: 0n,
+            },
+          ],
+          BASE_PRICE,
+        ),
+      ).toEqual({
+        refund: 200_000n,
+        compensation: 0n,
+        allNotAtFault: false,
+        declaredForfeit: 300_000n,
+      });
+    });
+
+    it('tiền bảo đảm khai giá âm → RangeError', () => {
+      expect(() =>
+        computeVerdictAmounts(
+          [
+            {
+              verdict: 'NOT_AT_FAULT',
+              protectionCap: CAP_A,
+              declaredDeposit: -1n,
+            },
+          ],
+          BASE_PRICE,
+        ),
+      ).toThrow(RangeError);
+    });
+
     it.each([
       ['NOT_AT_FAULT', 0n, 0n, true],
       ['SERVICE_FAULT', 200_000n, 0n, false],
@@ -186,7 +243,12 @@ describe('dispute-rules', () => {
             [{ verdict, protectionCap: CAP_A }],
             BASE_PRICE,
           ),
-        ).toEqual({ refund, compensation, allNotAtFault });
+        ).toEqual({
+          refund,
+          compensation,
+          allNotAtFault,
+          declaredForfeit: 0n,
+        });
       },
     );
 
@@ -200,6 +262,7 @@ describe('dispute-rules', () => {
         refund: 200_000n,
         compensation: 400_000n,
         allNotAtFault: false,
+        declaredForfeit: 0n,
       });
     });
 
@@ -216,6 +279,7 @@ describe('dispute-rules', () => {
         refund: 400_000n,
         compensation: 3_400_000n,
         allNotAtFault: false,
+        declaredForfeit: 0n,
       });
     });
 
@@ -228,7 +292,12 @@ describe('dispute-rules', () => {
           ],
           BASE_PRICE,
         ),
-      ).toEqual({ refund: 200_000n, compensation: 0n, allNotAtFault: false });
+      ).toEqual({
+        refund: 200_000n,
+        compensation: 0n,
+        allNotAtFault: false,
+        declaredForfeit: 0n,
+      });
     });
 
     it('cả hai cây không lỗi → 0 / 0, khách thua', () => {
@@ -240,7 +309,12 @@ describe('dispute-rules', () => {
           ],
           BASE_PRICE,
         ),
-      ).toEqual({ refund: 0n, compensation: 0n, allNotAtFault: true });
+      ).toEqual({
+        refund: 0n,
+        compensation: 0n,
+        allNotAtFault: true,
+        declaredForfeit: 0n,
+      });
     });
 
     it('không có cây nào → 0 / 0 và không tính là thua; số âm → RangeError', () => {
@@ -248,6 +322,7 @@ describe('dispute-rules', () => {
         refund: 0n,
         compensation: 0n,
         allNotAtFault: false,
+        declaredForfeit: 0n,
       });
       expect(() => computeVerdictAmounts([], -1n)).toThrow(RangeError);
       expect(() =>
