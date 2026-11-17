@@ -24,6 +24,7 @@ import {
   toDisputeError,
 } from '../dispute-ui';
 import { AddonsSection, CareReportsSection } from '../order-evidence';
+import { getApiErrorCode } from '@/lib/api';
 
 const NOTE_MAX = 4000;
 const fmtDate = (value: string | null | undefined) =>
@@ -234,6 +235,11 @@ export default function AdminDisputeDetailPage() {
       await fetchDetail();
     } catch (err: any) {
       message.error(toDisputeError(err, 'Phân xử thất bại.'));
+      // Vụ đã đổi trạng thái ở nơi khác (hai bên thoả thuận, admin khác xử) → đóng hộp, tải lại trạng thái mới.
+      if (getApiErrorCode(err) === 'DISPUTE_NOT_IN_REVIEW') {
+        setConfirmOpen(false);
+        await fetchDetail();
+      }
     } finally {
       setSubmitting(false);
     }
