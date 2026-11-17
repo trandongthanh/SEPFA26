@@ -140,6 +140,46 @@ export class OrdersService {
   }
 
   /**
+   * Gói đặt được: tồn tại, đang bán, vườn đã APPROVED — với khách, gói chưa đạt các điều kiện
+   * này coi như không tồn tại (404, không lộ lý do). Vườn chưa ghim GPS → 503 (lỗi dữ liệu phía
+   * hệ thống, không phải lỗi khách).
+   */
+  private async findOrderablePackage(packageId: string) {
+    const pkg = await this.packageRepo.findOne({
+      where: { id: packageId, isActive: true },
+      relations: { provider: true },
+    });
+    if (!pkg || pkg.provider.verificationStatus !== 'APPROVED') {
+      throw new NotFoundException('SERVICE_PACKAGE_NOT_FOUND');
+    }
+    if (pkg.provider.gpsLat === null || pkg.provider.gpsLng === null) {
+      throw new ServiceUnavailableException('PROVIDER_GPS_MISSING');
+    }
+    return pkg;
+  }
+
+  /** Phí lấy cây (đồng) theo bảng bậc đang bật — một lần cho cả đơn, không nhân số cây. */
+  private async computePickupFeeForKm(km: number): Promise<number> {
+    const tiers = await this.shippingRateRepo.find({
+      where: { isActive: true },
+      order: { minKm: 'ASC' },
+    });
+    if (tiers.length === 0) {
+      // Chưa cấu hình bảng phí (dev/staging): không chặn khách, phí = 0 + cảnh báo.
+      // Production phải seed bảng phí (npm run seed:shipping-rates).
+      console.warn(
+        'No active shipping rates configured — defaulting pickup fee to 0.',
+      );
+      return 0;
+    }
+    const tier = pickTier(tiers, km);
+    if (!tier) {
+      throw new ServiceUnavailableException('SHIPPING_RATE_NOT_CONFIGURED');
+    }
+    return computeShippingFee(tier, km);
+  }
+
+  /**
    * POST /orders — tạo đơn DRAFT.
    * 9 bước theo docs/sequence-diagrams/orders-create.md: lỗi rẻ check trước,
    * gọi Google (tốn tiền/chậm) gần cuối, ghi DB trong 1 transaction sau cùng.
@@ -165,20 +205,8 @@ export class OrdersService {
       throw new BadRequestException('PICKUP_TIME_IN_PAST');
     }
 
-    // 3+4. Gói tồn tại, đang bán, provider đã APPROVED — với khách, gói chưa đạt
-    // các điều kiện này coi như không tồn tại (404, không lộ lý do).
-    const pkg = await this.packageRepo.findOne({
-      where: { id: dto.servicePackageId, isActive: true },
-      relations: { provider: true },
-    });
-    if (!pkg || pkg.provider.verificationStatus !== 'APPROVED') {
-      throw new NotFoundException('SERVICE_PACKAGE_NOT_FOUND');
-    }
-
-    // 5. Provider phải đã ghim GPS — lỗi dữ liệu phía hệ thống, không phải lỗi khách.
-    if (pkg.provider.gpsLat === null || pkg.provider.gpsLng === null) {
-      throw new ServiceUnavailableException('PROVIDER_GPS_MISSING');
-    }
+    // 3+4+5. Gói đặt được + vườn đã ghim GPS (dùng chung với API xem trước phí).
+    const pkg = await this.findOrderablePackage(dto.servicePackageId);
 
     // 6. Số cây trong giới hạn gói.
     if (dto.plants.length > pkg.maxPlants) {
@@ -190,33 +218,12 @@ export class OrdersService {
       this.assertDeclaredValueInRange(plant, pkg);
     }
 
-    // 8. Đo km (Google, lỗi → 503) rồi tính phí theo bậc giá trong DB.
+    // 8. Đo km (Google, lỗi → 503) rồi tính phí theo bậc giá trong DB — 1 lần cho cả đơn.
     const km = await this.distanceService.getKm(
       { lat: dto.pickupGpsLat, lng: dto.pickupGpsLng },
       { lat: Number(pkg.provider.gpsLat), lng: Number(pkg.provider.gpsLng) },
     );
-    const tiers = await this.shippingRateRepo.find({
-      where: { isActive: true },
-      order: { minKm: 'ASC' },
-    });
-
-    let pickupFee: number;
-    if (tiers.length === 0) {
-      // Fallback: if no shipping rates configured in DB, avoid blocking customer
-      // flows in dev/staging. Default to zero pickup fee and log a warning.
-      // Production should seed shipping rates properly.
-      // TODO: consider returning a warning to FE so admins can be alerted.
-      console.warn(
-        'No active shipping rates configured — defaulting pickup fee to 0.',
-      );
-      pickupFee = 0;
-    } else {
-      const tier = pickTier(tiers, km);
-      if (!tier) {
-        throw new ServiceUnavailableException('SHIPPING_RATE_NOT_CONFIGURED');
-      }
-      pickupFee = computeShippingFee(tier, km, dto.plants.length);
-    }
+    const pickupFee = await this.computePickupFeeForKm(km);
 
     // 9. Tính tiền (BigInt — tiền bigint không đi qua number) + ghi trong 1 transaction.
     // provisionalTotal KHÔNG gồm ship — ship nằm riêng ở pickupFeeSnapshot (component PICKUP_FEE sau này).
