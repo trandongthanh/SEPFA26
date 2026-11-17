@@ -133,6 +133,15 @@ export const adminApi = {
   },
 
   // --- Khung API cập nhật trạng thái người dùng (ACTIVE / SUSPENDED) ---
+  // Ảnh eKYC của khách lưu trên Cloudinary ở chế độ bảo mật — DB chỉ giữ public_id,
+  // phải xin link có chữ ký (sống 10 phút) mới xem được.
+  getEkycDocumentUrl: async (field: EkycDocumentField, targetAccountId: string) => {
+    const res = await api.get<EkycDocumentUrlResponse>(`/api/v1/ekyc/documents/${field}`, {
+      params: { targetAccountId },
+    });
+    return res.data;
+  },
+
   updateUserStatus: async (userId: string, status: 'ACTIVE' | 'SUSPENDED') => {
     const res = await api.patch(`/api/v1/admin/users/${userId}/status`, { status });
     return res.data;
@@ -405,4 +414,15 @@ export interface ShippingRateInput {
   perKmFee: number;
   billingUnitKm: number | null;
   isActive?: boolean;
+}
+
+// ===== Ảnh eKYC bảo mật — GET /ekyc/documents/:field?targetAccountId= =====
+
+export type EkycDocumentField = 'front' | 'back' | 'selfie';
+
+export interface EkycDocumentUrlResponse {
+  // null với hồ sơ eKYC cũ (trước khi có Cloudinary) — kèm message giải thích.
+  url: string | null;
+  expiresInSeconds: number;
+  message: string;
 }
