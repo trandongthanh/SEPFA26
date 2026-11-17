@@ -57,9 +57,9 @@ export default function RegisterPage() {
     form.setFieldValue('agree', bothAgreed);
   }, [bothAgreed, form]);
 
-  // Guard: đã đăng nhập → về coming-soon
+  // Guard: đã đăng nhập → về trang gốc (tự chuyển theo vai trò). Trước đây trỏ /coming-soon (404).
   useEffect(() => {
-    if (isAuthenticated) router.replace('/coming-soon');
+    if (isAuthenticated) router.replace('/');
   }, [isAuthenticated, router]);
 
   const navigateToTerms = (e: React.MouseEvent | React.KeyboardEvent) => {

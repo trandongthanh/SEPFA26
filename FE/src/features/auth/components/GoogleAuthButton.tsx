@@ -4,8 +4,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import Script from 'next/script';
 import { useRouter } from 'next/navigation';
 import { App, Modal } from 'antd';
-import { authApi } from '@/lib/api';
+import { authApi, getApiErrorCode } from '@/lib/api';
 import { useAuthStore } from '@/lib/auth.store';
+import { homePathForRole } from '../homePath';
 
 declare global {
   interface Window {
@@ -76,6 +77,14 @@ export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, before
           role: 'PROVIDER',
         });
 
+        // Email Google đã có sẵn tài khoản khách hàng → BE trả về tài khoản đó, web không cho vào.
+        if (res.account?.role === 'CUSTOMER') {
+          message.error(
+            'Email Google này đã có tài khoản Khách hàng. Vui lòng đăng nhập trên ứng dụng di động.'
+          );
+          return;
+        }
+
         setAuth(res.account, {
           accessToken: res.accessToken,
           refreshToken: res.refreshToken,
@@ -86,7 +95,7 @@ export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, before
             ? 'Đăng ký tài khoản Đối tác thành công! Mật khẩu dự phòng đã được gửi qua email.'
             : 'Đăng nhập thành công!'
         );
-        router.push('/coming-soon');
+        router.push(homePathForRole(res.account?.role));
         return;
       }
 
@@ -107,13 +116,13 @@ export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, before
         });
 
         message.success('Đăng nhập Google thành công!');
-        router.push('/coming-soon');
+        router.push(homePathForRole(res.account?.role));
       } catch (loginErr: any) {
         const status = loginErr?.response?.status;
         const data = loginErr?.response?.data;
 
         // Nếu tài khoản chưa đăng ký (404 GOOGLE_ACCOUNT_NOT_REGISTERED)
-        if (status === 404 && data?.message === 'GOOGLE_ACCOUNT_NOT_REGISTERED') {
+        if (status === 404 && getApiErrorCode(loginErr) === 'GOOGLE_ACCOUNT_NOT_REGISTERED') {
           const userEmail = data?.email || 'email này';
           Modal.confirm({
             title: 'Tài khoản chưa đăng ký',
@@ -134,9 +143,12 @@ export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, before
                   refreshToken: regRes.refreshToken,
                 });
 
-                message.success('Đăng ký tài khoản Đối tác thành công!');
-                router.push('/coming-soon');
+                message.success(
+                  'Đăng ký tài khoản Đối tác thành công! Mật khẩu dự phòng đã được gửi qua email.'
+                );
+                router.push(homePathForRole(regRes.account?.role));
               } catch (regErr: any) {
+                // data.message đã được interceptor dịch sang tiếng Việt.
                 message.error(
                   regErr?.response?.data?.message || 'Đăng ký tài khoản thất bại.'
                 );
@@ -151,7 +163,8 @@ export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, before
         throw loginErr;
       }
     } catch (err: any) {
-      const rawMsg = err?.response?.data?.message;
+      // So mã gốc (rawCode) — data.message đã bị interceptor đổi thành câu tiếng Việt.
+      const rawMsg = getApiErrorCode(err);
       if (rawMsg === 'INVALID_GOOGLE_TOKEN') {
         message.error('Mã xác thực Google không hợp lệ hoặc đã hết hạn.');
       } else if (rawMsg === 'GOOGLE_EMAIL_NOT_VERIFIED') {
@@ -160,8 +173,12 @@ export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, before
         message.error('Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên.');
       } else if (rawMsg === 'GOOGLE_AUTH_NOT_CONFIGURED') {
         message.error('Hệ thống chưa cấu hình đăng nhập Google.');
+      } else if (rawMsg === 'GOOGLE_AUTH_UNAVAILABLE') {
+        message.error('Không kết nối được tới Google. Vui lòng thử lại sau.');
+      } else if (err?.response?.status === 429) {
+        message.error('Bạn thử quá nhiều lần. Vui lòng đợi ít phút rồi thử lại.');
       } else {
-        message.error(rawMsg || 'Đăng nhập Google thất bại, vui lòng thử lại.');
+        message.error(err?.response?.data?.message || 'Đăng nhập Google thất bại, vui lòng thử lại.');
       }
     } finally {
       setLoading(false);
