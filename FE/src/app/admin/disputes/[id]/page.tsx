@@ -302,6 +302,11 @@ export default function AdminDisputeDetailPage() {
                 <b>{formatVnd(d.compensationAmount)}</b> · Khách nhận tổng{' '}
                 <b>{formatVnd(d.customerReceives)}</b>
               </div>
+              {Number(d.declaredForfeitAmount || 0) > 0 && (
+                <div>
+                  Tiền bảo đảm khai giá của khách chuyển cho vườn: <b>{formatVnd(d.declaredForfeitAmount)}</b>
+                </div>
+              )}
               {d.resolutionNote && <div>Lý do phân xử: {d.resolutionNote}</div>}
             </div>
           }

@@ -22,7 +22,7 @@ export const VERDICT_OPTIONS: { value: DisputeVerdict; label: string; hint: stri
   {
     value: 'NOT_AT_FAULT',
     label: 'Vườn không có lỗi',
-    hint: 'Không hoàn tiền, không đền cho cây này',
+    hint: 'Không hoàn, không đền; tiền bảo đảm khai giá của cây (nếu có) chuyển cho vườn',
   },
   {
     value: 'SERVICE_FAULT',

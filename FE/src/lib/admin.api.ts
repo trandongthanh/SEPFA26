@@ -369,6 +369,8 @@ export interface AdminDisputeDetail {
   refundAmount: string | null;
   compensationAmount: string | null;
   customerReceives: string | null;
+  // Tiền bảo đảm khai giá của khách chuyển sang vườn (admin phán vườn không lỗi); chưa xong → null, không có → "0".
+  declaredForfeitAmount?: string | null;
   resolvedByAccountId: string | null;
   resolutionNote: string | null;
   order: {

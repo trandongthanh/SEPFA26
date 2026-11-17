@@ -57,13 +57,14 @@ const ERROR_MESSAGES: Record<string, string> = {
 };
 
 // Giống pickTier + computeShippingFee của BE (BE/src/orders/shipping-fee.ts).
-function computeFee(tiers: Tier[], km: number, plantCount: number) {
+// Phí tính MỘT LẦN cho cả đơn, không nhân số cây (BE chốt 14/11/2026).
+function computeFee(tiers: Tier[], km: number) {
   const tier = tiers.find((t) => km >= t.minKm && km < (t.maxKm === null ? Infinity : t.maxKm));
   if (!tier) return null;
   const exceeded = Math.max(0, km - tier.minKm);
   const unit = tier.billingUnitKm || 0;
   const extra = unit > 0 ? Math.ceil(exceeded / unit) * tier.perKmFee : exceeded * tier.perKmFee;
-  return { tier, exceeded, unit, extra, total: Math.round((tier.baseFee + extra) * plantCount) };
+  return { tier, exceeded, unit, extra, total: Math.round(tier.baseFee + extra) };
 }
 
 export default function AdminShippingRatesPage() {
@@ -80,7 +81,6 @@ export default function AdminShippingRatesPage() {
   const [tiers, setTiers] = useState<Tier[]>([]);
   const [hadInactive, setHadInactive] = useState(false);
   const [calcKm, setCalcKm] = useState<number>(7);
-  const [calcPlants, setCalcPlants] = useState<number>(1);
 
   useEffect(() => {
     setMounted(true);
@@ -190,7 +190,7 @@ export default function AdminShippingRatesPage() {
     }
   };
 
-  const preview = computeFee(tiers, calcKm || 0, Math.max(1, calcPlants || 1));
+  const preview = computeFee(tiers, calcKm || 0);
 
   if (!isAdmin) {
     return (
@@ -212,7 +212,7 @@ export default function AdminShippingRatesPage() {
               <h1 className="text-2xl font-bold text-[#1E1B2E]">Bảng phí lấy cây</h1>
               <p className="text-xs text-[#6E6A8A] mt-1 max-w-2xl">
                 Phí nhà vườn tính khi đến lấy cây, theo khoảng cách. Mỗi dòng là một bậc km, các bậc
-                nối liền nhau và bậc cuối không có giới hạn trên. Phí tính <b>theo từng cây</b>.
+                nối liền nhau và bậc cuối không có giới hạn trên. Phí tính <b>một lần cho cả đơn</b>, không nhân số cây.
               </p>
             </div>
             <div className="flex gap-2 flex-wrap">
@@ -265,7 +265,7 @@ export default function AdminShippingRatesPage() {
                     <tr className="bg-[#F6F4FC] text-left text-xs text-[#6E6A8A]">
                       <th className="px-3 py-3 font-semibold w-[120px]">Từ km</th>
                       <th className="px-3 py-3 font-semibold w-[140px]">Đến km</th>
-                      <th className="px-3 py-3 font-semibold">Phí cơ bản / cây</th>
+                      <th className="px-3 py-3 font-semibold">Phí cơ bản</th>
                       <th className="px-3 py-3 font-semibold">Phí cộng thêm</th>
                       <th className="px-3 py-3 font-semibold w-[170px]">Cộng thêm theo khối</th>
                       <th className="px-3 py-3 w-[56px]" />
@@ -396,25 +396,21 @@ export default function AdminShippingRatesPage() {
 
           <div className="bg-white rounded-2xl border border-[#ECE7FA] p-5 space-y-3">
             <h3 className="text-sm font-bold text-[#1E1B2E] m-0">Thử tính phí</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
               <div>
                 <label htmlFor="calc-km" className="text-xs text-[#6E6A8A] block mb-1">Khoảng cách</label>
                 <InputNumber id="calc-km" value={calcKm} min={0} step={0.5} onChange={(v) => setCalcKm(Number(v ?? 0))} suffix="km" className="!w-full" />
               </div>
               <div>
-                <label htmlFor="calc-plants" className="text-xs text-[#6E6A8A] block mb-1">Số cây</label>
-                <InputNumber id="calc-plants" value={calcPlants} min={1} step={1} precision={0} onChange={(v) => setCalcPlants(Number(v ?? 1))} suffix="cây" className="!w-full" />
-              </div>
-              <div>
-                <p className="text-xs text-[#6E6A8A] m-0">Phí lấy cây (theo bảng đang sửa)</p>
+                <p className="text-xs text-[#6E6A8A] m-0">Phí lấy cây cho cả đơn (theo bảng đang sửa)</p>
                 <p className="text-2xl font-extrabold text-[#4E1BA8] m-0">{preview ? vnd(preview.total) : '—'}</p>
               </div>
             </div>
             <p className="text-xs text-[#6E6A8A] m-0">
               {preview
-                ? `Bậc ${preview.tier.minKm}–${preview.tier.maxKm ?? '∞'} km: (${vnd(preview.tier.baseFee)} + ${
+                ? `Bậc ${preview.tier.minKm}–${preview.tier.maxKm ?? '∞'} km: ${vnd(preview.tier.baseFee)} + ${
                     preview.unit ? `⌈${preview.exceeded.toFixed(2)} km ÷ ${preview.unit}⌉` : `${preview.exceeded.toFixed(2)} km`
-                  } × ${vnd(preview.tier.perKmFee)}) × ${Math.max(1, calcPlants || 1)} cây`
+                  } × ${vnd(preview.tier.perKmFee)}`
                 : 'Khoảng cách này không thuộc bậc nào trong bảng.'}
             </p>
           </div>
