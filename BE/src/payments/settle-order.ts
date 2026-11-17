@@ -20,6 +20,9 @@ export interface SettleOrderOptions {
   refund?: bigint;
   // C — tiền đền từ sổ bảo đảm. Mặc định 0.
   compensation?: bigint;
+  // Tiền bảo đảm khai giá của khách chuyển sang vườn (admin phán cây đó vườn không lỗi). Mặc định 0
+  // = trả đủ cho khách. Vượt số dư sổ khai giá thì lấy bằng số dư (đơn cũ sổ trống → không ghi gì).
+  declaredForfeit?: bigint;
 }
 
 /**
@@ -37,6 +40,9 @@ export interface SettleOrderOptions {
  * 1 lệnh chi SECURITY_RETURN cho vườn sau 3 ngày. Có đền C = 3.000.000 → COMPENSATION −3.000.000,
  * SECURITY_RETURN −400.000 → 0; lệnh chi COMPENSATION cho khách chi được ngay.
  * Đơn cũ không có tiền bảo đảm: số dư sổ bảo đảm = 0 → không ghi dòng nào ở sổ đó, chia như trước.
+ * Sổ bảo đảm khai giá (đơn mẫu khách nộp 300.000 cho cây A): bình thường DECLARED_RETURN −300.000 → 0,
+ * lệnh chi DECLARED_RETURN cho khách chi được ngay. Admin phán cây A vườn không lỗi (declaredForfeit
+ * 300.000) → DECLARED_FORFEIT −300.000 → 0, lệnh chi DECLARED_FORFEIT cho vườn sau 3 ngày.
  * Sổ không khớp tiền để chia → 500 ESCROW_BALANCE_INSUFFICIENT, cả transaction huỷ.
  * Cố ý KHÔNG trả về số nào: nơi gọi là route của khách, phần của vườn (phí 12%, số vườn nhận)
  * không được lọt vào response — màn hình đọc qua customer-settlement.ts / chi tiết đơn.
@@ -117,12 +123,42 @@ export async function settleOrder(
     },
   ]);
 
+  // Sổ bảo đảm khai giá: phần khách khiếu nại sai sang vườn, phần còn lại trả khách → về 0. Không dính phí.
+  const declaredBalance = await escrowBalance(manager, order.id, 'DECLARED');
+  const requestedForfeit = opts.declaredForfeit ?? 0n;
+  if (requestedForfeit < 0n) {
+    throw new RangeError('declaredForfeit không được âm');
+  }
+  const declaredForfeit =
+    requestedForfeit > declaredBalance ? declaredBalance : requestedForfeit;
+  const declaredReturn = declaredBalance - declaredForfeit;
+  await writeLedgerEntries(manager, order.id, 'DECLARED', declaredBalance, [
+    {
+      type: 'DECLARED_FORFEIT',
+      amount: declaredForfeit,
+      note: `Tiền bảo đảm khai giá sang vườn đơn ${order.orderCode} (admin phán vườn không lỗi), chi sau ${DISBURSE_HOLD_DAYS} ngày`,
+    },
+    {
+      type: 'DECLARED_RETURN',
+      amount: declaredReturn,
+      note: `Trả lại tiền bảo đảm khai giá cho khách đơn ${order.orderCode}`,
+    },
+  ]);
+
   const eligibleAt = new Date(now.getTime() + DISBURSE_HOLD_DAYS * DAY_MS);
   await manager.update(
     PaymentComponent,
     { serviceOrderId: order.id, status: 'PAID' },
     { status: 'RELEASED', disburseBufferUntilAt: eligibleAt },
   );
+  // Dòng tiền bảo đảm khai giá trả đủ cho khách thì là REFUNDED (không có gì chờ chi cho vườn).
+  if (declaredForfeit === 0n) {
+    await manager.update(
+      PaymentComponent,
+      { serviceOrderId: order.id, componentType: 'DECLARED_DEPOSIT' },
+      { status: 'REFUNDED', disburseBufferUntilAt: null },
+    );
+  }
   // Phí vườn 12% chỉ tính trên giá dịch vụ → ghi vào dòng PACKAGE_PRICE (dòng gói có cây bị từ chối
   // vẫn RELEASED: phần chênh đã ra khỏi sổ bằng bút toán REFUND ở trên).
   await manager.update(
@@ -167,6 +203,20 @@ export async function settleOrder(
     settlement.securityReturn,
     eligibleAt,
   );
+  await createCustomerDisbursement(
+    manager,
+    order,
+    'DECLARED_RETURN',
+    declaredReturn,
+    now,
+  );
+  await createProviderDisbursement(
+    manager,
+    order,
+    'DECLARED_FORFEIT',
+    declaredForfeit,
+    eligibleAt,
+  );
 }
 
 export interface LedgerEntryInput {
@@ -207,13 +257,13 @@ export async function writeLedgerEntries(
 }
 
 /**
- * Lệnh chi cho KHÁCH (REFUND từ sổ đơn, COMPENSATION từ sổ bảo đảm). Chụp tài khoản khách lúc này;
+ * Lệnh chi cho KHÁCH (REFUND từ sổ đơn, COMPENSATION từ sổ bảo đảm, DECLARED_RETURN từ sổ khai giá). Chụp tài khoản khách lúc này;
  * chưa khai thì để null, admin thấy thiếu và chờ khách khai — cùng cách đang làm với vườn. 0đ → bỏ qua.
  */
 export async function createCustomerDisbursement(
   manager: EntityManager,
   order: ServiceOrder,
-  type: 'REFUND' | 'COMPENSATION',
+  type: 'REFUND' | 'COMPENSATION' | 'DECLARED_RETURN',
   amount: bigint,
   eligibleAt: Date,
 ): Promise<void> {
@@ -238,13 +288,13 @@ export async function createCustomerDisbursement(
 }
 
 /**
- * Lệnh chi cho VƯỜN (PAYOUT từ sổ đơn, SECURITY_RETURN từ sổ bảo đảm). Chụp tài khoản nhận tiền lúc này;
+ * Lệnh chi cho VƯỜN (PAYOUT từ sổ đơn, SECURITY_RETURN từ sổ bảo đảm, DECLARED_FORFEIT từ sổ khai giá). Chụp tài khoản nhận tiền lúc này;
  * vườn chưa khai thì để null, admin bổ sung lúc chuyển. 0đ → bỏ qua.
  */
 export async function createProviderDisbursement(
   manager: EntityManager,
   order: ServiceOrder,
-  type: 'PAYOUT' | 'SECURITY_RETURN',
+  type: 'PAYOUT' | 'SECURITY_RETURN' | 'DECLARED_FORFEIT',
   amount: bigint,
   eligibleAt: Date,
 ): Promise<void> {

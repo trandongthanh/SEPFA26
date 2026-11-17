@@ -392,7 +392,7 @@ export class HandoverService {
       locked.cancelReason = dto.reason;
       await manager.save(locked);
 
-      const { customerRefund } = await refundCancelledHandover(
+      const { customerRefund, declaredReturn } = await refundCancelledHandover(
         manager,
         locked,
         now,
@@ -402,6 +402,8 @@ export class HandoverService {
       return {
         status: locked.status,
         refundAmount: customerRefund.toString(),
+        // Tiền bảo đảm khai giá khách đã nộp, trả lại đủ (đơn không có khoản này → "0").
+        declaredDepositReturned: declaredReturn.toString(),
       };
     });
   }

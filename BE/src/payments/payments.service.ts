@@ -365,18 +365,47 @@ export class PaymentsService {
         rawBody,
       );
 
-      // DEPOSIT toàn bộ tiền thật nhận (kể cả chuyển dư) — sổ phản ánh tiền thật.
+      // Tiền bảo đảm khai giá (dòng DECLARED_DEPOSIT, nếu có) vào sổ RIÊNG của nó đúng bằng số phải nộp;
+      // phần còn lại — kể cả chuyển dư — vào sổ đơn như cũ. Đơn mẫu nhận 784.000: sổ khai giá 300.000,
+      // sổ đơn 484.000. transferAmount ≥ amountDue đã kiểm ở trên nên phần sổ đơn không âm.
+      const declaredComponent = await manager.findOne(PaymentComponent, {
+        where: {
+          serviceOrderId: order.id,
+          componentType: 'DECLARED_DEPOSIT',
+          status: 'PENDING',
+        },
+      });
+      const declaredAmount = BigInt(declaredComponent?.amount ?? '0');
+      const orderAmount = transferAmount - declaredAmount;
       const lastBalance = await escrowBalance(manager, order.id);
       await manager.save(
         manager.create(EscrowLedger, {
           serviceOrderId: order.id,
           transactionId: txn.id,
           entryType: 'DEPOSIT' as const,
-          amount: transferAmount.toString(),
-          balanceAfter: (lastBalance + transferAmount).toString(),
+          amount: orderAmount.toString(),
+          balanceAfter: (lastBalance + orderAmount).toString(),
           note: `Thu đủ đơn ${order.orderCode} qua SePay #${sepayTxnId}`,
         }),
       );
+      if (declaredAmount > 0n) {
+        const declaredBalance = await escrowBalance(
+          manager,
+          order.id,
+          'DECLARED',
+        );
+        await manager.save(
+          manager.create(EscrowLedger, {
+            serviceOrderId: order.id,
+            transactionId: txn.id,
+            book: 'DECLARED' as const,
+            entryType: 'DECLARED_IN' as const,
+            amount: declaredAmount.toString(),
+            balanceAfter: (declaredBalance + declaredAmount).toString(),
+            note: `Khách nộp tiền bảo đảm khai giá đơn ${order.orderCode} qua SePay #${sepayTxnId}`,
+          }),
+        );
+      }
 
       await manager.update(
         PaymentComponent,
