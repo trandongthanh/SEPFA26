@@ -2,32 +2,33 @@ import {
   Injectable,
   Logger,
   ServiceUnavailableException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GpsPoint, haversineKm, ROAD_FACTOR } from './shipping-fee';
 
-// Shape tối thiểu của response Distance Matrix (chỉ khai field thật sự dùng).
-interface DistanceMatrixResponse {
-  status: string;
-  rows?: Array<{
-    elements?: Array<{
-      status: string;
-      distance?: { value: number }; // mét
-    }>;
-  }>;
+// Google Routes API (thay Distance Matrix đã thành Legacy). Chỉ đo 1 cặp điểm → computeRoutes.
+export const ROUTES_API_URL =
+  'https://routes.googleapis.com/directions/v2:computeRoutes';
+const ROUTES_TIMEOUT_MS = 5_000;
+
+// Shape tối thiểu của response (FieldMask chỉ xin routes.distanceMeters).
+// Không có đường đi → Google trả `{}` (không có `routes`).
+interface ComputeRoutesResponse {
+  routes?: Array<{ distanceMeters?: number }>;
 }
 
-interface OsrmRouteResponse {
-  code: string;
-  routes?: Array<{ distance?: number }>;
-}
+const toWaypoint = (p: GpsPoint) => ({
+  location: { latLng: { latitude: p.lat, longitude: p.lng } },
+});
 
 /**
  * Khoảng cách đường bộ giữa 2 điểm GPS (km, 2 số lẻ) — dùng tính phí đi lấy cây.
- * Có GOOGLE_MAPS_API_KEY → Google Distance Matrix (nguồn đo chính).
- * Thiếu key → fallback đường chim bay × 1.3 (SPEC_MASTER; 20/07 khôi phục vì chưa có
- * thẻ billing — dán key thật vào .env là tự chuyển sang Google, không sửa code).
- * Có key nhưng Google LỖI → vẫn 503 (không âm thầm đổi cách đo giữa chừng — phí phải nhất quán).
+ * - Có GOOGLE_MAPS_API_KEY → Google Routes API, đi ô tô (DRIVE), không tính kẹt xe (TRAFFIC_UNAWARE)
+ *   để cùng 2 điểm luôn ra cùng quãng đường → phí xem trước khớp phí lúc tạo đơn.
+ * - Thiếu key → chim bay × 1.3. Chỉ xảy ra ở development/test: production thiếu key thì BE không
+ *   khởi động (env.validation.ts) — không bao giờ âm thầm tính sai phí trên môi trường thật.
+ * - Google lỗi → 503 (không đoán phí); không có đường đi → 422 (vị trí khách ghim sai chỗ).
  */
 @Injectable()
 export class DistanceService {
@@ -36,70 +37,56 @@ export class DistanceService {
   constructor(private readonly config: ConfigService) {}
 
   async getKm(from: GpsPoint, to: GpsPoint): Promise<number> {
-    const routingProvider = this.config.get<string>('ROUTING_PROVIDER', 'google');
-    if (routingProvider === 'osrm') return this.getOsrmKm(from, to);
-
     const apiKey = this.config.get<string>('GOOGLE_MAPS_API_KEY');
     if (!apiKey) {
       this.logger.warn(
-        'Thiếu GOOGLE_MAPS_API_KEY — dùng fallback đường chim bay × 1.3',
+        'Thiếu GOOGLE_MAPS_API_KEY — dùng đường chim bay × 1.3 (chỉ dev/test)',
       );
-      return Math.round(haversineKm(from, to) * ROAD_FACTOR * 100) / 100;
+      return roundKm(haversineKm(from, to) * ROAD_FACTOR);
     }
 
-    const url = new URL(
-      'https://maps.googleapis.com/maps/api/distancematrix/json',
-    );
-    url.searchParams.set('origins', `${from.lat},${from.lng}`);
-    url.searchParams.set('destinations', `${to.lat},${to.lng}`);
-    url.searchParams.set('key', apiKey);
-
+    let body: ComputeRoutesResponse;
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+      const res = await fetch(ROUTES_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': apiKey,
+          'X-Goog-FieldMask': 'routes.distanceMeters',
+        },
+        body: JSON.stringify({
+          origin: toWaypoint(from),
+          destination: toWaypoint(to),
+          travelMode: 'DRIVE',
+          routingPreference: 'TRAFFIC_UNAWARE',
+        }),
+        signal: AbortSignal.timeout(ROUTES_TIMEOUT_MS),
+      });
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+        // Body lỗi của Google có status/message (vd PERMISSION_DENIED) — không chứa key.
+        const detail = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${detail.slice(0, 300)}`);
       }
-      const body = (await res.json()) as DistanceMatrixResponse;
-      const element = body.rows?.[0]?.elements?.[0];
-      if (
-        body.status !== 'OK' ||
-        element?.status !== 'OK' ||
-        !element.distance
-      ) {
-        throw new Error(
-          `Distance Matrix status=${body.status}, element=${element?.status}`,
-        );
-      }
-      return Math.round((element.distance.value / 1000) * 100) / 100; // khớp cột numeric(6,2)
+      body = (await res.json()) as ComputeRoutesResponse;
     } catch (err) {
       // Không đoán phí khi không đo được — phí lệch âm thầm khó lần hơn lỗi rõ ràng.
-      this.logger.error(`Distance Matrix lỗi: ${(err as Error).message}`);
+      this.logger.error(`Routes API lỗi: ${(err as Error).message}`);
       throw new ServiceUnavailableException('DISTANCE_SERVICE_UNAVAILABLE');
     }
-  }
 
-  private async getOsrmKm(from: GpsPoint, to: GpsPoint): Promise<number> {
-    const baseUrl = this.config.get<string>('OSRM_BASE_URL');
-    if (!baseUrl) {
-      throw new ServiceUnavailableException('OSRM_NOT_CONFIGURED');
-    }
-    const url = new URL(
-      `/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}`,
-      baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`,
-    );
-    url.searchParams.set('overview', 'false');
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as OsrmRouteResponse;
-      const meters = body.routes?.[0]?.distance;
-      if (body.code !== 'Ok' || !meters) {
-        throw new Error(`OSRM code=${body.code}`);
+    const meters = body.routes?.[0]?.distanceMeters;
+    if (meters === undefined) {
+      if (!body.routes?.length) {
+        throw new UnprocessableEntityException('PICKUP_ROUTE_NOT_FOUND');
       }
-      return Math.round((meters / 1000) * 100) / 100;
-    } catch (err) {
-      this.logger.error(`OSRM lỗi: ${(err as Error).message}`);
-      throw new ServiceUnavailableException('DISTANCE_SERVICE_UNAVAILABLE');
+      // 2 điểm trùng nhau: Google bỏ field 0 (proto3 không gửi giá trị mặc định).
+      return 0;
     }
+    return roundKm(meters / 1000);
   }
+}
+
+// Làm tròn 2 số lẻ — khớp cột numeric(6,2).
+function roundKm(km: number): number {
+  return Math.round(km * 100) / 100;
 }

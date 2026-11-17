@@ -59,6 +59,9 @@ describe('envValidationSchema — SMTP', () => {
   });
 });
 
+// Production bắt buộc thêm key Google (14/11/2026) — các ca production khác phải có sẵn key.
+const PROD = { ...BASE, NODE_ENV: 'production', GOOGLE_MAPS_API_KEY: 'k' };
+
 describe('envValidationSchema — THROTTLE_DISABLED', () => {
   it('dev/test được tắt rate limit', () => {
     expect(
@@ -67,20 +70,39 @@ describe('envValidationSchema — THROTTLE_DISABLED', () => {
   });
 
   it('production KHÔNG được tắt rate limit → app không khởi động', () => {
-    expect(
-      errorKeys({ ...BASE, NODE_ENV: 'production', THROTTLE_DISABLED: 'true' }),
-    ).toEqual(['THROTTLE_DISABLED']);
+    expect(errorKeys({ ...PROD, THROTTLE_DISABLED: 'true' })).toEqual([
+      'THROTTLE_DISABLED',
+    ]);
   });
 
   it('production để false hoặc bỏ trống → hợp lệ', () => {
+    expect(errorKeys({ ...PROD, THROTTLE_DISABLED: 'false' })).toEqual([]);
+    expect(errorKeys(PROD)).toEqual([]);
+  });
+});
+
+describe('envValidationSchema — GOOGLE_MAPS_API_KEY', () => {
+  it('production thiếu key → app không khởi động', () => {
+    expect(errorKeys({ ...BASE, NODE_ENV: 'production' })).toEqual([
+      'GOOGLE_MAPS_API_KEY',
+    ]);
+  });
+
+  it('production key rỗng → app không khởi động', () => {
+    expect(errorKeys({ ...PROD, GOOGLE_MAPS_API_KEY: '' })).toEqual([
+      'GOOGLE_MAPS_API_KEY',
+    ]);
+  });
+
+  it('production có key → hợp lệ', () => {
+    expect(errorKeys(PROD)).toEqual([]);
+  });
+
+  it('dev/test thiếu hoặc rỗng key → hợp lệ (đo km bằng chim bay × 1.3)', () => {
+    expect(errorKeys(BASE)).toEqual([]);
     expect(
-      errorKeys({
-        ...BASE,
-        NODE_ENV: 'production',
-        THROTTLE_DISABLED: 'false',
-      }),
+      errorKeys({ ...BASE, NODE_ENV: 'test', GOOGLE_MAPS_API_KEY: '' }),
     ).toEqual([]);
-    expect(errorKeys({ ...BASE, NODE_ENV: 'production' })).toEqual([]);
   });
 });
 
