@@ -154,11 +154,6 @@ export const adminApi = {
     return res.data;
   },
 
-  updateUserStatus: async (userId: string, status: 'ACTIVE' | 'SUSPENDED') => {
-    const res = await api.patch(`/api/v1/admin/users/${userId}/status`, { status });
-    return res.data;
-  },
-
   resetProviderPassword: async (providerId: string) => {
     const res = await api.post<{ tempPassword: string }>(
       `/api/v1/admin/providers/${providerId}/reset-password`,
