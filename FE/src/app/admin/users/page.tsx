@@ -57,42 +57,7 @@ export default function AdminUsersPage() {
   const [mounted, setMounted] = useState(false);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const user = useAuthStore((state) => state.user);
-  const { message, modal } = App.useApp();
-
-  const handleToggleStatus = (record: MergedUser) => {
-    if (record.role === 'ADMIN' || record.status === 'PENDING') return;
-
-    const willBeActive = record.status !== 'ACTIVE';
-    const nextStatus: 'ACTIVE' | 'SUSPENDED' = willBeActive ? 'ACTIVE' : 'SUSPENDED';
-    const actionText = willBeActive ? 'mở khóa' : 'khóa';
-
-    modal.confirm({
-      title: `Xác nhận ${actionText} tài khoản`,
-      content: `Bạn có chắc chắn muốn ${actionText} tài khoản "${record.fullName}" (${record.email}) không?`,
-      okText: willBeActive ? 'Mở khóa' : 'Khóa tài khoản',
-      okType: willBeActive ? 'primary' : 'danger',
-      cancelText: 'Hủy',
-      onOk: async () => {
-        try {
-          // Khung gọi API Backend đã được chuẩn bị sẵn:
-          const targetId = record.accountId || record.id;
-          await adminApi.updateUserStatus(targetId, nextStatus);
-        } catch {
-          // Khi BE chưa sẵn sàng endpoint, giữ cập nhật tức thì trên giao diện
-          console.info(`[Khung API] Sẵn sàng gửi ${nextStatus} cho ID: ${record.accountId || record.id}`);
-        }
-
-        setMergedUsers((prev) =>
-          prev.map((u) =>
-            u.id === record.id
-              ? { ...u, status: nextStatus }
-              : u
-          )
-        );
-        message.success(`Đã ${actionText} tài khoản "${record.fullName}" thành công.`);
-      },
-    });
-  };
+  const { message } = App.useApp();
 
   const [mergedUsers, setMergedUsers] = useState<MergedUser[]>([]);
   const [loading, setLoading] = useState(false);
@@ -266,53 +231,16 @@ export default function AdminUsersPage() {
       title: 'Trạng thái',
       key: 'status',
       width: 175,
+      // Chỉ hiển thị. Nút khoá / mở khoá đã bỏ vì BE chưa có API đổi trạng thái tài khoản.
       render: (_, record) => {
-        // 1. Tài khoản Quản trị viên: Không thể tự khóa mình hoặc khóa Admin khác -> Giữ nguyên Tag xanh Hoạt động
-        if (record.role === 'ADMIN') {
-          return (
-            <Tag color="success" icon={<CheckCircleOutlined />}>
-              Hoạt động
-            </Tag>
-          );
-        }
-
-        // 2. Tài khoản đang Chờ duyệt: Giữ nguyên Tag vàng Chờ duyệt, KHÔNG hiện toggle
-        if (record.status === 'PENDING') {
-          return (
-            <Tag color="warning" icon={<ClockCircleOutlined />}>
-              Chờ duyệt
-            </Tag>
-          );
-        }
-
-        // 3. Tài khoản đã đưa vào hoạt động (ACTIVE hoặc SUSPENDED): Hiển thị Toggle [ Active | Inactive ] chuẩn form ảnh
-        const isActive = record.status === 'ACTIVE';
-
+        const status = record.role === 'ADMIN' ? 'ACTIVE' : record.status;
+        const cfg = STATUS_CONFIG[status] ?? STATUS_CONFIG.ACTIVE;
+        const icon =
+          status === 'PENDING' ? <ClockCircleOutlined /> : status === 'SUSPENDED' ? <LockOutlined /> : <CheckCircleOutlined />;
         return (
-          <div
-            onClick={() => handleToggleStatus(record)}
-            className="inline-flex items-center p-1 bg-[#F1F5F9] border border-[#E2E8F0] rounded-xl cursor-pointer select-none transition-all duration-150 hover:border-[#CBD5E1] shadow-inner"
-            title={`Bấm để ${isActive ? 'khóa' : 'mở khóa'} tài khoản`}
-          >
-            <span
-              className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all duration-150 ${
-                isActive
-                  ? 'bg-white text-[#2563EB] shadow-sm'
-                  : 'text-[#64748B] hover:text-[#334155]'
-              }`}
-            >
-              Active
-            </span>
-            <span
-              className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all duration-150 ${
-                !isActive
-                  ? 'bg-white text-[#EF4444] shadow-sm'
-                  : 'text-[#64748B] hover:text-[#334155]'
-              }`}
-            >
-              Inactive
-            </span>
-          </div>
+          <Tag color={cfg.color} icon={icon}>
+            {cfg.label}
+          </Tag>
         );
       },
     },

@@ -20,9 +20,29 @@ import { App, Button, Image, Input, Spin, Tag } from 'antd';
 import dayjs from 'dayjs';
 import { useAuthStore } from '@/lib/auth.store';
 import { adminApi } from '@/lib/admin.api';
-import type { AdminCustomerItem } from '@/lib/admin.api';
+import { getApiErrorCode } from '@/lib/api';
+import type { AdminCustomerItem, EkycDocumentField } from '@/lib/admin.api';
 import AdminSidebar from '../../../components/AdminSidebar';
 import AdminHeader from '../../../components/AdminHeader';
+
+// Ảnh eKYC: DB lưu public_id Cloudinary (chế độ bảo mật) → phải xin link có chữ ký từ BE.
+// Giá trị là URL đầy đủ (dữ liệu nhập tay cũ) thì dùng thẳng.
+interface DocState {
+  url: string | null;
+  loading: boolean;
+  note?: string;
+}
+
+const EMPTY_DOCS: Record<EkycDocumentField, DocState> = {
+  front: { url: null, loading: false },
+  back: { url: null, loading: false },
+  selfie: { url: null, loading: false },
+};
+
+const EKYC_ERROR_NOTES: Record<string, string> = {
+  EKYC_NOT_FOUND: 'Khách chưa có hồ sơ eKYC',
+  EKYC_IMAGE_NOT_FOUND: 'Không có ảnh này trong hồ sơ eKYC',
+};
 
 const STATUS_TAG: Record<string, { color: string; label: string }> = {
   PENDING: { color: 'warning', label: 'Chờ duyệt' },
@@ -44,8 +64,39 @@ export default function AdminCustomerDetailPage() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [note, setNote] = useState('');
+  const [docs, setDocs] = useState<Record<EkycDocumentField, DocState>>(EMPTY_DOCS);
 
   useEffect(() => { setMounted(true); }, []);
+
+  const resolveDocs = async (data: AdminCustomerItem) => {
+    const stored: Record<EkycDocumentField, string | null> = {
+      front: data.cccdFrontUrl,
+      back: data.cccdBackUrl,
+      selfie: data.selfieWithIdUrl,
+    };
+    const fields = Object.keys(stored) as EkycDocumentField[];
+    setDocs(
+      Object.fromEntries(
+        fields.map((f) => [f, { url: null, loading: Boolean(stored[f]) }])
+      ) as Record<EkycDocumentField, DocState>
+    );
+
+    const results = await Promise.all(
+      fields.map(async (field): Promise<[EkycDocumentField, DocState]> => {
+        const value = stored[field];
+        if (!value) return [field, { url: null, loading: false }];
+        if (/^https?:\/\//i.test(value)) return [field, { url: value, loading: false }];
+        try {
+          const res = await adminApi.getEkycDocumentUrl(field, data.accountId);
+          return [field, { url: res.url, loading: false, note: res.url ? undefined : res.message }];
+        } catch (err: any) {
+          const code = getApiErrorCode(err);
+          return [field, { url: null, loading: false, note: (code && EKYC_ERROR_NOTES[code]) || 'Không lấy được ảnh' }];
+        }
+      })
+    );
+    setDocs(Object.fromEntries(results) as Record<EkycDocumentField, DocState>);
+  };
 
   useEffect(() => {
     if (!mounted) return;
@@ -64,6 +115,7 @@ export default function AdminCustomerDetailPage() {
     try {
       const data = await adminApi.getCustomerDetail(customerId);
       setCustomer(data);
+      void resolveDocs(data);
     } catch {
       message.error('Không thể tải thông tin khách hàng.');
     } finally {
@@ -172,9 +224,9 @@ export default function AdminCustomerDetailPage() {
                       </h3>
                       <Image.PreviewGroup>
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                          <DocumentCard label="CCCD (Mặt trước)" url={customer.cccdFrontUrl} />
-                          <DocumentCard label="CCCD (Mặt sau)" url={customer.cccdBackUrl} />
-                          <DocumentCard label="Ảnh chân dung + CCCD" url={customer.selfieWithIdUrl} />
+                          <DocumentCard label="CCCD (Mặt trước)" {...docs.front} />
+                          <DocumentCard label="CCCD (Mặt sau)" {...docs.back} />
+                          <DocumentCard label="Ảnh chân dung + CCCD" {...docs.selfie} />
                         </div>
                       </Image.PreviewGroup>
                     </div>
@@ -281,7 +333,17 @@ function InfoRow({ icon, label, value }: { icon: React.ReactNode; label: string;
   );
 }
 
-function DocumentCard({ label, url }: { label: string; url: string | null }) {
+function DocumentCard({
+  label,
+  url,
+  loading = false,
+  note,
+}: {
+  label: string;
+  url: string | null;
+  loading?: boolean;
+  note?: string;
+}) {
   return (
     <div className="bg-white rounded-xl border border-[#ECE7FA] overflow-hidden shadow-[0_2px_8px_rgba(0,0,0,0.04)] hover:shadow-md hover:border-[#6027D2]/40 transition-all flex flex-col group">
       {/* Header bar */}
@@ -299,7 +361,9 @@ function DocumentCard({ label, url }: { label: string; url: string | null }) {
 
       {/* Image container: chuẩn KYC, cao 192px, nền xám dịu, ôm trọn ảnh không cắt mép */}
       <div className="relative w-full h-48 bg-[#F8F7FC] flex items-center justify-center p-2.5 overflow-hidden">
-        {url ? (
+        {loading ? (
+          <Spin size="small" />
+        ) : url ? (
           <Image
             src={url}
             alt={label}
@@ -317,7 +381,7 @@ function DocumentCard({ label, url }: { label: string; url: string | null }) {
         ) : (
           <div className="flex flex-col items-center justify-center text-[#A098C2] py-8">
             <IdcardOutlined className="text-3xl mb-1.5 opacity-60" />
-            <span className="text-xs font-medium">Chưa tải lên</span>
+            <span className="text-xs font-medium text-center px-2">{note || 'Chưa tải lên'}</span>
           </div>
         )}
       </div>

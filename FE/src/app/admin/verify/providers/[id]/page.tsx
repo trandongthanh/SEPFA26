@@ -25,6 +25,7 @@ import { adminApi } from '@/lib/admin.api';
 import type { AdminProviderItem, AdminServicePackage } from '@/lib/admin.api';
 import AdminSidebar from '../../../components/AdminSidebar';
 import AdminHeader from '../../../components/AdminHeader';
+import ProviderAccountActions from '../../../components/ProviderAccountActions';
 
 const STATUS_TAG: Record<string, { color: string; label: string }> = {
   PENDING: { color: 'warning', label: 'Chờ duyệt' },
@@ -91,6 +92,21 @@ export default function AdminProviderDetailPage() {
           ? 'Đã phê duyệt gói dịch vụ! Gói hiện đã hiển thị cho Khách hàng.'
           : 'Đã từ chối gói dịch vụ.'
       );
+      fetchDetail();
+    } catch {
+      message.error('Thao tác thất bại. Vui lòng thử lại.');
+    } finally {
+      setActionLoadingPkg(null);
+    }
+  };
+
+  // Tạm ngưng / mở bán lại gói đã duyệt: giữ approvalStatus = APPROVED, chỉ đổi isActive.
+  // (Trước đây gửi REJECTED nên gói bị chuyển hẳn sang "Từ chối".)
+  const handleTogglePackage = async (packageId: string, nextActive: boolean) => {
+    setActionLoadingPkg(packageId);
+    try {
+      await adminApi.verifyPackage(packageId, { decision: 'APPROVED', isActive: nextActive });
+      message.success(nextActive ? 'Đã mở bán lại gói dịch vụ.' : 'Đã tạm ngưng gói dịch vụ.');
       fetchDetail();
     } catch {
       message.error('Thao tác thất bại. Vui lòng thử lại.');
@@ -214,7 +230,7 @@ export default function AdminProviderDetailPage() {
                         <FileProtectOutlined className="text-[#6027D2]" /> Tài liệu pháp lý
                       </h3>
                       <Image.PreviewGroup>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <DocumentCard label="Giấy phép kinh doanh" url={provider.businessLicenseUrl} />
                           <DocumentCard label="CCCD (Mặt trước)" url={provider.cccdFrontUrl} />
                           <DocumentCard label="CCCD (Mặt sau)" url={provider.cccdBackUrl} />
@@ -277,7 +293,7 @@ export default function AdminProviderDetailPage() {
                                     size="small"
                                     type={pkg.isActive ? 'default' : 'primary'}
                                     className={pkg.isActive ? '!text-xs !rounded-lg' : '!bg-[#6027D2] !text-xs !rounded-lg'}
-                                    onClick={() => handleVerifyPackage(pkg.id, pkg.isActive ? 'REJECTED' : 'APPROVED')}
+                                    onClick={() => handleTogglePackage(pkg.id, !pkg.isActive)}
                                     loading={actionLoadingPkg === pkg.id}
                                   >
                                     {pkg.isActive ? 'Tạm ngưng gói' : 'Kích hoạt bán'}
@@ -377,6 +393,12 @@ export default function AdminProviderDetailPage() {
                         </div>
                       )}
                     </div>
+
+                    <ProviderAccountActions
+                      providerId={provider.id}
+                      displayName={provider.displayName}
+                      email={provider.account?.email}
+                    />
                   </div>
                 </div>
               </>

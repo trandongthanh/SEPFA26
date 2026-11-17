@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter } from 'next/navigation';
 import {
-  AppstoreOutlined,
+  CarOutlined,
   AuditOutlined,
   BarChartOutlined,
   CustomerServiceOutlined,
@@ -17,8 +17,13 @@ import { App, Avatar, Dropdown, Menu } from 'antd';
 import type { MenuProps } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { authApi } from '@/lib/api';
+import { useState } from 'react';
+import { KeyOutlined } from '@ant-design/icons';
+import ChangePasswordModal from '@/features/auth/components/ChangePasswordModal';
 
-export default function AdminSidebar() {
+// variant "fixed": cột trái cố định, chỉ hiện từ màn hình lg (≥1024px).
+// variant "drawer": nội dung menu đặt trong ngăn kéo do AdminHeader mở ở màn hình nhỏ.
+export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' | 'drawer' }) {
   const router = useRouter();
   const pathname = usePathname();
   const { message } = App.useApp();
@@ -40,12 +45,15 @@ export default function AdminSidebar() {
   };
 
   const comingSoon = () => message.info('Tính năng đang phát triển');
+  const [passwordOpen, setPasswordOpen] = useState(false);
 
   // Xác định selectedKeys và openKeys dựa trên pathname
   const getSelectedKeys = (): string[] => {
     if (pathname.startsWith('/admin/verify/providers')) return ['/admin/verify/providers'];
     if (pathname.startsWith('/admin/verify/customers')) return ['/admin/verify/customers'];
+    if (pathname.startsWith('/admin/verify/packages')) return ['/admin/verify/packages'];
     if (pathname.startsWith('/admin/users')) return ['/admin/users'];
+    if (pathname.startsWith('/admin/disputes')) return ['/admin/disputes'];
     return [pathname];
   };
 
@@ -76,13 +84,18 @@ export default function AdminSidebar() {
           label: 'Khách hàng',
           onClick: () => router.push('/admin/verify/customers'),
         },
+        {
+          key: '/admin/verify/packages',
+          label: 'Gói dịch vụ',
+          onClick: () => router.push('/admin/verify/packages'),
+        },
       ],
     },
     {
       key: '/admin/disputes',
       icon: <InteractionOutlined />,
       label: 'Tranh chấp',
-      onClick: comingSoon,
+      onClick: () => router.push('/admin/disputes'),
     },
     {
       key: '/admin/disbursements',
@@ -91,10 +104,10 @@ export default function AdminSidebar() {
       onClick: () => router.push('/admin/disbursements'),
     },
     {
-      key: '/admin/categories',
-      icon: <AppstoreOutlined />,
-      label: 'Danh mục',
-      onClick: comingSoon,
+      key: '/admin/shipping-rates',
+      icon: <CarOutlined />,
+      label: 'Phí lấy cây',
+      onClick: () => router.push('/admin/shipping-rates'),
     },
     {
       key: '/admin/reports',
@@ -134,7 +147,11 @@ export default function AdminSidebar() {
 
   return (
     <aside
-      className="w-64 h-screen border-r border-[#ECE7FA] flex flex-col justify-between flex-shrink-0 bg-white z-20 overflow-hidden"
+      className={
+        variant === 'drawer'
+          ? 'w-full h-full flex flex-col justify-between bg-white overflow-hidden'
+          : 'w-64 h-screen border-r border-[#ECE7FA] hidden lg:flex flex-col justify-between flex-shrink-0 bg-white z-20 overflow-hidden sticky top-0'
+      }
     >
       {/* Top Section */}
       <div className="flex flex-col flex-1 overflow-y-auto">
@@ -185,6 +202,12 @@ export default function AdminSidebar() {
           menu={{
             items: [
               {
+                key: 'change-password',
+                icon: <KeyOutlined />,
+                label: 'Đổi mật khẩu',
+                onClick: () => setPasswordOpen(true),
+              },
+              {
                 key: 'settings',
                 icon: <SettingOutlined />,
                 label: 'Cài đặt tài khoản',
@@ -219,6 +242,7 @@ export default function AdminSidebar() {
           </div>
         </Dropdown>
       </div>
+      <ChangePasswordModal open={passwordOpen} onClose={() => setPasswordOpen(false)} />
     </aside>
   );
 }
