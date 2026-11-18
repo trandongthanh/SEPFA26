@@ -34,6 +34,7 @@ export interface OrderPlantItem {
   speciesName?: string;
   isValueDeclared?: boolean;
   declaredValue?: string;
+  declaredDeposit?: string;
   handoverDecision?: string | null;
   initialPhotos?: OrderPlantPhoto[];
 }
@@ -96,6 +97,7 @@ export interface OrderItem {
     status: string;
     customerConfirmDueAt?: string;
   } | null;
+  handoverStatus?: string | null;
   returnHandover?: {
     status: string;
     customerConfirmDueAt?: string;
@@ -110,6 +112,21 @@ export interface OrderItem {
   } | null;
   isReturnOverdue?: boolean;
   careReportSchedule?: CareReportSchedule | null;
+  declaredDepositTotal?: string;
+  settlement?: CustomerSettlement | null;
+}
+
+export interface CustomerSettlement {
+  packageAmount: string;
+  customerFee: string;
+  pickupFee: string;
+  addonAmount: string;
+  customerTotal: string;
+  refundAmount: string;
+  compensationAmount: string;
+  declaredDeposit: string;
+  declaredDepositReturned: string;
+  declaredDepositForfeited: string;
 }
 
 export interface PaginatedOrdersResponse {
@@ -124,6 +141,21 @@ export interface PaginatedOrdersResponse {
 }
 
 export const orderService = {
+  /**
+   * Xem trước phí lấy cây qua Google Routes (GET /orders/pickup-fee-quote)
+   */
+  async quotePickupFee(params: {
+    servicePackageId: string;
+    pickupGpsLat: number;
+    pickupGpsLng: number;
+  }): Promise<{ distanceKm: number; pickupFee: string }> {
+    const response = await apiClient.get<{ distanceKm: number; pickupFee: string }>(
+      '/orders/pickup-fee-quote',
+      { params }
+    );
+    return response.data;
+  },
+
   /**
    * Khách tạo đơn nháp (POST /orders)
    */
@@ -242,26 +274,223 @@ export const orderService = {
   /**
    * Danh sách tranh chấp của đơn (GET /orders/:orderId/disputes)
    */
-  async listDisputes(orderId: string): Promise<OrderDisputeItem[]> {
-    const response = await apiClient.get<OrderDisputeItem[]>(`/orders/${orderId}/disputes`);
-    return Array.isArray(response.data) ? response.data : [];
+  /**
+   * Xem hồ sơ tranh chấp của đơn (GET /orders/:orderId/dispute)
+   */
+  async getDispute(orderId: string): Promise<DisputeDetail | null> {
+    try {
+      const response = await apiClient.get<DisputeDetail>(`/orders/${orderId}/dispute`);
+      return response.data;
+    } catch (err: any) {
+      if (err?.response?.status === 404) return null;
+      throw err;
+    }
   },
 
   /**
-   * Mở tranh chấp mới (POST /orders/:orderId/disputes)
+   * Khách mở tranh chấp trong 48 giờ sau khi trả cây (POST /orders/:orderId/dispute)
    */
   async openDispute(
     orderId: string,
     payload: {
-      reason: DisputeReason;
+      reason: string;
       description: string;
-      evidence: Array<{ photoUrl: string; caption?: string }>;
+      plantIds: string[];
+      evidence: Array<{ photoUrl: string; caption?: string; plantId?: string }>;
     }
-  ): Promise<OrderDisputeItem> {
-    const response = await apiClient.post<OrderDisputeItem>(`/orders/${orderId}/disputes`, payload);
+  ): Promise<DisputeDetail> {
+    const response = await apiClient.post<DisputeDetail>(`/orders/${orderId}/dispute`, payload);
+    return response.data;
+  },
+
+  /**
+   * Nộp thêm bằng chứng tranh chấp (POST /orders/:orderId/dispute/evidence)
+   */
+  async addDisputeEvidence(
+    orderId: string,
+    payload: {
+      photos: Array<{ photoUrl: string; caption?: string; plantId?: string }>;
+      note?: string;
+    }
+  ): Promise<any> {
+    const response = await apiClient.post(`/orders/${orderId}/dispute/evidence`, payload);
+    return response.data;
+  },
+
+  /**
+   * Tạo đề nghị thương lượng tranh chấp (POST /orders/:orderId/dispute/offers)
+   */
+  async createDisputeOffer(
+    orderId: string,
+    payload: {
+      refundAmount: string;
+      compensationAmount: string;
+      message?: string;
+    }
+  ): Promise<any> {
+    const response = await apiClient.post(`/orders/${orderId}/dispute/offers`, payload);
+    return response.data;
+  },
+
+  /**
+   * Đồng ý một đề nghị thương lượng (POST /orders/:orderId/dispute/offers/:offerId/accept)
+   */
+  async acceptDisputeOffer(orderId: string, offerId: string): Promise<any> {
+    const response = await apiClient.post(`/orders/${orderId}/dispute/offers/${offerId}/accept`, {});
+    return response.data;
+  },
+
+  /**
+   * Khách rút khiếu nại (POST /orders/:orderId/dispute/withdraw)
+   */
+  async withdrawDispute(orderId: string): Promise<any> {
+    const response = await apiClient.post(`/orders/${orderId}/dispute/withdraw`, {});
+    return response.data;
+  },
+
+  /**
+   * Danh sách đề xuất add-on (dịch vụ thêm) của đơn (GET /orders/:orderId/addons)
+   */
+  async listAddons(orderId: string): Promise<AddonItem[]> {
+    const response = await apiClient.get<AddonItem[]>(`/orders/${orderId}/addons`);
+    return Array.isArray(response.data) ? response.data : [];
+  },
+
+  /**
+   * Khách đồng ý hoặc từ chối đề xuất add-on (POST /orders/:orderId/addons/:addonId/respond)
+   */
+  async respondAddon(
+    orderId: string,
+    addonId: string,
+    payload: { decision: 'ACCEPT' | 'REJECT'; note?: string }
+  ): Promise<AddonItem> {
+    const response = await apiClient.post<AddonItem>(
+      `/orders/${orderId}/addons/${addonId}/respond`,
+      payload
+    );
+    return response.data;
+  },
+
+  /**
+   * Khách lấy VietQR thanh toán cho add-on (POST /orders/:orderId/addons/:addonId/payment/qr)
+   */
+  async getAddonPaymentQr(
+    orderId: string,
+    addonId: string
+  ): Promise<AddonPaymentQrResponse> {
+    const response = await apiClient.post<AddonPaymentQrResponse>(
+      `/orders/${orderId}/addons/${addonId}/payment/qr`,
+      {}
+    );
     return response.data;
   },
 };
+
+export type AddonStatus =
+  | 'PENDING'
+  | 'ACCEPTED'
+  | 'PAID'
+  | 'DONE'
+  | 'REJECTED'
+  | 'EXPIRED';
+
+export interface AddonItem {
+  id: string;
+  orderId: string;
+  addonCode: string;
+  title: string;
+  reason: string;
+  photoUrls: string[];
+  plant: { id: string; name: string | null } | null;
+  price: string;
+  customerFee: string;
+  amountDue: string;
+  status: AddonStatus;
+  respondDueAt: string;
+  decidedAt: string | null;
+  customerNote: string | null;
+  paymentDueAt: string | null;
+  paidAt: string | null;
+  doneAt: string | null;
+  donePhotoUrls: string[] | null;
+  doneNote: string | null;
+  donePlantHealth?: 'GOOD' | 'AVERAGE' | 'POOR' | null;
+  expiredReason: 'NO_RESPONSE' | 'NOT_PAID' | 'ORDER_RETURNING' | null;
+  expiredAt: string | null;
+  createdAt: string;
+}
+
+export interface AddonPaymentQrResponse {
+  qrImageUrl: string;
+  bankBin: string;
+  bankAccountNumber: string;
+  bankAccountName: string;
+  amount: string;
+  transferContent: string;
+}
+
+export type DisputeStatus = 'NEGOTIATING' | 'ADMIN_REVIEW' | 'RESOLVED';
+export type DisputeOutcome = 'OFFER_ACCEPTED' | 'WITHDRAWN' | 'ADMIN_RESOLVED';
+
+export interface DisputeEvidenceItem {
+  id: string;
+  plantId: string | null;
+  photoUrl: string;
+  caption: string | null;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface DisputeOfferItem {
+  id: string;
+  proposedBy: 'CUSTOMER' | 'PROVIDER';
+  refundAmount: string;
+  compensationAmount: string;
+  customerReceives: string;
+  message: string | null;
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'SUPERSEDED';
+  respondedAt: string | null;
+  createdAt: string;
+}
+
+export interface DisputePlantItem {
+  plantId: string;
+  name: string | null;
+  compensationCap: string | null;
+  verdict: 'UPHELD' | 'DISMISSED' | null;
+}
+
+export interface DisputeDetail {
+  id: string;
+  orderId: string;
+  status: DisputeStatus;
+  outcome: DisputeOutcome | null;
+  reason: string;
+  description: string;
+  openedAt: string;
+  negotiationDueAt: string;
+  escalatedAt: string | null;
+  adminDueAt: string | null;
+  resolvedAt: string | null;
+  plants: DisputePlantItem[];
+  evidence: {
+    customer: DisputeEvidenceItem[];
+    provider: DisputeEvidenceItem[];
+  };
+  handoverObjection: {
+    note: string | null;
+    photos: Array<{ photoUrl: string; caption: string | null; createdAt: string }>;
+  } | null;
+  offers: DisputeOfferItem[];
+  caps: {
+    refundCap: string;
+    compensationCap: string;
+  } | null;
+  refundAmount: string | null;
+  compensationAmount: string | null;
+  customerReceives: string | null;
+  declaredForfeitAmount?: string | null;
+}
 
 export type DisputeReason = 'MISMATCHED_PLANT' | 'DAMAGE' | 'PICKUP' | 'OTHER';
 

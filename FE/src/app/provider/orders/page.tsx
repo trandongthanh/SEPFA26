@@ -3,6 +3,7 @@
 import React, { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
+  AppstoreAddOutlined,
   AuditOutlined,
   CalendarOutlined,
   CheckCircleOutlined,
@@ -23,13 +24,14 @@ import {
   PrinterOutlined,
   SafetyCertificateFilled,
   SafetyCertificateOutlined,
+  ToolOutlined,
   UploadOutlined,
   UserOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
 import { Avatar, Button, Checkbox, Image, Input, Modal, Radio, Segmented, Select, Spin, Tag, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
-import { DisputeReason, OrderDisputeItem, OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
+import { AddonItem, AddonStatus, DisputeDetail, DisputeReason, OrderDisputeItem, OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
 import { videoCallApi } from '@/lib/video-call.api';
 import ProviderHeader from '../components/ProviderHeader';
 import ProviderSidebar from '../components/ProviderSidebar';
@@ -45,11 +47,6 @@ function OrdersPageContent() {
   const [profile, setProfile] = useState<ProviderProfileResponse | null>(null);
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [activeTab, setActiveTab] = useState<string>('ALL');
-
-  // State for Order Detail Modal
-  const [detailModalOpen, setDetailModalOpen] = useState(false);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [orderDetail, setOrderDetail] = useState<any | null>(null);
 
   // State for Handover Assessment Modal
   const [handoverModalOpen, setHandoverModalOpen] = useState(false);
@@ -106,77 +103,287 @@ function OrdersPageContent() {
   const [orderToSign, setOrderToSign] = useState<{ id: string; agreementNo?: string; orderCode?: string } | null>(null);
   const [hasAgreedTerms, setHasAgreedTerms] = useState(false);
 
-  // State for Dispute Modal
+  // State for Dispute Modal (Dispute Room)
   const [disputeModalOpen, setDisputeModalOpen] = useState(false);
   const [disputeOrder, setDisputeOrder] = useState<OrderItem | null>(null);
-  const [disputes, setDisputes] = useState<OrderDisputeItem[]>([]);
-  const [disputesLoading, setDisputesLoading] = useState(false);
-  const [disputeSubmitting, setDisputeSubmitting] = useState(false);
-  const [disputeUploading, setDisputeUploading] = useState(false);
-  const [disputeReason, setDisputeReason] = useState<DisputeReason>('MISMATCHED_PLANT');
-  const [disputeDescription, setDisputeDescription] = useState('');
-  const [disputeEvidence, setDisputeEvidence] = useState<Array<{ photoUrl: string; caption?: string }>>([]);
+  const [disputeDetail, setDisputeDetail] = useState<DisputeDetail | null>(null);
+  const [disputeLoading, setDisputeLoading] = useState(false);
+  const [disputeEvidenceUploading, setDisputeEvidenceUploading] = useState(false);
+  const [disputeOfferSubmitting, setDisputeOfferSubmitting] = useState(false);
+  const [disputeOfferRefund, setDisputeOfferRefund] = useState('');
+  const [disputeOfferCompensation, setDisputeOfferCompensation] = useState('');
+  const [disputeOfferMessage, setDisputeOfferMessage] = useState('');
+  const [acceptingOfferId, setAcceptingOfferId] = useState<string | null>(null);
 
   const handleOpenDisputeModal = async (order: OrderItem) => {
     setDisputeOrder(order);
     setDisputeModalOpen(true);
-    setDisputeReason('MISMATCHED_PLANT');
-    setDisputeDescription('');
-    setDisputeEvidence([]);
-    setDisputesLoading(true);
+    setDisputeOfferRefund('');
+    setDisputeOfferCompensation('');
+    setDisputeOfferMessage('');
+    setDisputeLoading(true);
     try {
-      const list = await providerApi.listDisputes(order.id);
-      setDisputes(list);
+      const data = await providerApi.getDispute(order.id);
+      setDisputeDetail(data);
     } catch (err: any) {
-      message.error(err?.response?.data?.message || 'Không thể tải danh sách tranh chấp.');
-      setDisputes([]);
+      message.error(err?.response?.data?.message || 'Không thể tải hồ sơ tranh chấp.');
+      setDisputeDetail(null);
     } finally {
-      setDisputesLoading(false);
+      setDisputeLoading(false);
     }
   };
 
-  const handleUploadDisputePhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUploadProviderEvidence = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !disputeOrder) return;
+    setDisputeEvidenceUploading(true);
+    try {
+      const uploaded = await providerApi.uploadDocument(file);
+      await providerApi.addDisputeEvidence(disputeOrder.id, {
+        photos: [{ photoUrl: uploaded.url }],
+      });
+      message.success('Đã nộp thêm ảnh bằng chứng.');
+      const data = await providerApi.getDispute(disputeOrder.id);
+      setDisputeDetail(data);
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || 'Không thể nộp ảnh bằng chứng.');
+    } finally {
+      setDisputeEvidenceUploading(false);
+    }
+  };
+
+  const handleSubmitOffer = async () => {
+    if (!disputeOrder || !disputeDetail) return;
+    const refNum = parseInt(disputeOfferRefund || '0', 10);
+    const compNum = parseInt(disputeOfferCompensation || '0', 10);
+    if (isNaN(refNum) || isNaN(compNum) || (refNum === 0 && compNum === 0)) {
+      message.warning('Vui lòng nhập số tiền hoàn công hoặc bồi thường lớn hơn 0.');
+      return;
+    }
+    if (disputeDetail.caps) {
+      const maxRef = parseInt(disputeDetail.caps.refundCap, 10);
+      const maxComp = parseInt(disputeDetail.caps.compensationCap, 10);
+      if (refNum > maxRef) {
+        message.warning(`Tiền hoàn công không được vượt trần ${maxRef.toLocaleString('vi-VN')} VNĐ.`);
+        return;
+      }
+      if (compNum > maxComp) {
+        message.warning(`Tiền bồi thường không được vượt trần ${maxComp.toLocaleString('vi-VN')} VNĐ.`);
+        return;
+      }
+    }
+    setDisputeOfferSubmitting(true);
+    try {
+      await providerApi.createDisputeOffer(disputeOrder.id, {
+        refundAmount: refNum.toString(),
+        compensationAmount: compNum.toString(),
+        message: disputeOfferMessage.trim() || undefined,
+      });
+      message.success('Đã gửi đề xuất thương lượng mới.');
+      setDisputeOfferRefund('');
+      setDisputeOfferCompensation('');
+      setDisputeOfferMessage('');
+      const data = await providerApi.getDispute(disputeOrder.id);
+      setDisputeDetail(data);
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || 'Gửi đề xuất thương lượng thất bại.');
+    } finally {
+      setDisputeOfferSubmitting(false);
+    }
+  };
+
+  const handleAcceptOffer = async (offerId: string) => {
+    if (!disputeOrder) return;
+    setAcceptingOfferId(offerId);
+    try {
+      await providerApi.acceptDisputeOffer(disputeOrder.id, offerId);
+      message.success('Đã chấp nhận đề xuất thương lượng. Tranh chấp đã được giải quyết!');
+      const data = await providerApi.getDispute(disputeOrder.id);
+      setDisputeDetail(data);
+      loadData();
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || 'Chấp nhận đề xuất thất bại.');
+    } finally {
+      setAcceptingOfferId(null);
+    }
+  };
+
+  // State for Addon (Dịch vụ thêm ngoài gói)
+  const [addonModalOpen, setAddonModalOpen] = useState(false);
+  const [addonOrder, setAddonOrder] = useState<OrderItem | null>(null);
+  const [addons, setAddons] = useState<AddonItem[]>([]);
+  const [addonsLoading, setAddonsLoading] = useState(false);
+  const [addonSubmitting, setAddonSubmitting] = useState(false);
+  const [addonUploading, setAddonUploading] = useState(false);
+
+  // Form create addon
+  const [addonTitle, setAddonTitle] = useState('');
+  const [addonReason, setAddonReason] = useState('');
+  const [addonPrice, setAddonPrice] = useState('');
+  const [addonPlantId, setAddonPlantId] = useState<string | undefined>(undefined);
+  const [addonPhotoUrls, setAddonPhotoUrls] = useState<string[]>([]);
+
+  // Complete addon modal
+  const [completeModalOpen, setCompleteModalOpen] = useState(false);
+  const [selectedAddonForComplete, setSelectedAddonForComplete] = useState<AddonItem | null>(null);
+  const [completePhotoUrls, setCompletePhotoUrls] = useState<string[]>([]);
+  const [completeNote, setCompleteNote] = useState('');
+  const [completePlantHealth, setCompletePlantHealth] = useState<'GOOD' | 'AVERAGE' | 'POOR'>('GOOD');
+  const [completeUploading, setCompleteUploading] = useState(false);
+  const [completeSubmitting, setCompleteSubmitting] = useState(false);
+
+  const handleOpenAddonModal = async (order: OrderItem) => {
+    setAddonOrder(order);
+    setAddonModalOpen(true);
+    setAddonTitle('');
+    setAddonReason('');
+    setAddonPrice('');
+    setAddonPlantId(undefined);
+    setAddonPhotoUrls([]);
+    setAddonsLoading(true);
+    try {
+      const list = await providerApi.listAddons(order.id);
+      setAddons(list);
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || 'Không thể tải danh sách dịch vụ thêm.');
+      setAddons([]);
+    } finally {
+      setAddonsLoading(false);
+    }
+  };
+
+  const handleUploadAddonPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    setDisputeUploading(true);
+    if (addonPhotoUrls.length >= 5) {
+      message.warning('Tối đa 5 ảnh minh chứng.');
+      return;
+    }
+    setAddonUploading(true);
     try {
       const uploaded = await providerApi.uploadDocument(file);
-      setDisputeEvidence((prev) => [...prev, { photoUrl: uploaded.url }]);
-      message.success('Đã tải ảnh bằng chứng lên.');
+      setAddonPhotoUrls((prev) => [...prev, uploaded.url]);
+      message.success('Đã tải ảnh minh chứng.');
     } catch (err: any) {
       message.error(err?.response?.data?.message || 'Tải ảnh thất bại.');
     } finally {
-      setDisputeUploading(false);
+      setAddonUploading(false);
     }
   };
 
-  const handleSubmitDispute = async () => {
-    if (!disputeOrder) return;
-    if (!disputeDescription.trim()) {
-      message.warning('Vui lòng nhập mô tả chi tiết vấn đề tranh chấp.');
+  const handleCreateAddon = async () => {
+    if (!addonOrder) return;
+    if (!addonTitle.trim()) {
+      message.warning('Vui lòng nhập tiêu đề dịch vụ phát sinh.');
       return;
     }
-    if (disputeEvidence.length === 0) {
-      message.warning('Vui lòng tải lên ít nhất 1 ảnh bằng chứng.');
+    if (!addonReason.trim()) {
+      message.warning('Vui lòng nhập lý do đề xuất.');
       return;
     }
-    setDisputeSubmitting(true);
+    const numPrice = Number(addonPrice);
+    if (!addonPrice || isNaN(numPrice) || numPrice < 1000 || numPrice > 50000000) {
+      message.warning('Giá dịch vụ từ 1.000 đến 50.000.000 VNĐ.');
+      return;
+    }
+    if (addonPhotoUrls.length === 0) {
+      message.warning('Vui lòng tải lên ít nhất 1 ảnh minh chứng tình trạng cây.');
+      return;
+    }
+    setAddonSubmitting(true);
     try {
-      await providerApi.openDispute(disputeOrder.id, {
-        reason: disputeReason,
-        description: disputeDescription.trim(),
-        evidence: disputeEvidence,
+      await providerApi.createAddon(addonOrder.id, {
+        title: addonTitle.trim(),
+        reason: addonReason.trim(),
+        price: Math.round(numPrice).toString(),
+        photoUrls: addonPhotoUrls,
+        plantId: addonPlantId || undefined,
       });
-      message.success('Đã gửi khiếu nại / mở tranh chấp thành công.');
-      setDisputeDescription('');
-      setDisputeEvidence([]);
-      const list = await providerApi.listDisputes(disputeOrder.id);
-      setDisputes(list);
+      message.success('Đã gửi đề xuất dịch vụ thêm cho khách hàng.');
+      setAddonTitle('');
+      setAddonReason('');
+      setAddonPrice('');
+      setAddonPhotoUrls([]);
+      setAddonPlantId(undefined);
+      const list = await providerApi.listAddons(addonOrder.id);
+      setAddons(list);
     } catch (err: any) {
-      message.error(err?.response?.data?.message || 'Không thể gửi tranh chấp.');
+      const msg = err?.response?.data?.message || 'Gửi đề xuất dịch vụ thêm thất bại.';
+      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
     } finally {
-      setDisputeSubmitting(false);
+      setAddonSubmitting(false);
+    }
+  };
+
+  const handleOpenCompleteModal = (addon: AddonItem, orderObj?: any) => {
+    if (orderObj) setAddonOrder(orderObj);
+    setSelectedAddonForComplete(addon);
+    setCompletePhotoUrls([]);
+    setCompleteNote('');
+    setCompletePlantHealth('GOOD');
+    setCompleteModalOpen(true);
+  };
+
+  const handleUploadCompletePhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (completePhotoUrls.length >= 5) {
+      message.warning('Tối đa 5 ảnh sau khi làm.');
+      return;
+    }
+    setCompleteUploading(true);
+    try {
+      const uploaded = await providerApi.uploadDocument(file);
+      setCompletePhotoUrls((prev) => [...prev, uploaded.url]);
+      message.success('Đã tải ảnh hoàn tất.');
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || 'Tải ảnh thất bại.');
+    } finally {
+      setCompleteUploading(false);
+    }
+  };
+
+  const handleSubmitCompleteAddon = async () => {
+    const targetOrderId = addonOrder?.id || selectedAddonForComplete?.orderId;
+    if (!targetOrderId || !selectedAddonForComplete) return;
+
+    const trimmedNote = completeNote.trim();
+    if (!trimmedNote || trimmedNote.length < 10) {
+      message.warning('Vui lòng nhập mô tả công việc đã làm (tối thiểu 10 ký tự).');
+      return;
+    }
+    if (trimmedNote.length > 1000) {
+      message.warning('Mô tả công việc không được vượt quá 1000 ký tự.');
+      return;
+    }
+
+    if (completePhotoUrls.length === 0) {
+      message.warning('Vui lòng tải lên ít nhất 1 ảnh nghiệm thu sau khi hoàn thành.');
+      return;
+    }
+
+    const hasPlant = Boolean(selectedAddonForComplete.plant?.id);
+
+    setCompleteSubmitting(true);
+    try {
+      await providerApi.completeAddon(targetOrderId, selectedAddonForComplete.id, {
+        photoUrls: completePhotoUrls,
+        note: trimmedNote,
+        plantHealthAfter: hasPlant ? completePlantHealth : undefined,
+      });
+      message.success('Đã báo hoàn tất dịch vụ thêm.');
+      setCompleteModalOpen(false);
+      setSelectedAddonForComplete(null);
+      const list = await providerApi.listAddons(targetOrderId);
+      setAddons(list);
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || 'Báo hoàn tất thất bại.';
+      message.error(Array.isArray(msg) ? msg.join(', ') : msg);
+    } finally {
+      setCompleteSubmitting(false);
     }
   };
 
@@ -646,18 +853,8 @@ function OrdersPageContent() {
     }
   };
 
-  const handleOpenDetail = async (orderId: string) => {
-    setDetailModalOpen(true);
-    setDetailLoading(true);
-    try {
-      const data = await providerApi.getOrderDetail(orderId);
-      setOrderDetail(data);
-    } catch (err: any) {
-      message.error('Không thể tải thông tin chi tiết đơn hàng.');
-      setDetailModalOpen(false);
-    } finally {
-      setDetailLoading(false);
-    }
+  const handleOpenDetail = (orderId: string) => {
+    router.push(`/provider/orders/${orderId}`);
   };
 
   const getStatusBadge = (status: string) => {
@@ -953,13 +1150,15 @@ function OrdersPageContent() {
                             </Button>
                           )}
 
-                          {['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'DISPUTED'].includes(order.status) && (
+                          {order.status === 'DISPUTED' && (
                             <Button
+                              danger
+                              type="primary"
                               icon={<ExclamationCircleOutlined />}
                               onClick={() => handleOpenDisputeModal(order)}
-                              className="!h-9 !px-4 !rounded-xl !bg-white !border !border-red-200 !text-red-600 hover:!bg-red-50 !font-semibold text-xs flex items-center gap-1"
+                              className="!h-9 !px-4 !rounded-xl !bg-rose-600 hover:!bg-rose-700 !font-semibold text-xs flex items-center gap-1.5 shadow-sm"
                             >
-                              Tranh chấp
+                              Hồ sơ tranh chấp
                             </Button>
                           )}
 
@@ -971,6 +1170,16 @@ function OrdersPageContent() {
                               className="!h-9 !px-4 !rounded-xl !bg-emerald-50/80 !border !border-emerald-200 !text-emerald-700 hover:!bg-emerald-100 !font-semibold text-xs flex items-center gap-1"
                             >
                               Gọi Video
+                            </Button>
+                          )}
+
+                          {['IN_CARE', 'RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM', 'COMPLETED', 'DISPUTED'].includes(order.status) && (
+                            <Button
+                              icon={<AppstoreAddOutlined />}
+                              onClick={() => handleOpenAddonModal(order)}
+                              className="!h-9 !px-4 !rounded-xl !bg-[#F5F3FF] !border !border-[#DDD6FE] !text-[#6027D2] hover:!bg-[#EDE9FE] !font-semibold text-xs flex items-center gap-1"
+                            >
+                              Dịch vụ thêm
                             </Button>
                           )}
 
@@ -1076,186 +1285,6 @@ function OrdersPageContent() {
           )}
         </main>
       </div>
-
-      {/* Order Detail Modal */}
-      <Modal
-        title={
-          <div className="flex items-center gap-2 text-base font-bold text-[#1E1B2E]">
-            <ContainerOutlined className="text-[#6027D2]" />
-            <span>Chi tiết đơn hàng {orderDetail?.orderCode ? `- ${orderDetail.orderCode}` : ''}</span>
-          </div>
-        }
-        open={detailModalOpen}
-        onCancel={() => setDetailModalOpen(false)}
-        footer={
-          <div className="flex items-center justify-end gap-2 pt-2">
-            {orderDetail?.status === 'PENDING_PROVIDER' && (
-              <>
-                <Button
-                  onClick={() => {
-                    handleRespondOrder(orderDetail.id, 'REJECT');
-                    setDetailModalOpen(false);
-                  }}
-                  loading={actionLoading === orderDetail?.id}
-                  className="!rounded-xl !bg-[#F6F4FC] !border-none !text-[#4B4764]"
-                >
-                  Từ chối
-                </Button>
-                <Button
-                  type="primary"
-                  onClick={() => {
-                    handleRespondOrder(orderDetail.id, 'ACCEPT');
-                    setDetailModalOpen(false);
-                  }}
-                  loading={actionLoading === orderDetail?.id}
-                  className="!rounded-xl !bg-[#6027D2]"
-                >
-                  Chấp nhận đơn
-                </Button>
-              </>
-            )}
-            {orderDetail && CALL_ELIGIBLE_STATUSES.has(orderDetail.status) && (
-              <Button
-                icon={<VideoCameraOutlined />}
-                loading={videoCallLoading === orderDetail?.id}
-                onClick={() => {
-                  handleStartVideoCall(orderDetail.id);
-                  setDetailModalOpen(false);
-                }}
-                className="!rounded-xl !bg-emerald-50 !border-emerald-200 !text-emerald-700 hover:!bg-emerald-100"
-              >
-                Gọi Video
-              </Button>
-            )}
-            <Button onClick={() => setDetailModalOpen(false)} className="!rounded-xl">
-              Đóng
-            </Button>
-          </div>
-        }
-        width={720}
-        centered
-      >
-        {detailLoading ? (
-          <div className="py-12 text-center">
-            <Spin size="large" />
-            <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải chi tiết đơn hàng...</p>
-          </div>
-        ) : orderDetail ? (
-          <div className="space-y-5 max-h-[70vh] overflow-y-auto pr-1">
-            {/* Overview Card */}
-            <div className="bg-[#F8F6FC] rounded-2xl p-4 border border-[#ECE7FA] flex flex-col md:flex-row md:items-center justify-between gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-[#1E1B2E] text-sm">Mã đơn: {orderDetail.orderCode}</span>
-                  {getStatusBadge(orderDetail.status)}
-                </div>
-                <p className="text-xs text-[#6E6A8A] mt-1">
-                  Khách hàng: <strong className="text-[#1E1B2E]">{orderDetail.customer?.account?.fullName || 'Khách hàng'}</strong>
-                  {orderDetail.customer?.account?.phone ? ` (${orderDetail.customer.account.phone})` : ''}
-                </p>
-              </div>
-              <div className="text-right">
-                <span className="text-[10px] text-[#8B86A4] uppercase font-semibold">Tạm tính</span>
-                <p className="text-lg font-bold text-[#6027D2]">
-                  {Number(orderDetail.finalTotal || orderDetail.provisionalTotal || 0).toLocaleString('vi-VN')} VNĐ
-                </p>
-              </div>
-            </div>
-
-            {/* Package & Logistics Info */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-white p-4 rounded-xl border border-[#ECE7FA]">
-                <h4 className="font-bold text-xs text-[#6027D2] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <ContainerOutlined /> Gói dịch vụ chăm sóc
-                </h4>
-                <p className="text-sm font-bold text-[#1E1B2E]">{orderDetail.servicePackage?.name || 'Gói chăm sóc tiêu chuẩn'}</p>
-                <p className="text-xs text-[#6E6A8A] mt-1">
-                  Thời hạn chăm sóc: {orderDetail.durationDaysSnapshot || orderDetail.servicePackage?.durationDays || '--'} ngày
-                </p>
-                <p className="text-xs text-[#6E6A8A] mt-0.5">
-                  Tần suất gửi báo cáo: {orderDetail.reportFrequencySnapshot || orderDetail.servicePackage?.reportFrequencyDays || '--'} ngày/lần
-                </p>
-              </div>
-
-              <div className="bg-white p-4 rounded-xl border border-[#ECE7FA]">
-                <h4 className="font-bold text-xs text-[#6027D2] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <EnvironmentOutlined /> Địa chỉ & Hẹn giao cây
-                </h4>
-                {orderDetail.scheduledPickupAt && (
-                  <p className="text-xs text-[#1E1B2E] font-medium flex items-center gap-1 mb-1">
-                    <CalendarOutlined className="text-[#6027D2]" /> Ngày hẹn tiếp nhận: {new Date(orderDetail.scheduledPickupAt).toLocaleDateString('vi-VN')}
-                  </p>
-                )}
-                <p className="text-xs text-[#6E6A8A]">
-                  Địa chỉ: <strong className="text-[#1E1B2E]">{orderDetail.pickupAddress || 'Chưa cung cấp'}</strong>
-                </p>
-                {orderDetail.customerNote && (
-                  <p className="text-xs text-[#DD6B20] mt-1 bg-[#FFFAF0] p-2 rounded-lg border border-[#FEEBC8]">
-                    💬 Ghi chú từ khách: "{orderDetail.customerNote}"
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* Plants List */}
-            <div>
-              <h4 className="font-bold text-sm text-[#1E1B2E] mb-3">
-                Danh sách chậu lan gửi chăm sóc ({orderDetail.plants?.length || 0})
-              </h4>
-              
-              <div className="space-y-3">
-                {orderDetail.plants?.map((plant: any, idx: number) => (
-                  <div key={plant.id || idx} className="bg-white p-4 rounded-xl border border-[#ECE7FA]">
-                    <div className="flex items-center justify-between gap-2">
-                      <h5 className="font-bold text-sm text-[#1E1B2E]">
-                        Chậu #{idx + 1}: {plant.name}
-                      </h5>
-                      {plant.isValueDeclared && plant.declaredValue && (
-                        <Tag color="gold" className="!rounded-md font-medium">
-                          Giá trị khai báo: {Number(plant.declaredValue).toLocaleString('vi-VN')} VNĐ
-                        </Tag>
-                      )}
-                    </div>
-
-                    {plant.speciesName && (
-                      <p className="text-xs text-[#6E6A8A] mt-1">
-                        Giống lan / Tình trạng: <span className="text-[#1E1B2E] font-medium">{plant.speciesName}</span>
-                      </p>
-                    )}
-
-                    {/* Photos */}
-                    {(() => {
-                      const plantPhotos = plant.initialPhotos || plant.photos || [];
-                      return plantPhotos.length > 0 ? (
-                        <div className="mt-3">
-                          <p className="text-[11px] font-semibold text-[#8B86A4] mb-1.5 flex items-center gap-1">
-                            <PictureOutlined /> Ảnh chụp hiện trạng ban đầu (từ camera khách):
-                          </p>
-                          <div className="flex flex-wrap gap-2">
-                            {plantPhotos.map((photo: any) => (
-                              <div key={photo.id} className="relative group">
-                                <Image
-                                  src={photo.photoUrl}
-                                  alt={photo.caption || plant.name}
-                                  width={80}
-                                  height={80}
-                                  className="rounded-lg object-cover border border-[#ECE7FA]"
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-xs text-[#A0AEC0] italic mt-2">Chưa có ảnh hiện trạng gửi kèm.</p>
-                      );
-                    })()}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : null}
-      </Modal>
 
       {/* Handover Assessment Modal */}
       <Modal
@@ -2318,78 +2347,545 @@ function OrdersPageContent() {
         ) : null}
       </Modal>
 
-      {/* Dispute Modal */}
+      {/* Dispute Room Modal */}
       <Modal
         title={
-          <div className="flex items-center gap-2.5">
-            <ExclamationCircleOutlined className="text-red-500 text-lg" />
-            <span>Tranh chấp đơn hàng #{disputeOrder?.orderCode || '---'}</span>
+          <div className="flex items-center gap-2">
+            <ExclamationCircleOutlined className="text-rose-600 text-lg" />
+            <span className="font-bold text-[#1E1B2E]">Hồ sơ tranh chấp — Đơn #{disputeOrder?.orderCode || '---'}</span>
           </div>
         }
         open={disputeModalOpen}
+        onCancel={() => setDisputeModalOpen(false)}
+        footer={null}
+        width={720}
+        centered
+      >
+        <div className="space-y-4 pt-2 max-h-[75vh] overflow-y-auto pr-1">
+          {disputeLoading ? (
+            <div className="py-12 text-center">
+              <Spin />
+              <p className="text-xs text-[#8B86A4] mt-2">Đang tải hồ sơ tranh chấp...</p>
+            </div>
+          ) : !disputeDetail ? (
+            <div className="p-6 rounded-2xl bg-gray-50 border border-gray-100 text-center text-xs text-gray-500">
+              Chưa có dữ liệu tranh chấp cho đơn hàng này.
+            </div>
+          ) : (
+            <>
+              {/* Status Banner */}
+              <div
+                className={`p-3.5 rounded-xl border text-xs space-y-1 ${
+                  disputeDetail.status === 'NEGOTIATING'
+                    ? 'bg-amber-50 border-amber-200 text-amber-900'
+                    : disputeDetail.status === 'ADMIN_REVIEW'
+                    ? 'bg-purple-50 border-purple-200 text-purple-900'
+                    : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                }`}
+              >
+                <div className="flex items-center justify-between font-bold">
+                  <span>
+                    Trạng thái:{' '}
+                    {disputeDetail.status === 'NEGOTIATING'
+                      ? '⚡ Đang trong thời gian 3 ngày tự thương lượng'
+                      : disputeDetail.status === 'ADMIN_REVIEW'
+                      ? '⚖️ Đang chờ Ban quản trị (Admin) phân xử'
+                      : '✓ Tranh chấp đã được giải quyết'}
+                  </span>
+                  <Tag
+                    color={
+                      disputeDetail.status === 'NEGOTIATING'
+                        ? 'orange'
+                        : disputeDetail.status === 'ADMIN_REVIEW'
+                        ? 'purple'
+                        : 'green'
+                    }
+                  >
+                    {disputeDetail.status}
+                  </Tag>
+                </div>
+                {disputeDetail.status === 'NEGOTIATING' && disputeDetail.negotiationDueAt && (
+                  <p className="text-[11px] text-amber-800">
+                    Hạn tự thương lượng: <strong>{new Date(disputeDetail.negotiationDueAt).toLocaleString('vi-VN')}</strong>.
+                    Nếu quá hạn không đạt thoả thuận, hệ thống sẽ tự chuyển hồ sơ lên Admin phân xử.
+                  </p>
+                )}
+                {disputeDetail.status === 'ADMIN_REVIEW' && (
+                  <p className="text-[11px] text-purple-800">
+                    Hồ sơ đã chuyển lên Ban quản trị xem xét. Dự kiến kết quả:{' '}
+                    <strong>{disputeDetail.adminDueAt ? new Date(disputeDetail.adminDueAt).toLocaleString('vi-VN') : 'Sớm nhất'}</strong>.
+                  </p>
+                )}
+                {disputeDetail.status === 'RESOLVED' && (
+                  <div className="space-y-1 text-[11px] text-emerald-800">
+                    <p>
+                      Kết quả: <strong>{disputeDetail.outcome === 'OFFER_ACCEPTED' ? 'Hai bên đã thống nhất đề xuất' : disputeDetail.outcome === 'WITHDRAWN' ? 'Khách hàng đã rút khiếu nại' : 'Admin đã ra quyết định'}</strong>
+                      {disputeDetail.customerReceives && (
+                        <span> · Khách nhận bồi hoàn: <strong>{Number(disputeDetail.customerReceives).toLocaleString('vi-VN')} VNĐ</strong></span>
+                      )}
+                    </p>
+                    {disputeDetail.declaredForfeitAmount && Number(disputeDetail.declaredForfeitAmount) > 0 && (
+                      <p className="text-amber-800 font-medium">
+                        🛡️ Nhà vườn được nhận tiền bảo đảm khai giá (do khách khiếu nại sai): <strong className="text-amber-900">+{Number(disputeDetail.declaredForfeitAmount).toLocaleString('vi-VN')} VNĐ</strong>
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Dispute Reason & Details */}
+              <div className="p-3.5 rounded-xl bg-gray-50 border border-gray-200 space-y-2 text-xs">
+                <div>
+                  <span className="text-gray-500 font-medium">Lý do khiếu nại từ khách hàng:</span>
+                  <p className="font-bold text-[#1E1B2E] text-sm mt-0.5">{disputeDetail.reason}</p>
+                </div>
+                {disputeDetail.description && (
+                  <div>
+                    <span className="text-gray-500 font-medium">Chi tiết phản ánh:</span>
+                    <p className="text-[#333] whitespace-pre-wrap mt-0.5 bg-white p-2.5 rounded-lg border border-gray-100">
+                      {disputeDetail.description}
+                    </p>
+                  </div>
+                )}
+                {disputeDetail.plants && disputeDetail.plants.length > 0 && (
+                  <div>
+                    <span className="text-gray-500 font-medium">Cây bị khiếu nại:</span>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {disputeDetail.plants.map((p, idx) => (
+                        <div key={idx} className="px-2.5 py-1 rounded-lg bg-white border border-gray-200 text-xs flex items-center gap-2">
+                          <span className="font-semibold text-rose-700">🌿 {p.name || `Cây #${idx + 1}`}</span>
+                          {p.compensationCap && (
+                            <span className="text-[11px] text-gray-500">
+                              (Trần đền: {Number(p.compensationCap).toLocaleString('vi-VN')} đ)
+                            </span>
+                          )}
+                          {p.verdict && (
+                            <Tag color={p.verdict === 'UPHELD' ? 'red' : 'default'} className="!m-0 !text-[10px]">
+                              {p.verdict === 'UPHELD' ? 'Chấp nhận lỗi' : 'Bác bỏ'}
+                            </Tag>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Caps Info */}
+              {disputeDetail.caps && (
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div className="p-3 rounded-xl bg-blue-50 border border-blue-200">
+                    <span className="text-blue-700 font-medium block">Trần hoàn tiền công tối đa:</span>
+                    <strong className="text-base font-bold text-blue-900 mt-0.5 block">
+                      {Number(disputeDetail.caps.refundCap).toLocaleString('vi-VN')} VNĐ
+                    </strong>
+                  </div>
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200">
+                    <span className="text-rose-700 font-medium block">Trần đền bù giá trị cây tối đa:</span>
+                    <strong className="text-base font-bold text-rose-900 mt-0.5 block">
+                      {Number(disputeDetail.caps.compensationCap).toLocaleString('vi-VN')} VNĐ
+                    </strong>
+                  </div>
+                </div>
+              )}
+
+              {/* Evidence Section */}
+              <div className="space-y-3">
+                <h5 className="text-xs font-bold uppercase tracking-wider text-[#6E6A8A]">
+                  Bằng chứng & Hình ảnh hai bên
+                </h5>
+
+                {/* Customer Evidence */}
+                <div>
+                  <span className="text-xs font-semibold text-rose-700 block mb-1.5">
+                    Ảnh bằng chứng từ Khách hàng ({disputeDetail.evidence?.customer?.length || 0}):
+                  </span>
+                  {disputeDetail.evidence?.customer?.length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {disputeDetail.evidence.customer.map((ev, i) => (
+                        <div key={i} className="space-y-1">
+                          <Image
+                            src={ev.photoUrl}
+                            alt="Ảnh khách"
+                            width={72}
+                            height={72}
+                            className="rounded-lg object-cover border border-rose-200"
+                          />
+                          {ev.caption && <p className="text-[10px] text-gray-500 max-w-[72px] truncate">{ev.caption}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-gray-400 italic">Chưa có ảnh từ khách.</p>
+                  )}
+                </div>
+
+                {/* Handover objection if any */}
+                {disputeDetail.handoverObjection && (
+                  <div className="p-2.5 rounded-lg bg-orange-50 border border-orange-200 text-xs">
+                    <span className="font-semibold text-orange-900 block">Ý kiến khách ghi lúc nhận cây:</span>
+                    {disputeDetail.handoverObjection.note && (
+                      <p className="text-orange-800 italic mt-0.5">&ldquo;{disputeDetail.handoverObjection.note}&rdquo;</p>
+                    )}
+                    {disputeDetail.handoverObjection.photos?.length > 0 && (
+                      <div className="flex flex-wrap gap-2 mt-1.5">
+                        {disputeDetail.handoverObjection.photos.map((ph, idx) => (
+                          <Image key={idx} src={ph.photoUrl} width={60} height={60} className="rounded-lg object-cover" />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Provider Evidence */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-semibold text-emerald-800">
+                      Ảnh bằng chứng từ Nhà vườn ({disputeDetail.evidence?.provider?.length || 0}):
+                    </span>
+                    {disputeDetail.status !== 'RESOLVED' && (
+                      <label className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#6027D2] cursor-pointer hover:underline">
+                        <UploadOutlined />
+                        <span>{disputeEvidenceUploading ? 'Đang nộp...' : '+ Nộp thêm ảnh bằng chứng'}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={disputeEvidenceUploading}
+                          onChange={handleUploadProviderEvidence}
+                          className="hidden"
+                        />
+                      </label>
+                    )}
+                  </div>
+                  {disputeDetail.evidence?.provider?.length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {disputeDetail.evidence.provider.map((ev, i) => (
+                        <div key={i} className="space-y-1">
+                          <Image
+                            src={ev.photoUrl}
+                            alt="Ảnh nhà vườn"
+                            width={72}
+                            height={72}
+                            className="rounded-lg object-cover border border-emerald-200"
+                          />
+                          {ev.caption && <p className="text-[10px] text-gray-500 max-w-[72px] truncate">{ev.caption}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-gray-400 italic">Vườn chưa nộp thêm ảnh bằng chứng.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Negotiation Offers History */}
+              <div className="space-y-3 pt-3 border-t border-gray-100">
+                <h5 className="text-xs font-bold uppercase tracking-wider text-[#6E6A8A]">
+                  Lịch sử đề xuất thương lượng ({disputeDetail.offers?.length || 0})
+                </h5>
+                {disputeDetail.offers?.length === 0 ? (
+                  <p className="text-xs text-gray-400 italic">Chưa có đề xuất thương lượng nào.</p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {disputeDetail.offers.map((off) => (
+                      <div
+                        key={off.id}
+                        className={`p-3 rounded-xl border text-xs space-y-1.5 ${
+                          off.status === 'ACCEPTED'
+                            ? 'bg-emerald-50 border-emerald-200'
+                            : off.status === 'PENDING'
+                            ? 'bg-white border-[#6027D2]/30 shadow-xs'
+                            : 'bg-gray-50 border-gray-200 opacity-70'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-[#1E1B2E]">
+                            {off.proposedBy === 'PROVIDER' ? '🏡 Đề xuất từ Nhà vườn' : '👤 Đề xuất từ Khách hàng'}
+                          </span>
+                          <Tag
+                            color={
+                              off.status === 'ACCEPTED'
+                                ? 'green'
+                                : off.status === 'PENDING'
+                                ? 'gold'
+                                : 'default'
+                            }
+                            className="!m-0"
+                          >
+                            {off.status === 'ACCEPTED'
+                              ? 'Đã đồng ý'
+                              : off.status === 'PENDING'
+                              ? 'Đang chờ duyệt'
+                              : 'Đã bị thay thế'}
+                          </Tag>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 py-1 bg-white/70 p-2 rounded-lg border border-gray-100">
+                          <div>
+                            <span className="text-[11px] text-gray-500 block">Hoàn tiền công:</span>
+                            <strong className="text-gray-900">{Number(off.refundAmount).toLocaleString('vi-VN')} đ</strong>
+                          </div>
+                          <div>
+                            <span className="text-[11px] text-gray-500 block">Tiền bồi thường:</span>
+                            <strong className="text-gray-900">{Number(off.compensationAmount).toLocaleString('vi-VN')} đ</strong>
+                          </div>
+                          <div>
+                            <span className="text-[11px] text-[#6027D2] font-semibold block">Khách nhận tổng:</span>
+                            <strong className="text-emerald-700">{Number(off.customerReceives).toLocaleString('vi-VN')} đ</strong>
+                          </div>
+                        </div>
+                        {off.message && (
+                          <p className="text-gray-600 italic text-[11px]">&ldquo;{off.message}&rdquo;</p>
+                        )}
+                        {/* Action to Accept Customer Offer */}
+                        {off.proposedBy === 'CUSTOMER' && off.status === 'PENDING' && disputeDetail.status === 'NEGOTIATING' && (
+                          <div className="flex justify-end pt-1">
+                            <Button
+                              type="primary"
+                              size="small"
+                              loading={acceptingOfferId === off.id}
+                              onClick={() => handleAcceptOffer(off.id)}
+                              className="!rounded-lg !bg-emerald-600 hover:!bg-emerald-700 !font-semibold text-xs"
+                            >
+                              Đồng ý đề xuất này & Kết thúc tranh chấp
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Form to submit a new offer */}
+              {disputeDetail.status === 'NEGOTIATING' && (
+                <div className="pt-3 border-t border-gray-100 space-y-3 bg-[#FAF8FE] p-3.5 rounded-xl border border-[#ECE7FA]">
+                  <h5 className="text-xs font-bold uppercase tracking-wider text-[#6027D2]">
+                    Gửi đề xuất thương lượng mới cho khách hàng
+                  </h5>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-[#1E1B2E] block mb-1">
+                        Hoàn lại tiền công (VNĐ)
+                      </label>
+                      <Input
+                        placeholder="VD: 200000"
+                        value={disputeOfferRefund}
+                        onChange={(e) => setDisputeOfferRefund(e.target.value.replace(/\D/g, ''))}
+                        className="!rounded-xl"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-[#1E1B2E] block mb-1">
+                        Tiền đền bù hoa lan (VNĐ)
+                      </label>
+                      <Input
+                        placeholder="VD: 500000"
+                        value={disputeOfferCompensation}
+                        onChange={(e) => setDisputeOfferCompensation(e.target.value.replace(/\D/g, ''))}
+                        className="!rounded-xl"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-[#1E1B2E] block mb-1">
+                      Lời nhắn / Thuyết minh đề xuất
+                    </label>
+                    <Input.TextArea
+                      rows={2}
+                      maxLength={500}
+                      placeholder="VD: Nhà vườn xin lỗi vì sơ suất và xin hỗ trợ đền bù phần giá trị cây kèm hoàn tiền công chăm sóc..."
+                      value={disputeOfferMessage}
+                      onChange={(e) => setDisputeOfferMessage(e.target.value)}
+                      className="!rounded-xl"
+                    />
+                  </div>
+                  <div className="flex justify-end pt-1">
+                    <Button
+                      type="primary"
+                      loading={disputeOfferSubmitting}
+                      onClick={handleSubmitOffer}
+                      className="!rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !font-semibold text-xs"
+                    >
+                      Gửi đề xuất thương lượng
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </Modal>
+
+      {/* Addon Modal */}
+      <Modal
+        title={
+          <div className="flex items-center gap-2.5">
+            <AppstoreAddOutlined className="text-[#6027D2] text-lg" />
+            <span className="font-bold text-[#1E1B2E]">
+              Dịch vụ phát sinh (Add-on) — Đơn #{addonOrder?.orderCode || '---'}
+            </span>
+          </div>
+        }
+        open={addonModalOpen}
         onCancel={() => {
-          if (!disputeSubmitting) setDisputeModalOpen(false);
+          if (!addonSubmitting) setAddonModalOpen(false);
         }}
         footer={null}
-        width={680}
+        width={760}
         centered
       >
         <div className="space-y-5 pt-2">
+          {/* List of existing addons */}
           <div>
-            <h5 className="text-xs font-bold uppercase tracking-wider text-[#6E6A8A] mb-2">
-              Lịch sử khiếu nại / Tranh chấp của đơn
+            <h5 className="text-xs font-bold uppercase tracking-wider text-[#6E6A8A] mb-2.5">
+              Danh sách đề xuất dịch vụ phát sinh ({addons.length})
             </h5>
-            {disputesLoading ? (
-              <div className="py-6 text-center">
+
+            {addonsLoading ? (
+              <div className="py-8 text-center">
                 <Spin size="small" />
               </div>
-            ) : disputes.length === 0 ? (
+            ) : addons.length === 0 ? (
               <div className="p-4 rounded-xl bg-gray-50 border border-gray-100 text-xs text-gray-500 text-center">
-                Chưa có tranh chấp nào cho đơn hàng này.
+                Đơn hàng này chưa có đề xuất dịch vụ phát sinh nào.
               </div>
             ) : (
-              <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
-                {disputes.map((d) => {
-                  const reasonLabel =
-                    d.reason === 'MISMATCHED_PLANT'
-                      ? 'Sai cây / Không đúng mô tả'
-                      : d.reason === 'DAMAGE'
-                        ? 'Cây hư hại'
-                        : d.reason === 'PICKUP'
-                          ? 'Vấn đề giao nhận'
-                          : 'Khác';
-                  const statusColor =
-                    d.status === 'RESOLVED'
-                      ? 'green'
-                      : d.status === 'REJECTED'
-                        ? 'red'
-                        : d.status === 'UNDER_REVIEW'
-                          ? 'blue'
-                          : 'orange';
+              <div className="space-y-3.5 max-h-80 overflow-y-auto pr-1">
+                {addons.map((ad) => {
+                  const statusMap: Record<string, { color: string; label: string }> = {
+                    PENDING: { color: 'gold', label: 'Chờ khách duyệt (48h)' },
+                    ACCEPTED: { color: 'blue', label: 'Khách đã duyệt - Chờ thanh toán' },
+                    PAID: { color: 'purple', label: 'Khách đã thanh toán - Sẵn sàng làm' },
+                    DONE: { color: 'green', label: 'Đã hoàn thành' },
+                    REJECTED: { color: 'red', label: 'Khách từ chối' },
+                    EXPIRED: { color: 'default', label: 'Đã hết hạn' },
+                  };
+                  const st = statusMap[ad.status] || { color: 'default', label: ad.status };
+
                   return (
-                    <div key={d.id} className="p-3 rounded-xl border border-[#ECE7FA] bg-[#FAF8FE] space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-xs font-bold text-[#1E1B2E]">{reasonLabel}</span>
-                        <Tag color={statusColor}>{d.status}</Tag>
+                    <div
+                      key={ad.id}
+                      className="p-3.5 rounded-2xl border border-[#ECE7FA] bg-[#FAF8FE] space-y-2.5"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-sm text-[#1E1B2E]">{ad.title}</span>
+                            <span className="font-mono text-[11px] text-[#6027D2] font-semibold">
+                              #{ad.addonCode}
+                            </span>
+                            <Tag color={st.color} className="!rounded-md text-[11px]">
+                              {st.label}
+                            </Tag>
+                          </div>
+                          <p className="text-[11.5px] text-[#8B86A4] mt-0.5">
+                            Áp dụng cho:{' '}
+                            <strong className="text-[#1E1B2E]">
+                              {ad.plant?.name ? `Chậu: ${ad.plant.name}` : 'Toàn bộ đơn hàng'}
+                            </strong>
+                          </p>
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <span className="text-[10px] uppercase text-[#8B86A4] font-semibold block">
+                            Khách thanh toán
+                          </span>
+                          <span className="text-sm font-extrabold text-[#4E1BA8]">
+                            {Number(ad.amountDue || ad.price).toLocaleString('vi-VN')} VNĐ
+                          </span>
+                          <span className="text-[10px] text-[#8B86A4] block">
+                            (Gốc: {Number(ad.price).toLocaleString('vi-VN')} đ + 6% phí)
+                          </span>
+                        </div>
                       </div>
-                      <p className="text-xs text-[#4B4764] whitespace-pre-wrap">{d.description}</p>
-                      {Array.isArray(d.evidence) && d.evidence.length > 0 && (
-                        <div className="flex flex-wrap gap-2 pt-1">
-                          {d.evidence.map((ev, idx) => (
-                            <Image
-                              key={`${d.id}-ev-${idx}`}
-                              src={ev.photoUrl}
-                              alt={ev.caption || 'Bằng chứng tranh chấp'}
-                              width={64}
-                              height={64}
-                              className="rounded-lg object-cover border border-gray-200"
-                            />
-                          ))}
+
+                      {/* Reason & Photos */}
+                      <div className="p-2.5 rounded-xl bg-white border border-[#ECE7FA] text-xs space-y-1.5">
+                        <p className="text-[#4B4764] whitespace-pre-wrap leading-relaxed">
+                          <strong>Lý do phát sinh:</strong> {ad.reason}
+                        </p>
+                        {Array.isArray(ad.photoUrls) && ad.photoUrls.length > 0 && (
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            {ad.photoUrls.map((url, idx) => (
+                              <Image
+                                key={`${ad.id}-photo-${idx}`}
+                                src={url}
+                                alt="Ảnh phát sinh"
+                                width={60}
+                                height={60}
+                                className="rounded-lg object-cover border border-gray-200"
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Customer feedback if rejected */}
+                      {ad.customerNote && (
+                        <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800">
+                          <strong>Ghi chú từ khách hàng:</strong> {ad.customerNote}
                         </div>
                       )}
-                      {d.resolution && (
-                        <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
-                          <strong>Kết luận của Admin:</strong> {d.resolution}
+
+                      {/* Done section if completed */}
+                      {ad.status === 'DONE' && (
+                        <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 space-y-1.5">
+                          <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                            <div className="flex items-center gap-1.5 font-bold text-emerald-800">
+                              <CheckCircleOutlined />
+                              <span>Đã hoàn tất dịch vụ thêm</span>
+                            </div>
+                            {ad.donePlantHealth && (
+                              <div className="flex items-center gap-1">
+                                <span className="text-[11px] text-emerald-800 font-semibold">Tình trạng cây:</span>
+                                <Tag
+                                  color={
+                                    ad.donePlantHealth === 'GOOD'
+                                      ? 'green'
+                                      : ad.donePlantHealth === 'AVERAGE'
+                                      ? 'gold'
+                                      : 'red'
+                                  }
+                                  className="!m-0 !text-[11px]"
+                                >
+                                  {ad.donePlantHealth === 'GOOD'
+                                    ? '🌿 Tốt'
+                                    : ad.donePlantHealth === 'AVERAGE'
+                                    ? '🌱 Trung bình'
+                                    : '🥀 Kém'}
+                                </Tag>
+                              </div>
+                            )}
+                          </div>
+                          {ad.doneNote && <p className="text-xs text-emerald-800">{ad.doneNote}</p>}
+                          {Array.isArray(ad.donePhotoUrls) && ad.donePhotoUrls.length > 0 && (
+                            <div className="flex flex-wrap gap-2 pt-1">
+                              {ad.donePhotoUrls.map((url, idx) => (
+                                <Image
+                                  key={`${ad.id}-done-${idx}`}
+                                  src={url}
+                                  alt="Ảnh hoàn thành"
+                                  width={60}
+                                  height={60}
+                                  className="rounded-lg object-cover border border-emerald-200"
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Action for PAID status: Mark Complete */}
+                      {ad.status === 'PAID' && (
+                        <div className="flex justify-end pt-1">
+                          <Button
+                            type="primary"
+                            icon={<CheckCircleOutlined />}
+                            onClick={() => handleOpenCompleteModal(ad)}
+                            className="!h-8 !px-3.5 !rounded-xl !bg-[#059669] hover:!bg-[#047857] !border-none !font-semibold text-xs text-white"
+                          >
+                            Báo đã hoàn tất
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -2399,91 +2895,252 @@ function OrdersPageContent() {
             )}
           </div>
 
-          {disputeOrder && ['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE'].includes(disputeOrder.status) && (
-            <div className="pt-4 border-t border-gray-100 space-y-3">
-              <h5 className="text-xs font-bold uppercase tracking-wider text-[#6E6A8A]">
-                Mở tranh chấp mới
+          {/* Create new addon form when IN_CARE */}
+          {addonOrder && addonOrder.status === 'IN_CARE' && (
+            <div className="pt-4 border-t border-gray-100 space-y-3.5">
+              <h5 className="text-xs font-bold uppercase tracking-wider text-[#6027D2] flex items-center gap-1.5">
+                <ToolOutlined /> Tạo đề xuất dịch vụ phát sinh mới
               </h5>
 
-              <div>
-                <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">Lý do</label>
-                <Select
-                  value={disputeReason}
-                  onChange={(val) => setDisputeReason(val)}
-                  className="w-full"
-                  options={[
-                    { value: 'MISMATCHED_PLANT', label: 'Sai cây / Không đúng mô tả' },
-                    { value: 'DAMAGE', label: 'Cây bị hư hại' },
-                    { value: 'PICKUP', label: 'Vấn đề giao nhận' },
-                    { value: 'OTHER', label: 'Lý do khác' },
-                  ]}
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">
+                    Cây cần áp dụng
+                  </label>
+                  <Select
+                    value={addonPlantId || 'ALL'}
+                    onChange={(val) => setAddonPlantId(val === 'ALL' ? undefined : val)}
+                    className="w-full"
+                    options={[
+                      { value: 'ALL', label: 'Toàn bộ đơn hàng' },
+                      ...(addonOrder.plants || []).map((p, idx) => ({
+                        value: p.id,
+                        label: `Chậu #${idx + 1}: ${p.name || 'Cây lan'}`,
+                      })),
+                    ]}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">
+                    Tiêu đề dịch vụ <span className="text-red-500">*</span>
+                  </label>
+                  <Input
+                    maxLength={120}
+                    placeholder="Ví dụ: Thay giá thể dớn mới, Phun thuốc trị rệp sáp..."
+                    value={addonTitle}
+                    onChange={(e) => setAddonTitle(e.target.value)}
+                    className="!rounded-xl"
+                  />
+                </div>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">Mô tả chi tiết</label>
+                <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">
+                  Lý do đề xuất dịch vụ <span className="text-red-500">*</span>
+                </label>
                 <Input.TextArea
-                  rows={3}
-                  maxLength={4000}
-                  value={disputeDescription}
-                  onChange={(e) => setDisputeDescription(e.target.value)}
-                  placeholder="Mô tả rõ tình trạng sai lệch, hư hại hoặc vấn đề gặp phải..."
+                  rows={2}
+                  maxLength={2000}
+                  placeholder="Mô tả hiện trạng thực tế phát sinh và lý do cần thực hiện..."
+                  value={addonReason}
+                  onChange={(e) => setAddonReason(e.target.value)}
+                  className="!rounded-xl"
                 />
               </div>
 
               <div>
                 <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">
-                  Ảnh bằng chứng (tối thiểu 1 ảnh)
+                  Giá dịch vụ đề xuất (VNĐ) <span className="text-red-500">*</span>
+                </label>
+                <Input
+                  type="number"
+                  min={1000}
+                  max={50000000}
+                  placeholder="Từ 1.000 đến 50.000.000 VNĐ"
+                  value={addonPrice}
+                  onChange={(e) => setAddonPrice(e.target.value)}
+                  className="!rounded-xl"
+                  addonAfter="VNĐ"
+                />
+                <span className="text-[11px] text-[#8B86A4] mt-1 block">
+                  Lưu ý: Khách hàng sẽ thanh toán thêm 6% phí dịch vụ nền tảng trên số tiền này.
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">
+                  Ảnh minh chứng hiện trạng (tối thiểu 1 ảnh, tối đa 5 ảnh){' '}
+                  <span className="text-red-500">*</span>
                 </label>
                 <div className="flex flex-wrap items-center gap-2">
-                  {disputeEvidence.map((ev, idx) => (
-                    <div key={`new-ev-${idx}`} className="relative">
+                  {addonPhotoUrls.map((url, idx) => (
+                    <div key={`addon-new-${idx}`} className="relative">
                       <Image
-                        src={ev.photoUrl}
-                        alt="Bằng chứng"
-                        width={68}
-                        height={68}
+                        src={url}
+                        alt="Ảnh minh chứng"
+                        width={64}
+                        height={64}
                         className="rounded-lg object-cover border border-gray-200"
                       />
                       <button
                         type="button"
-                        onClick={() => setDisputeEvidence((prev) => prev.filter((_, i) => i !== idx))}
+                        onClick={() => setAddonPhotoUrls((prev) => prev.filter((_, i) => i !== idx))}
                         className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center shadow"
                       >
                         ×
                       </button>
                     </div>
                   ))}
-                  <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-[#6027D2] text-[#6027D2] text-xs font-semibold cursor-pointer hover:bg-[#F8F6FC]">
-                    <UploadOutlined />
-                    <span>{disputeUploading ? 'Đang tải...' : 'Tải ảnh bằng chứng'}</span>
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp"
-                      disabled={disputeUploading}
-                      onChange={handleUploadDisputePhoto}
-                      className="hidden"
-                    />
-                  </label>
+                  {addonPhotoUrls.length < 5 && (
+                    <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-[#6027D2] text-[#6027D2] text-xs font-semibold cursor-pointer hover:bg-[#F8F6FC]">
+                      <UploadOutlined />
+                      <span>{addonUploading ? 'Đang tải...' : 'Tải ảnh minh chứng'}</span>
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        disabled={addonUploading}
+                        onChange={handleUploadAddonPhoto}
+                        className="hidden"
+                      />
+                    </label>
+                  )}
                 </div>
               </div>
 
               <div className="flex justify-end gap-2 pt-2">
-                <Button onClick={() => setDisputeModalOpen(false)} disabled={disputeSubmitting}>
+                <Button onClick={() => setAddonModalOpen(false)} disabled={addonSubmitting}>
                   Đóng
                 </Button>
                 <Button
                   type="primary"
-                  danger
-                  loading={disputeSubmitting}
-                  onClick={handleSubmitDispute}
-                  className="!rounded-xl !font-semibold"
+                  loading={addonSubmitting}
+                  onClick={handleCreateAddon}
+                  className="!rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !border-none !font-semibold text-white"
                 >
-                  Gửi tranh chấp
+                  Gửi đề xuất cho khách hàng
                 </Button>
               </div>
             </div>
           )}
+        </div>
+      </Modal>
+
+      {/* Complete Addon Modal */}
+      <Modal
+        title={
+          <div className="flex items-center gap-2 text-base font-bold text-[#1E1B2E]">
+            <CheckCircleOutlined className="text-emerald-600" />
+            <span>Nghiệm thu hoàn tất: {selectedAddonForComplete?.title}</span>
+          </div>
+        }
+        open={completeModalOpen}
+        onCancel={() => {
+          if (!completeSubmitting) setCompleteModalOpen(false);
+        }}
+        footer={null}
+        width={560}
+        centered
+      >
+        <div className="space-y-4 pt-2">
+          <p className="text-xs text-[#4B4764]">
+            Tải lên ảnh kết quả sau khi thực hiện dịch vụ thêm để làm bằng chứng nghiệm thu gửi cho khách hàng.
+          </p>
+
+          <div>
+            <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">
+              Mô tả công việc đã làm <span className="text-red-500">* (tối thiểu 10 ký tự)</span>
+            </label>
+            <Input.TextArea
+              rows={3}
+              maxLength={1000}
+              showCount
+              placeholder="Ví dụ: Đã thay dớn mới, cắt tỉa và xử lý rễ úng, bổ sung phân tan chậm kích rễ..."
+              value={completeNote}
+              onChange={(e) => setCompleteNote(e.target.value)}
+              className="!rounded-xl"
+            />
+          </div>
+
+          {selectedAddonForComplete?.plant && (
+            <div className="p-3 rounded-xl bg-purple-50/70 border border-purple-100 space-y-2">
+              <label className="block text-xs font-semibold text-[#1E1B2E]">
+                Tình trạng cây sau khi hoàn thành <span className="text-red-500">*</span>
+                <span className="text-purple-700 font-normal ml-1">
+                  ({selectedAddonForComplete.plant.name || 'Cây trong đề xuất'})
+                </span>
+              </label>
+              <Radio.Group
+                value={completePlantHealth}
+                onChange={(e) => setCompletePlantHealth(e.target.value)}
+                className="w-full flex gap-2 sm:gap-4"
+              >
+                <Radio.Button value="GOOD" className="!rounded-lg !text-xs !font-medium">
+                  🌿 Tốt
+                </Radio.Button>
+                <Radio.Button value="AVERAGE" className="!rounded-lg !text-xs !font-medium">
+                  🌱 Trung bình
+                </Radio.Button>
+                <Radio.Button value="POOR" className="!rounded-lg !text-xs !font-medium">
+                  🥀 Kém
+                </Radio.Button>
+              </Radio.Group>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-semibold text-[#1E1B2E] mb-1">
+              Ảnh sau khi thực hiện (tối thiểu 1 ảnh, tối đa 5 ảnh){' '}
+              <span className="text-red-500">*</span>
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              {completePhotoUrls.map((url, idx) => (
+                <div key={`comp-new-${idx}`} className="relative">
+                  <Image
+                    src={url}
+                    alt="Ảnh nghiệm thu"
+                    width={64}
+                    height={64}
+                    className="rounded-lg object-cover border border-gray-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setCompletePhotoUrls((prev) => prev.filter((_, i) => i !== idx))}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center shadow"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {completePhotoUrls.length < 5 && (
+                <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-emerald-600 text-emerald-700 text-xs font-semibold cursor-pointer hover:bg-emerald-50">
+                  <UploadOutlined />
+                  <span>{completeUploading ? 'Đang tải...' : 'Tải ảnh kết quả'}</span>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    disabled={completeUploading}
+                    onChange={handleUploadCompletePhoto}
+                    className="hidden"
+                  />
+                </label>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+            <Button onClick={() => setCompleteModalOpen(false)} disabled={completeSubmitting}>
+              Hủy
+            </Button>
+            <Button
+              type="primary"
+              loading={completeSubmitting}
+              onClick={handleSubmitCompleteAddon}
+              className="!rounded-xl !bg-[#059669] hover:!bg-[#047857] !border-none !font-semibold text-white"
+            >
+              Xác nhận hoàn thành
+            </Button>
+          </div>
         </div>
       </Modal>
     </div>

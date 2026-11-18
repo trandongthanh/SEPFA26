@@ -101,6 +101,7 @@ export interface OrderItem {
   scheduledPickupAt: string;
   careDueAt?: string | null;
   careReportSchedule?: CareReportSchedule | null;
+  handoverStatus?: string | null;
   plants?: OrderPlantSummary[];
   customer?: {
     account?: {
@@ -298,6 +299,12 @@ export const providerApi = {
     return res.data;
   },
 
+  // Lấy QR nộp tiền bảo lãnh trách nhiệm (POST /api/v1/orders/:orderId/security-deposit/qr)
+  getSecurityDepositQr: async (orderId: string) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/security-deposit/qr`, {});
+    return res.data;
+  },
+
   // Danh sách gói dịch vụ của tôi
   listMyPackages: async () => {
     const res = await api.get<ServicePackageItem[]>('/api/v1/providers/me/packages');
@@ -418,26 +425,185 @@ export const providerApi = {
     return res.data;
   },
 
-  // Danh sách tranh chấp của đơn (GET /api/v1/orders/:orderId/disputes)
-  listDisputes: async (orderId: string) => {
-    const res = await api.get<OrderDisputeItem[]>(`/api/v1/orders/${orderId}/disputes`);
+  // Tranh chấp của đơn (GET /api/v1/orders/:orderId/dispute)
+  getDispute: async (orderId: string) => {
+    try {
+      const res = await api.get<DisputeDetail>(`/api/v1/orders/${orderId}/dispute`);
+      return res.data;
+    } catch (err: any) {
+      if (err?.response?.status === 404) return null;
+      throw err;
+    }
+  },
+
+  // Nộp thêm bằng chứng tranh chấp (POST /api/v1/orders/:orderId/dispute/evidence)
+  addDisputeEvidence: async (
+    orderId: string,
+    payload: {
+      photos: Array<{ photoUrl: string; caption?: string; plantId?: string }>;
+      note?: string;
+    },
+  ) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/dispute/evidence`, payload);
+    return res.data;
+  },
+
+  // Tạo đề nghị thương lượng tranh chấp (POST /api/v1/orders/:orderId/dispute/offers)
+  createDisputeOffer: async (
+    orderId: string,
+    payload: {
+      refundAmount: string;
+      compensationAmount: string;
+      message?: string;
+    },
+  ) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/dispute/offers`, payload);
+    return res.data;
+  },
+
+  // Đồng ý một đề nghị thương lượng (POST /api/v1/orders/:orderId/dispute/offers/:offerId/accept)
+  acceptDisputeOffer: async (orderId: string, offerId: string) => {
+    const res = await api.post(`/api/v1/orders/${orderId}/dispute/offers/${offerId}/accept`, {});
+    return res.data;
+  },
+
+  // Danh sách dịch vụ thêm (Add-on) của đơn (GET /api/v1/orders/:orderId/addons)
+  listAddons: async (orderId: string) => {
+    const res = await api.get<AddonItem[]>(`/api/v1/orders/${orderId}/addons`);
     return Array.isArray(res.data) ? res.data : [];
   },
 
-  // Mở tranh chấp mới (POST /api/v1/orders/:orderId/disputes)
-  openDispute: async (
+  // Vườn tạo đề xuất add-on mới (POST /api/v1/orders/:orderId/addons)
+  createAddon: async (
     orderId: string,
     payload: {
-      reason: DisputeReason;
-      description: string;
-      evidence: Array<{ photoUrl: string; caption?: string }>;
+      title: string;
+      reason: string;
+      price: string;
+      photoUrls: string[];
+      plantId?: string;
     },
   ) => {
-    const res = await api.post<OrderDisputeItem>(`/api/v1/orders/${orderId}/disputes`, payload);
+    const res = await api.post<AddonItem>(`/api/v1/orders/${orderId}/addons`, payload);
+    return res.data;
+  },
+
+  // Vườn báo đã làm xong add-on (POST /api/v1/orders/:orderId/addons/:addonId/complete)
+  completeAddon: async (
+    orderId: string,
+    addonId: string,
+    payload: {
+      photoUrls: string[];
+      note: string;
+      plantHealthAfter?: 'GOOD' | 'AVERAGE' | 'POOR';
+    },
+  ) => {
+    const res = await api.post<AddonItem>(
+      `/api/v1/orders/${orderId}/addons/${addonId}/complete`,
+      payload,
+    );
     return res.data;
   },
 };
 
+export type AddonStatus =
+  | 'PENDING'
+  | 'ACCEPTED'
+  | 'PAID'
+  | 'DONE'
+  | 'REJECTED'
+  | 'EXPIRED';
+
+export interface AddonItem {
+  id: string;
+  orderId: string;
+  addonCode: string;
+  title: string;
+  reason: string;
+  photoUrls: string[];
+  plant: { id: string; name: string | null } | null;
+  price: string;
+  customerFee: string;
+  amountDue: string;
+  status: AddonStatus;
+  respondDueAt: string;
+  decidedAt: string | null;
+  customerNote: string | null;
+  paymentDueAt: string | null;
+  paidAt: string | null;
+  doneAt: string | null;
+  donePhotoUrls: string[] | null;
+  doneNote: string | null;
+  donePlantHealth?: 'GOOD' | 'AVERAGE' | 'POOR' | null;
+  expiredReason: 'NO_RESPONSE' | 'NOT_PAID' | 'ORDER_RETURNING' | null;
+  expiredAt: string | null;
+  createdAt: string;
+}
+
+export type DisputeStatus = 'NEGOTIATING' | 'ADMIN_REVIEW' | 'RESOLVED';
+export type DisputeOutcome = 'OFFER_ACCEPTED' | 'WITHDRAWN' | 'ADMIN_RESOLVED';
+
+export interface DisputeEvidenceItem {
+  id: string;
+  plantId: string | null;
+  photoUrl: string;
+  caption: string | null;
+  note: string | null;
+  createdAt: string;
+}
+
+export interface DisputeOfferItem {
+  id: string;
+  proposedBy: 'CUSTOMER' | 'PROVIDER';
+  refundAmount: string;
+  compensationAmount: string;
+  customerReceives: string;
+  message: string | null;
+  status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'SUPERSEDED';
+  respondedAt: string | null;
+  createdAt: string;
+}
+
+export interface DisputePlantItem {
+  plantId: string;
+  name: string | null;
+  compensationCap: string | null;
+  verdict: 'UPHELD' | 'DISMISSED' | null;
+}
+
+export interface DisputeDetail {
+  id: string;
+  orderId: string;
+  status: DisputeStatus;
+  outcome: DisputeOutcome | null;
+  reason: string;
+  description: string;
+  openedAt: string;
+  negotiationDueAt: string;
+  escalatedAt: string | null;
+  adminDueAt: string | null;
+  resolvedAt: string | null;
+  plants: DisputePlantItem[];
+  evidence: {
+    customer: DisputeEvidenceItem[];
+    provider: DisputeEvidenceItem[];
+  };
+  handoverObjection: {
+    note: string | null;
+    photos: Array<{ photoUrl: string; caption: string | null; createdAt: string }>;
+  } | null;
+  offers: DisputeOfferItem[];
+  caps: {
+    refundCap: string;
+    compensationCap: string;
+  } | null;
+  refundAmount: string | null;
+  compensationAmount: string | null;
+  customerReceives: string | null;
+  declaredForfeitAmount?: string | null;
+}
+
+// Giữ lại type cũ để tránh compile break nếu còn tham chiếu
 export type DisputeReason = 'MISMATCHED_PLANT' | 'DAMAGE' | 'PICKUP' | 'OTHER';
 
 export interface OrderDisputeItem {

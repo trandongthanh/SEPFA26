@@ -37,6 +37,8 @@ interface CreateOrderScreenProps {
         maxPlants: number;
         price?: number;
         basePrice?: string;
+        minDeclaredValue?: string | number;
+        maxDeclaredValue?: string | number;
         description?: string;
       };
     };
@@ -90,6 +92,38 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
     address: route.params.providerAddress || undefined,
   });
 
+  // Pickup fee quote from BE Google Routes API
+  const [pickupQuote, setPickupQuote] = useState<{ distanceKm: number; pickupFee: string } | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    let isCancelled = false;
+    const fetchQuote = async () => {
+      if (!pkg.id || pickupLat == null || pickupLng == null) return;
+      setQuoteLoading(true);
+      try {
+        const quote = await orderService.quotePickupFee({
+          servicePackageId: pkg.id,
+          pickupGpsLat: pickupLat,
+          pickupGpsLng: pickupLng,
+        });
+        if (!isCancelled) {
+          setPickupQuote(quote);
+        }
+      } catch (err) {
+        console.warn('Could not quote pickup fee:', err);
+      } finally {
+        if (!isCancelled) {
+          setQuoteLoading(false);
+        }
+      }
+    };
+    fetchQuote();
+    return () => {
+      isCancelled = true;
+    };
+  }, [pkg.id, pickupLat, pickupLng]);
+
   useEffect(() => {
     if ((providerCoords.lat == null || providerCoords.lng == null) && providerId) {
       providerService.getProviderById(providerId).then((res) => {
@@ -127,6 +161,23 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
   const [submitting, setSubmitting] = useState<boolean>(false);
 
   const priceVal = pkg.price || Number(pkg.basePrice || 0);
+  const pkgMin = pkg.minDeclaredValue != null && Number(pkg.minDeclaredValue) > 0 ? Number(pkg.minDeclaredValue) : null;
+  const pkgMax = pkg.maxDeclaredValue != null && Number(pkg.maxDeclaredValue) > 0 ? Number(pkg.maxDeclaredValue) : null;
+
+  // PR #39: Declared deposit rule (10% if declaredValue > 2 * basePrice)
+  const declaredDepositTotal = plants.reduce((sum, p) => {
+    if (p.isValueDeclared && p.declaredValue) {
+      const val = Number(p.declaredValue.replace(/\D/g, ''));
+      if (val > 2 * priceVal) {
+        return sum + Math.round(val * 0.1);
+      }
+    }
+    return sum;
+  }, 0);
+
+  const pickupFeeNumber = pickupQuote ? Number(pickupQuote.pickupFee) : 0;
+  const packageTotalNumber = priceVal * plants.length;
+  const grandTotalEstimate = packageTotalNumber + pickupFeeNumber + declaredDepositTotal;
 
   // Handlers for plants
   const handleAddPlant = () => {
@@ -196,9 +247,31 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
     }
 
     for (let i = 0; i < plants.length; i++) {
-      if (!plants[i].name.trim()) {
+      const p = plants[i];
+      if (!p.name.trim()) {
         Alert.alert('Lỗi', `Vui lòng nhập tên cho chậu cây số ${i + 1}.`);
         return;
+      }
+      if (p.isValueDeclared) {
+        const val = Number(p.declaredValue.replace(/\D/g, ''));
+        if (!val || val <= 0) {
+          Alert.alert('Lỗi', `Vui lòng nhập giá trị khai báo hợp lệ cho chậu cây số ${i + 1}.`);
+          return;
+        }
+        if (pkgMin !== null && val < pkgMin) {
+          Alert.alert(
+            'Giá trị dưới mức cho phép của gói',
+            `Chậu #${i + 1} có giá trị khai báo (${val.toLocaleString('vi-VN')} đ) nhỏ hơn mức tối thiểu của gói (${pkgMin.toLocaleString('vi-VN')} đ).\n\nNếu chậu cây có giá trị thông thường, bạn hãy bỏ tích chọn 'Khai báo giá trị chậu lan' để đặt đơn theo chính sách bồi thường mặc định.`
+          );
+          return;
+        }
+        if (pkgMax !== null && val > pkgMax) {
+          Alert.alert(
+            'Giá trị vượt hạn mức gói',
+            `Chậu #${i + 1} có giá trị khai báo (${val.toLocaleString('vi-VN')} đ) vượt mức tối đa của gói (${pkgMax.toLocaleString('vi-VN')} đ).\n\nVui lòng chọn gói dịch vụ cao cấp hơn có hạn mức phù hợp hoặc điều chỉnh mức khai báo.`
+          );
+          return;
+        }
       }
     }
 
@@ -395,6 +468,99 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
                 />
               </View>
 
+              {/* Khai báo giá trị chậu lan & Tiền bảo đảm */}
+              <View style={styles.inputGroup}>
+                <TouchableOpacity
+                  style={styles.declaredToggleRow}
+                  onPress={() => handleUpdatePlant(plant.id, 'isValueDeclared', !plant.isValueDeclared)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name={plant.isValueDeclared ? 'checkbox' : 'square-outline'}
+                    size={20}
+                    color={plant.isValueDeclared ? '#6027D2' : '#A0AEC0'}
+                  />
+                  <Text style={styles.declaredToggleText}>Khai báo giá trị chậu lan</Text>
+                </TouchableOpacity>
+
+                {plant.isValueDeclared && (
+                  <View style={styles.declaredInputBox}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Text style={styles.inputSubLabel}>Giá trị khai báo (VNĐ) *</Text>
+                      {(pkgMin !== null || pkgMax !== null) && (
+                        <Text style={{ fontSize: 10.5, color: '#6E6A8A', fontWeight: '500' }}>
+                          Hạn mức: {pkgMin ? Number(pkgMin).toLocaleString('vi-VN') + 'đ' : '0đ'} - {pkgMax ? Number(pkgMax).toLocaleString('vi-VN') + 'đ' : 'Không giới hạn'}
+                        </Text>
+                      )}
+                    </View>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="VD: 2000000"
+                      keyboardType="numeric"
+                      value={plant.declaredValue}
+                      onChangeText={(val) => {
+                        const digits = val.replace(/\D/g, '');
+                        handleUpdatePlant(plant.id, 'declaredValue', digits);
+                      }}
+                    />
+                    {(() => {
+                      const decVal = Number(plant.declaredValue || 0);
+                      if (decVal <= 0) return null;
+
+                      // Check out of range
+                      const isBelowMin = pkgMin !== null && decVal < pkgMin;
+                      const isAboveMax = pkgMax !== null && decVal > pkgMax;
+
+                      if (isBelowMin) {
+                        return (
+                          <View style={styles.declaredErrorNotice}>
+                            <Ionicons name="alert-circle" size={15} color="#DC2626" />
+                            <Text style={styles.declaredErrorText}>
+                              Giá trị nhỏ hơn mức tối thiểu của gói ({pkgMin?.toLocaleString('vi-VN')} đ). Nếu cây có giá trị thông thường, bạn hãy bỏ tích chọn khai báo để đặt đơn.
+                            </Text>
+                          </View>
+                        );
+                      }
+
+                      if (isAboveMax) {
+                        return (
+                          <View style={styles.declaredErrorNotice}>
+                            <Ionicons name="alert-circle" size={15} color="#DC2626" />
+                            <Text style={styles.declaredErrorText}>
+                              Giá trị vượt mức tối đa của gói ({pkgMax?.toLocaleString('vi-VN')} đ). Vui lòng chọn gói cao cấp hơn hoặc điều chỉnh mức khai báo.
+                            </Text>
+                          </View>
+                        );
+                      }
+
+                      const threshold = 2 * priceVal;
+                      if (decVal > threshold) {
+                        const dep = Math.round(decVal * 0.1);
+                        return (
+                          <View style={styles.declaredDepositNotice}>
+                            <View style={styles.declaredDepositBadge}>
+                              <Ionicons name="shield-checkmark" size={14} color="#7C3AED" />
+                              <Text style={styles.declaredDepositBadgeText}>
+                                Tiền bảo đảm khai giá (10%): +{dep.toLocaleString('vi-VN')} đ
+                              </Text>
+                            </View>
+                            <Text style={styles.declaredDepositSubText}>
+                              Giá trị vượt 2 lần giá gói ({threshold.toLocaleString('vi-VN')} đ). Tiền bảo đảm được tạm giữ an toàn và hoàn trả 100% cho bạn khi hoàn tất đơn.
+                            </Text>
+                          </View>
+                        );
+                      } else {
+                        return (
+                          <Text style={styles.declaredNormalNotice}>
+                            ✓ Hợp lệ. Nằm trong hạn mức gói (≤ 2 lần giá gói, không thu thêm tiền bảo đảm).
+                          </Text>
+                        );
+                      }
+                    })()}
+                  </View>
+                )}
+              </View>
+
               {/* Photo Upload for Plant */}
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>Ảnh hiện trạng ban đầu (Chụp từ camera)</Text>
@@ -438,7 +604,21 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
               <Text style={styles.locationSubText}>
                 Tọa độ: {pickupLat.toFixed(4)}, {pickupLng.toFixed(4)}
               </Text>
-              {roadDistanceKm !== null ? (
+              {quoteLoading ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6 }}>
+                  <ActivityIndicator size="small" color="#6027D2" />
+                  <Text style={{ fontSize: 11, color: '#6E6A8A', marginLeft: 6 }}>
+                    Đang tính cước phí đường bộ theo Google Routes...
+                  </Text>
+                </View>
+              ) : pickupQuote ? (
+                <View style={styles.distanceBadge}>
+                  <Ionicons name="navigate-circle" size={15} color="#6027D2" />
+                  <Text style={styles.distanceBadgeText}>
+                    Khoảng cách: <Text style={styles.distanceHighlight}>~{pickupQuote.distanceKm} km</Text> · Phí lấy: <Text style={styles.distanceHighlight}>{Number(pickupQuote.pickupFee).toLocaleString('vi-VN')} đ</Text> (tính 1 lần cho cả đơn)
+                  </Text>
+                </View>
+              ) : roadDistanceKm !== null ? (
                 <View style={styles.distanceBadge}>
                   <Ionicons name="navigate-circle" size={15} color="#6027D2" />
                   <Text style={styles.distanceBadgeText}>
@@ -484,13 +664,15 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
       <View style={styles.footer}>
         <View style={styles.totalPriceContainer}>
           <Text style={styles.totalLabel}>
-            Tiền dịch vụ {roadDistanceKm !== null ? `(cách ~${roadDistanceKm}km)` : ''}
+            Tổng dự kiến thanh toán:
           </Text>
           <Text style={styles.totalValue}>
-            {(priceVal * plants.length).toLocaleString('vi-VN')} VNĐ
+            {grandTotalEstimate.toLocaleString('vi-VN')} VNĐ
           </Text>
           <Text style={styles.footerShippingNote}>
-            *Phí lấy cây sẽ tính tự động theo {roadDistanceKm !== null ? `${roadDistanceKm} km` : 'km định vị'}
+            Gói ({packageTotalNumber.toLocaleString('vi-VN')}đ)
+            {pickupFeeNumber > 0 ? ` + Phí lấy (${pickupFeeNumber.toLocaleString('vi-VN')}đ)` : ''}
+            {declaredDepositTotal > 0 ? ` + Bảo đảm (${declaredDepositTotal.toLocaleString('vi-VN')}đ - hoàn 100%)` : ''}
           </Text>
         </View>
 
@@ -846,5 +1028,78 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     marginTop: 2,
     fontStyle: 'italic',
+  },
+  declaredToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  declaredToggleText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#2D3748',
+  },
+  declaredInputBox: {
+    backgroundColor: '#FAF5FF',
+    borderWidth: 1,
+    borderColor: '#E9D8FD',
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 6,
+    gap: 6,
+  },
+  inputSubLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#6027D2',
+  },
+  declaredDepositNotice: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#DDD6FE',
+    borderRadius: 8,
+    padding: 8,
+    marginTop: 4,
+  },
+  declaredDepositBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  declaredDepositBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#7C3AED',
+  },
+  declaredDepositSubText: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginTop: 4,
+    lineHeight: 15,
+  },
+  declaredNormalNotice: {
+    fontSize: 11.5,
+    color: '#059669',
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  declaredErrorNotice: {
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: 8,
+    padding: 8,
+    marginTop: 4,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  declaredErrorText: {
+    fontSize: 11,
+    color: '#B91C1C',
+    flex: 1,
+    lineHeight: 15,
   },
 });

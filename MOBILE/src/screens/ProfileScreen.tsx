@@ -59,6 +59,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const [defaultPickupAddress, setDefaultPickupAddress] = useState<string>('');
   const [gpsLat, setGpsLat] = useState<string>('');
   const [gpsLng, setGpsLng] = useState<string>('');
+  const [bankName, setBankName] = useState<string>('');
+  const [bankAccount, setBankAccount] = useState<string>('');
+  const [bankHolder, setBankHolder] = useState<string>('');
 
   // CCCD Verification Image URLs & Number
   const [cccdNumber, setCccdNumber] = useState<string>('');
@@ -103,6 +106,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       setDefaultPickupAddress(res.defaultPickupAddress || res.address || '');
       setGpsLat(res.gpsLat ? String(res.gpsLat) : '');
       setGpsLng(res.gpsLng ? String(res.gpsLng) : '');
+      setBankName(res.bankName || '');
+      setBankAccount(res.bankAccount || '');
+      setBankHolder(res.bankHolder || '');
       setCccdNumber(res.cccdNumber || '');
       setCccdFrontUrl(res.cccdFrontUrl || '');
       setCccdBackUrl(res.cccdBackUrl || '');
@@ -209,6 +215,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       setDefaultPickupAddress(profile.defaultPickupAddress || profile.address || '');
       setGpsLat(profile.gpsLat ? String(profile.gpsLat) : '');
       setGpsLng(profile.gpsLng ? String(profile.gpsLng) : '');
+      setBankName(profile.bankName || '');
+      setBankAccount(profile.bankAccount || '');
+      setBankHolder(profile.bankHolder || '');
     }
     setIsProfileModalVisible(true);
   };
@@ -337,6 +346,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         const parsedLng = parseFloat(gpsLng.trim());
         if (!isNaN(parsedLng)) payload.gpsLng = parsedLng;
       }
+
+      if (bankName.trim()) payload.bankName = bankName.trim();
+      if (bankAccount.trim()) payload.bankAccount = bankAccount.trim();
+      if (bankHolder.trim()) payload.bankHolder = bankHolder.trim().toUpperCase();
 
       const updatedProfile = await customerService.updateMyProfile(payload);
       setProfile(updatedProfile);
@@ -672,6 +685,21 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                   )}
                 </View>
               </View>
+
+              {/* Row 5: Tài khoản ngân hàng nhận tiền */}
+              <View style={styles.infoRowCompact}>
+                <View style={styles.infoIconCircle}>
+                  <Ionicons name="card-outline" size={15} color="#6027D2" />
+                </View>
+                <View style={styles.infoTextContainer}>
+                  <Text style={styles.infoLabelText}>Tài khoản ngân hàng nhận tiền</Text>
+                  <Text style={styles.infoValueText} numberOfLines={2}>
+                    {profile?.bankAccount
+                      ? `${profile.bankName || 'Ngân hàng'} - ${profile.bankAccount} (${profile.bankHolder || ''})`
+                      : 'Chưa cập nhật tài khoản'}
+                  </Text>
+                </View>
+              </View>
             </TouchableOpacity>
 
             {/* Card 2: Xác thực danh tính */}
@@ -980,6 +1008,51 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                       onChangeText={setGpsLng}
                     />
                   </View>
+                </View>
+              </View>
+
+              {/* Tài khoản ngân hàng nhận tiền bồi hoàn / hoàn tiền */}
+              <View style={[styles.gpsSectionCard, { marginTop: 14, backgroundColor: '#FAF5FF', borderColor: '#E9D8FD' }]}>
+                <View style={styles.gpsHeaderRow}>
+                  <Ionicons name="card-outline" size={18} color="#6027D2" />
+                  <Text style={[styles.gpsSectionTitle, { color: '#6027D2' }]}>
+                    Tài khoản ngân hàng nhận tiền:
+                  </Text>
+                </View>
+                <Text style={{ fontSize: 11, color: '#6B7280', marginTop: 4, marginBottom: 10 }}>
+                  Dùng để nhận tiền hoàn hủy đơn hoặc tiền bồi thường khi phát sinh khiếu nại tranh chấp.
+                </Text>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputSubLabel}>Tên ngân hàng:</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Ví dụ: Vietcombank, MB Bank, Techcombank..."
+                    value={bankName}
+                    onChangeText={setBankName}
+                  />
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputSubLabel}>Số tài khoản:</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Ví dụ: 0123456789"
+                    keyboardType="numeric"
+                    value={bankAccount}
+                    onChangeText={setBankAccount}
+                  />
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.inputSubLabel}>Tên chủ tài khoản (in hoa không dấu):</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="Ví dụ: NGUYEN VAN A"
+                    autoCapitalize="characters"
+                    value={bankHolder}
+                    onChangeText={setBankHolder}
+                  />
                 </View>
               </View>
             </ScrollView>
