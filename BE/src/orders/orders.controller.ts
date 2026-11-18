@@ -24,6 +24,7 @@ import { AddInitialPhotoDto } from './dto/add-initial-photo.dto';
 import { AssessPlantDto } from './dto/assess-plant.dto';
 import { AssessReturnPlantDto } from './dto/assess-return-plant.dto';
 import { CancelHandoverDto } from './dto/cancel-handover.dto';
+import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CancelReturnDto } from './dto/cancel-return.dto';
 import { CompleteHandoverDto } from './dto/complete-handover.dto';
 import { ConfirmHandoverDto } from './dto/confirm-handover.dto';
@@ -34,6 +35,7 @@ import { QueryPickupFeeQuoteDto } from './dto/query-pickup-fee-quote.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
 import { ContractTemplateService } from './contract-template.service';
 import { HandoverService } from './handover.service';
+import { OrderCancelService } from './order-cancel.service';
 import { OrdersService } from './orders.service';
 
 @ApiTags('orders')
@@ -44,6 +46,7 @@ export class OrdersController {
     private readonly ordersService: OrdersService,
     private readonly handoverService: HandoverService,
     private readonly contractTemplate: ContractTemplateService,
+    private readonly orderCancel: OrderCancelService,
   ) {}
 
   @Roles('CUSTOMER')
@@ -124,6 +127,34 @@ export class OrdersController {
       orderId,
       ip,
     );
+  }
+
+  @Roles('CUSTOMER', 'PROVIDER')
+  @Post(':orderId/cancel')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Khách hoặc vườn huỷ đơn khi vườn chưa mở phiên nhận cây (→ CANCELLED): server tự quyết mã lý do và tiền hoàn theo giờ hẹn',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Khách: { status, cancelCode, refundAmount, declaredDepositReturned }. Vườn: { status, cancelCode }. cancelCode: CUSTOMER_WITHDREW | CUSTOMER_CANCELLED_FREE | CUSTOMER_CANCELLED_LATE | PROVIDER_NO_SHOW | PROVIDER_CANCELLED',
+  })
+  @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'INVALID_STATE_TRANSITION (đơn Nháp / đã kết thúc / vườn đã mở phiên nhận cây; vườn huỷ đơn chưa nhận thì dùng nút Từ chối)',
+  })
+  @ApiResponse({ status: 500, description: 'ESCROW_BALANCE_INSUFFICIENT' })
+  cancelOrder(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: CancelOrderDto,
+  ) {
+    return this.orderCancel.cancel(user.accountId, user.role, orderId, dto);
   }
 
   @Roles('PROVIDER')

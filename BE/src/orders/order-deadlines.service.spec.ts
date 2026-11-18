@@ -5,7 +5,9 @@ import { settleOrder } from '../payments/settle-order';
 import type { DisputesService } from './disputes.service';
 import type { Dispute } from './entities/dispute.entity';
 import type { Handover } from './entities/handover.entity';
+import type { ServiceOrder } from './entities/service-order.entity';
 import type { HandoverService } from './handover.service';
+import type { OrderCancelService } from './order-cancel.service';
 import {
   OrderDeadlinesService,
   SWEEP_BATCH_SIZE,
@@ -47,6 +49,13 @@ function build(
   const deposits = repoReturning(rows.deposits ?? []);
   const handovers = repoReturning(rows.handovers ?? []);
   const disputes = repoReturning(rows.disputes ?? []);
+  // Năm hạn thêm 17/11 đọc ứng viên từ bảng đơn; mặc định không có ứng viên nào.
+  const orders = repoReturning([]);
+  const orderCancel = {
+    closeOrder: jest
+      .fn()
+      .mockResolvedValue({ customerRefund: 0n, declaredReturn: 0n }),
+  };
   const manager = { findOne: jest.fn() };
   // Mỗi lần gọi transaction = một transaction riêng; callback ném lỗi thì transaction ném lại y như TypeORM.
   const dataSource = {
@@ -70,6 +79,8 @@ function build(
     orderState as unknown as OrderStateService,
     handoverService as unknown as HandoverService,
     disputesService as unknown as DisputesService,
+    orders.repo as unknown as Repository<ServiceOrder>,
+    orderCancel as unknown as OrderCancelService,
   );
   return {
     service,
@@ -163,6 +174,8 @@ describe('OrderDeadlinesService', () => {
         t.manager,
         'o1',
         UNPAID_DEPOSIT_EXPIRED_REASON,
+        // Hệ thống tự huỷ → cancelled_by = SYSTEM (vườn tự bấm huỷ mới là PROVIDER).
+        'SYSTEM',
       );
       expect(UNPAID_DEPOSIT_EXPIRED_REASON).toContain('2 giờ');
       // Khoá đơn TRƯỚC khoản bảo đảm (cùng thứ tự với webhook / nút huỷ → không khoá chéo).
@@ -319,6 +332,11 @@ describe('OrderDeadlinesService', () => {
         expiredDeposits: 1,
         autoConfirmedReturns: 2,
         escalatedDisputes: 3,
+        expiredOrders: 0,
+        cancelledUnsigned: 0,
+        cancelledUnpaid: 0,
+        cancelledNoShows: 0,
+        cancelledUnconfirmed: 0,
       });
       expect(order).toEqual(['deposits', 'returns', 'disputes']);
       expect(deposits).toHaveBeenCalledWith(NOW);
@@ -344,6 +362,11 @@ describe('OrderDeadlinesService', () => {
         expiredDeposits: 0,
         autoConfirmedReturns: 0,
         escalatedDisputes: 0,
+        expiredOrders: 0,
+        cancelledUnsigned: 0,
+        cancelledUnpaid: 0,
+        cancelledNoShows: 0,
+        cancelledUnconfirmed: 0,
       });
       await expect(t.service.sweep(NOW)).resolves.not.toBeNull();
       expect(first).toHaveBeenCalledTimes(2);
@@ -365,6 +388,11 @@ describe('OrderDeadlinesService', () => {
         expiredDeposits: 0,
         autoConfirmedReturns: 1,
         escalatedDisputes: 1,
+        expiredOrders: 0,
+        cancelledUnsigned: 0,
+        cancelledUnpaid: 0,
+        cancelledNoShows: 0,
+        cancelledUnconfirmed: 0,
       });
       expect(returns).toHaveBeenCalledTimes(1);
       expect(disputes).toHaveBeenCalledTimes(1);

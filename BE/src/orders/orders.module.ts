@@ -16,6 +16,7 @@ import { AgreementSignature } from './entities/agreement-signature.entity';
 import { AssessmentPhoto } from './entities/assessment-photo.entity';
 import { Handover } from './entities/handover.entity';
 import { HandoverItem } from './entities/handover-item.entity';
+import { HandoverCancelPhoto } from './entities/handover-cancel-photo.entity';
 import { HandoverObjectionPhoto } from './entities/handover-objection-photo.entity';
 import { InitialPhoto } from './entities/initial-photo.entity';
 import { Negotiation } from './entities/negotiation.entity';
@@ -34,6 +35,7 @@ import { AdminShippingRatesController } from './admin-shipping-rates.controller'
 import { DisputesService } from './disputes.service';
 import { HandoverService } from './handover.service';
 import { OrdersController } from './orders.controller';
+import { OrderCancelService } from './order-cancel.service';
 import { OrderDeadlinesService } from './order-deadlines.service';
 import { OrderStateService } from './order-state.service';
 import { OrdersService } from './orders.service';
@@ -58,6 +60,7 @@ import { ContractTemplateService } from './contract-template.service';
       Handover,
       HandoverItem,
       HandoverObjectionPhoto,
+      HandoverCancelPhoto,
       PlantAssessment,
       AssessmentPhoto,
       PaymentComponent,
@@ -87,7 +90,7 @@ import { ContractTemplateService } from './contract-template.service';
     AdminShippingRatesController,
     AddonsController,
   ],
-  providers: [OrdersService, HandoverService, DistanceService, DisputesService, PlantRecognitionService, ContractTemplateService, OrderStateService, AddonsService, OrderDeadlinesService],
+  providers: [OrdersService, HandoverService, DistanceService, DisputesService, PlantRecognitionService, ContractTemplateService, OrderStateService, AddonsService, OrderDeadlinesService, OrderCancelService],
   // OrderStateService export sẵn cho module khác (webhook thanh toán chuyển sang dùng ở đợt sau).
   exports: [TypeOrmModule, DistanceService, OrderStateService],
 })

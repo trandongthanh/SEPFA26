@@ -8,14 +8,22 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
-import { refundCancelledHandover } from '../payments/cancel-order-refund';
+import { refundCancelledOrder } from '../payments/cancel-order-refund';
 import { loadCustomerSettlement } from '../payments/customer-settlement';
 import { SecurityDeposit } from '../payments/entities/security-deposit.entity';
 import { settleOrder } from '../payments/settle-order';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { closeAddonsForReturn } from './addon-expiry';
+import {
+  CANCEL_LABELS,
+  type CancelledBy,
+  distanceToPickupMeters,
+  HANDOVER_CONFIRM_WINDOW_MS,
+  isPastDue,
+  noShowFrom,
+} from './cancel-rules';
 import { compensationCapFor } from './compensation-cap';
 import { AssessPlantDto } from './dto/assess-plant.dto';
 import { AssessReturnPlantDto } from './dto/assess-return-plant.dto';
@@ -26,6 +34,7 @@ import { DeclineHandoverDto } from './dto/decline-handover.dto';
 import { AgreementSignature } from './entities/agreement-signature.entity';
 import { AssessmentPhoto } from './entities/assessment-photo.entity';
 import { Handover } from './entities/handover.entity';
+import { HandoverCancelPhoto } from './entities/handover-cancel-photo.entity';
 import { HandoverItem } from './entities/handover-item.entity';
 import { HandoverObjectionPhoto } from './entities/handover-objection-photo.entity';
 import { Plant } from './entities/plant.entity';
@@ -33,11 +42,13 @@ import { PlantAssessment } from './entities/plant-assessment.entity';
 import { ServiceAgreement } from './entities/service-agreement.entity';
 import { ServiceOrder } from './entities/service-order.entity';
 import { generateSecurityDepositCode } from './order-code';
+import { OrderCancelService } from './order-cancel.service';
 import { OrderStateService } from './order-state.service';
 import { assertTransition } from './order-status';
 
-// Hạn khách xác nhận kết quả bàn giao — cron auto-confirm HOÃN, deadline vẫn ghi sẵn.
-const CUSTOMER_CONFIRM_WINDOW_MS = 48 * 60 * 60 * 1000;
+// Hạn khách xác nhận đã nhận LẠI cây (chặng trả cây): 48 giờ, quá hạn bộ quét tự hoàn tất đơn.
+// Hạn khách trả lời biên bản NHẬN cây là 2 giờ (HANDOVER_CONFIRM_WINDOW_MS ở cancel-rules.ts).
+const RETURN_CONFIRM_WINDOW_MS = 48 * 60 * 60 * 1000;
 
 // Vườn có 2 giờ kể từ lúc khách đồng ý biên bản để nộp tiền bảo đảm; quá hạn thì bộ quét huỷ đơn.
 export const SECURITY_DEPOSIT_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -65,6 +76,7 @@ export class HandoverService {
     private readonly providerRepo: Repository<ProviderProfile>,
     private readonly dataSource: DataSource,
     private readonly orderState: OrderStateService,
+    private readonly orderCancel: OrderCancelService,
   ) {}
 
   /**
@@ -215,7 +227,7 @@ export class HandoverService {
       await manager.save(keptPlants);
 
       const customerConfirmDueAt = new Date(
-        Date.now() + CUSTOMER_CONFIRM_WINDOW_MS,
+        Date.now() + HANDOVER_CONFIRM_WINDOW_MS,
       );
       await manager.update(Handover, handover.id, {
         status: 'AWAITING_CUSTOMER',
@@ -273,6 +285,10 @@ export class HandoverService {
         throw new ConflictException('INVALID_STATE_TRANSITION');
       }
       const now = new Date();
+      // Quá 2 giờ kể từ lúc vườn chốt biên bản (bộ quét 5 phút chưa kịp huỷ đơn) → không trả lời được nữa.
+      if (isPastDue(handover.customerConfirmDueAt, now)) {
+        throw new ConflictException('ORDER_DEADLINE_PASSED');
+      }
 
       // Chữ ký giai đoạn HANDOVER — cùng bảng chữ ký online, phase khác.
       const agreement = await manager.findOne(ServiceAgreement, {
@@ -366,13 +382,23 @@ export class HandoverService {
     assertTransition(order.status, 'CANCELLED');
 
     return this.dataSource.transaction(async (manager) => {
-      const locked = await this.orderState.transition(
-        manager,
-        order.id,
-        'HANDOVER_AWAITING_CONFIRM',
-        'CANCELLED',
-      );
       const now = new Date();
+      const locked = await this.orderState.lock(manager, order.id);
+      if (!locked || locked.status !== 'HANDOVER_AWAITING_CONFIRM') {
+        throw new ConflictException('INVALID_STATE_TRANSITION');
+      }
+      // Quá 2 giờ trả lời biên bản → 409; bộ quét sẽ huỷ đơn với cùng cách chia tiền (vườn giữ phí lấy cây).
+      const pending = await manager.findOne(Handover, {
+        where: {
+          serviceOrderId: order.id,
+          handoverType: 'IN',
+          status: 'AWAITING_CUSTOMER',
+        },
+      });
+      if (pending && isPastDue(pending.customerConfirmDueAt, now)) {
+        throw new ConflictException('ORDER_DEADLINE_PASSED');
+      }
+      await this.orderState.apply(manager, locked, 'CANCELLED');
       // Điều kiện status trong câu UPDATE: phiên đã sang AWAITING_DEPOSIT thì không dòng nào đổi → 409,
       // cả transaction huỷ (đơn vẫn chờ vườn nộp tiền bảo đảm).
       const cancelled = await manager.update(
@@ -388,15 +414,17 @@ export class HandoverService {
         throw new ConflictException('INVALID_STATE_TRANSITION');
       }
       locked.cancelledBy = 'CUSTOMER';
+      locked.cancelCode = 'CUSTOMER_DECLINED';
       locked.cancelledAt = now;
       locked.cancelReason = dto.reason;
       await manager.save(locked);
 
-      const { customerRefund, declaredReturn } = await refundCancelledHandover(
+      const { customerRefund, declaredReturn } = await refundCancelledOrder(
         manager,
         locked,
         now,
-        'CUSTOMER',
+        'KEEP_PICKUP_FEE',
+        CANCEL_LABELS.CUSTOMER_DECLINED,
       );
       // Route của KHÁCH: chỉ trả số khách nhận lại, không trả phần của vườn.
       return {
@@ -409,8 +437,15 @@ export class HandoverService {
   }
 
   /**
-   * POST /orders/:id/handover/cancel — vườn tự huỷ vì không nộp được tiền bảo đảm (phiên đang
-   * AWAITING_DEPOSIT, khoản còn PENDING). Lỗi của vườn → khách nhận lại 100%, kể cả phí lấy cây.
+   * POST /orders/:id/handover/cancel — vườn huỷ ở chặng nhận cây. Ba trường hợp theo phiên nhận cây:
+   *   1. Phiên AWAITING_DEPOSIT (khách đã đồng ý biên bản, vườn không nộp được tiền bảo đảm): như cũ —
+   *      lỗi của vườn, khách nhận lại 100% kể cả phí lấy cây. Không cần `reasonCode`.
+   *   2. `CUSTOMER_ABSENT` (khách vắng nhà): chỉ khi phiên còn IN_PROGRESS (chưa chốt biên bản), đã qua
+   *      giờ hẹn + 30 phút, kèm 1–5 ảnh chụp tại chỗ → vườn giữ phí lấy cây (đơn mẫu khách 424.000, vườn 60.000).
+   *      Ảnh lưu kèm toạ độ điện thoại vườn (được rỗng) + khoảng cách tới điểm lấy cây, chỉ để tham khảo.
+   *   3. `PROVIDER_CANNOT_SERVE` (vườn từ chối hết cây, tự bỏ): phiên IN_PROGRESS hoặc AWAITING_CUSTOMER
+   *      (đã chốt biên bản, khách chưa trả lời) → khách nhận lại 100%, vườn +1 lần huỷ.
+   * Không có phiên nào đang mở → 409 SECURITY_DEPOSIT_NOT_PENDING như cũ.
    */
   async cancelHandover(
     accountId: string,
@@ -419,8 +454,77 @@ export class HandoverService {
   ) {
     const order = await this.getOrderAsProvider(accountId, orderId);
     return this.dataSource.transaction(async (manager) => {
-      await this.cancelForUnpaidDeposit(manager, order.id, dto.reason);
-      return { status: 'CANCELLED' as const };
+      // Khoá ĐƠN trước rồi mới đọc phiên — cùng thứ tự với khách đồng ý / không giao cây và bộ quét.
+      const locked = await this.orderState.lock(manager, order.id);
+      const handover = locked
+        ? await manager.findOne(Handover, {
+            where: {
+              serviceOrderId: order.id,
+              handoverType: 'IN',
+              status: In(['IN_PROGRESS', 'AWAITING_CUSTOMER']),
+            },
+          })
+        : null;
+      if (!locked || !handover) {
+        // Trường hợp 1 (hoặc không có gì để huỷ → 409 SECURITY_DEPOSIT_NOT_PENDING).
+        await this.cancelForUnpaidDeposit(manager, order.id, dto.reason);
+        return { status: 'CANCELLED' as const, cancelCode: 'DEPOSIT_UNPAID' };
+      }
+
+      if (!dto.reasonCode) {
+        throw new BadRequestException('REASON_CODE_REQUIRED');
+      }
+      const now = new Date();
+      if (dto.reasonCode === 'CUSTOMER_ABSENT') {
+        // Đã chốt biên bản nghĩa là hai bên đã gặp nhau → không còn là "khách vắng".
+        if (handover.status !== 'IN_PROGRESS') {
+          throw new ConflictException('INVALID_STATE_TRANSITION');
+        }
+        const photos = dto.photos ?? [];
+        if (photos.length === 0) {
+          throw new BadRequestException('ABSENCE_PHOTO_REQUIRED');
+        }
+        // Chặn vườn bấm "khách vắng" từ trước giờ hẹn để ăn phí lấy cây.
+        if (now.getTime() < noShowFrom(locked.scheduledPickupAt).getTime()) {
+          throw new ConflictException('CUSTOMER_ABSENT_TOO_EARLY');
+        }
+        await manager.save(
+          photos.map((photo) =>
+            manager.create(HandoverCancelPhoto, {
+              handoverId: handover.id,
+              photoUrl: photo.photoUrl,
+              gpsLat: photo.gpsLat?.toString() ?? null,
+              gpsLng: photo.gpsLng?.toString() ?? null,
+              distanceM: distanceToPickupMeters(photo, {
+                gpsLat: locked.pickupGpsLat,
+                gpsLng: locked.pickupGpsLng,
+              }),
+            }),
+          ),
+        );
+        await this.orderCancel.closeOrder(manager, locked, {
+          by: 'PROVIDER',
+          code: 'CUSTOMER_ABSENT',
+          reason: dto.reason,
+          refund: 'KEEP_PICKUP_FEE',
+          countsAgainstProvider: false,
+          now,
+        });
+        return { status: 'CANCELLED' as const, cancelCode: 'CUSTOMER_ABSENT' };
+      }
+
+      await this.orderCancel.closeOrder(manager, locked, {
+        by: 'PROVIDER',
+        code: 'PROVIDER_CANNOT_SERVE',
+        reason: dto.reason,
+        refund: 'FULL',
+        countsAgainstProvider: true,
+        now,
+      });
+      return {
+        status: 'CANCELLED' as const,
+        cancelCode: 'PROVIDER_CANNOT_SERVE',
+      };
     });
   }
 
@@ -431,11 +535,14 @@ export class HandoverService {
    * không đổi gì. Đơn mẫu: sổ đơn REFUND −484.000 → 0, 1 lệnh chi REFUND 484.000 cho khách,
    * mọi dòng hoá đơn REFUNDED, khoản bảo đảm + phiên nhận cây CANCELLED.
    * Hàm này KHÔNG kiểm hạn 2 giờ — nơi gọi tự quyết lúc nào được huỷ.
+   * `by` = ai bấm: vườn tự bấm huỷ → PROVIDER; bộ quét hết 2 giờ → SYSTEM. Cả hai đều ghi mã DEPOSIT_UNPAID
+   * và cộng một lần "nhận đơn rồi bỏ" cho vườn.
    */
   async cancelForUnpaidDeposit(
     manager: EntityManager,
     orderId: string,
     reason: string,
+    by: CancelledBy = 'PROVIDER',
   ): Promise<void> {
     const locked = await this.orderState.lock(manager, orderId);
     const deposit = locked
@@ -460,12 +567,20 @@ export class HandoverService {
       },
       { status: 'CANCELLED', note: reason },
     );
-    locked.cancelledBy = 'PROVIDER';
+    locked.cancelledBy = by;
+    locked.cancelCode = 'DEPOSIT_UNPAID';
     locked.cancelledAt = now;
     locked.cancelReason = reason;
     await manager.save(locked);
 
-    await refundCancelledHandover(manager, locked, now, 'PROVIDER');
+    await refundCancelledOrder(
+      manager,
+      locked,
+      now,
+      'FULL',
+      CANCEL_LABELS.DEPOSIT_UNPAID,
+    );
+    await this.orderCancel.countProviderCancel(manager, locked.providerId);
   }
 
   // ---- Trả cây (IN_CARE → COMPLETED) ----
@@ -592,7 +707,7 @@ export class HandoverService {
         'RETURN_AWAITING_CONFIRM',
       );
       const customerConfirmDueAt = new Date(
-        Date.now() + CUSTOMER_CONFIRM_WINDOW_MS,
+        Date.now() + RETURN_CONFIRM_WINDOW_MS,
       );
       await manager.update(Handover, handover.id, {
         status: 'AWAITING_CUSTOMER',

@@ -192,11 +192,19 @@ export class ProvidersService {
 
   // Dạng trả ra cho chủ hồ sơ + admin: bỏ hash, số CCCD giải mã, SĐT giải mã ở cấp ngoài,
   // account qua toAccountSummary (không spread entity → không lộ passwordHash/phoneHash).
-  private toProfileView(profile: ProviderProfile) {
-    const { account, cccdNumberHash: _hash, ...rest } = profile;
+  // `forAdmin`: số lần vườn "nhận đơn rồi bỏ" là ghi chú nội bộ cho admin — chủ hồ sơ không thấy
+  // (cùng cách với lostDisputeCount của khách).
+  private toProfileView(profile: ProviderProfile, forAdmin = false) {
+    const {
+      account,
+      cccdNumberHash: _hash,
+      cancelledOrderCount,
+      ...rest
+    } = profile;
     const summary = account ? toAccountSummary(account, this.crypto) : null;
     return {
       ...rest,
+      ...(forAdmin ? { cancelledOrderCount } : {}),
       account: summary,
       phone: summary?.phone ?? null,
       cccdNumber: rest.cccdNumber ? this.crypto.decrypt(rest.cccdNumber) : null,
@@ -330,7 +338,7 @@ export class ProvidersService {
       order: { createdAt: 'DESC' },
     });
     return profiles.map((p) => ({
-      ...this.toProfileView(p),
+      ...this.toProfileView(p, true),
       // Nút "Duyệt" chỉ bật khi đủ bộ định danh — khớp điều kiện chặn ở verifyProvider.
       canVerify: p.verificationStatus === 'PENDING' && hasCompleteIdentity(p),
     }));
@@ -347,7 +355,7 @@ export class ProvidersService {
       order: { createdAt: 'DESC' },
     });
     return {
-      provider: this.toProfileView(profile),
+      provider: this.toProfileView(profile, true),
       packages,
     };
   }
