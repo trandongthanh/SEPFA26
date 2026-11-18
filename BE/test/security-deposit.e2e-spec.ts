@@ -636,11 +636,12 @@ describe('Tiền bảo đảm lúc nhận cây + huỷ tại chỗ (e2e)', () =>
     const c = await toAwaitingConfirm();
     const id = c.order.orderId;
 
-    // Khách chưa đồng ý biên bản thì chưa có khoản nào để huỷ.
+    // Khách chưa đồng ý biên bản thì chưa có khoản bảo đảm nào để huỷ. Từ 17/11 vườn vẫn huỷ được ở bước này
+    // nhưng phải nói rõ lý do bằng `reasonCode` (order-cancel.e2e-spec.ts) — thiếu thì 400, đơn không đổi.
     const tooEarly = await post(`${id}/handover/cancel`, c.provider.auth, {
       reason: 'Không đủ tiền',
-    }).expect(409);
-    expect(tooEarly.body.message).toBe('SECURITY_DEPOSIT_NOT_PENDING');
+    }).expect(400);
+    expect(tooEarly.body.message).toBe('REASON_CODE_REQUIRED');
     expect((await orderRow(id)).status).toBe('HANDOVER_AWAITING_CONFIRM');
 
     await post(`${id}/handover/confirm`, c.customer.auth).expect(200);
@@ -660,7 +661,10 @@ describe('Tiền bảo đảm lúc nhận cây + huỷ tại chỗ (e2e)', () =>
     const cancelled = await post(`${id}/handover/cancel`, c.provider.auth, {
       reason: '  Không chuẩn bị đủ tiền bảo đảm  ',
     }).expect(200);
-    expect(cancelled.body).toEqual({ status: 'CANCELLED' });
+    expect(cancelled.body).toEqual({
+      status: 'CANCELLED',
+      cancelCode: 'DEPOSIT_UNPAID',
+    });
 
     const order = await orderRow(id);
     expect(order).toMatchObject({

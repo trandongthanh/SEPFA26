@@ -15,6 +15,7 @@ import { DataSource, EntityManager, Repository } from 'typeorm';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { expireAddon } from '../orders/addon-expiry';
 import { extractAddonCode, overdueReason } from '../orders/addon-rules';
+import { isPastDue } from '../orders/cancel-rules';
 import { AddonProposal } from '../orders/entities/addon-proposal.entity';
 import { Handover } from '../orders/entities/handover.entity';
 import { ServiceOrder } from '../orders/entities/service-order.entity';
@@ -79,6 +80,10 @@ export class PaymentsService {
     }
     if (order.status !== 'AWAITING_PAYMENT') {
       throw new ConflictException('INVALID_STATE_TRANSITION');
+    }
+    // Quá hạn thanh toán (bộ quét 5 phút chưa kịp huỷ đơn) → không phát QR nữa, tránh khách chuyển tiền vào đơn sắp huỷ.
+    if (isPastDue(order.paymentDueAt, new Date())) {
+      throw new ConflictException('ORDER_DEADLINE_PASSED');
     }
 
     const amount = await this.sumPendingComponents(order.id);
@@ -332,6 +337,15 @@ export class PaymentsService {
       );
       await this.recordPendingTransaction(sepayTxnId, dto, rawBody, order.id);
       return { success: true, ignored: 'ORDER_NOT_AWAITING_PAYMENT' };
+    }
+    // Tiền về SAU hạn thanh toán (bộ quét chưa kịp huỷ đơn) → không ghi nhận, lưu lại chờ admin hoàn tay.
+    // Nếu vẫn nhận thì khách vừa trả xong đã rơi vào 3 giờ cuối trước giờ hẹn, huỷ là mất phí lấy cây.
+    if (isPastDue(order.paymentDueAt, new Date())) {
+      this.logger.warn(
+        `Webhook ${sepayTxnId}: đơn ${orderCode} đã quá hạn thanh toán, bỏ qua`,
+      );
+      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, order.id);
+      return { success: true, ignored: 'PAYMENT_DEADLINE_PASSED' };
     }
 
     const amountDue = BigInt(await this.sumPendingComponents(order.id));

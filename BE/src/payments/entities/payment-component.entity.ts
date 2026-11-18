@@ -25,7 +25,11 @@ import { ServiceOrder } from '../../orders/entities/service-order.entity';
   'CHK_payment_components_component_type',
   `"component_type" IN ('PACKAGE_PRICE','PICKUP_FEE','ADD_ON','DECLARED_DEPOSIT')`,
 )
-@Check(`"status" IN ('PENDING','PAID','REFUNDED','RELEASED')`)
+// CANCELLED = dòng chưa trả của đơn bị huỷ trước khi thanh toán (không còn là khoản "chờ trả").
+@Check(
+  'CHK_payment_components_status',
+  `"status" IN ('PENDING','PAID','REFUNDED','RELEASED','CANCELLED')`,
+)
 @Check(`"amount" >= 0`)
 export class PaymentComponent extends BaseEntity {
   @PrimaryGeneratedColumn('uuid')
@@ -58,7 +62,7 @@ export class PaymentComponent extends BaseEntity {
   providerFee!: string;
 
   @Column({ type: 'varchar', length: 20, default: 'PENDING' })
-  status!: 'PENDING' | 'PAID' | 'REFUNDED' | 'RELEASED';
+  status!: 'PENDING' | 'PAID' | 'REFUNDED' | 'RELEASED' | 'CANCELLED';
 
   @Column({
     type: 'timestamptz',

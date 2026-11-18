@@ -59,6 +59,14 @@ import {
   readPartySnapshot,
   type PartySnapshotV2,
 } from './party-snapshot';
+import {
+  freeCancelUntil,
+  isPastDue,
+  isPickupTooSoon,
+  noShowFrom,
+  waitDueAt,
+} from './cancel-rules';
+import { OrderCancelService } from './order-cancel.service';
 import { OrderStateService } from './order-state.service';
 import { assertTransition } from './order-status';
 import { computeShippingFee, pickTier } from './shipping-fee';
@@ -93,6 +101,7 @@ export class OrdersService {
     private readonly crypto: CryptoService,
     private readonly orderState: OrderStateService,
     private readonly config: ConfigService,
+    private readonly orderCancel: OrderCancelService,
   ) {}
 
   // Luật tiền bảo đảm khai giá đọc từ env (mặc định 10%, ngưỡng 2 × giá gói; 0% = tắt).
@@ -379,6 +388,11 @@ export class OrdersService {
   async submitOrder(accountId: string, orderId: string) {
     const order = await this.getOwnedOrderAsCustomer(accountId, orderId);
     assertTransition(order.status, 'PENDING_PROVIDER');
+    // Giờ hẹn phải còn HƠN 3 giờ: ba hạn chờ (vườn trả lời, ký, thanh toán) đều đóng ở mốc giờ hẹn − 3 giờ,
+    // hẹn gần hơn thì đơn hết hạn ngay lúc gửi.
+    if (isPickupTooSoon(order.scheduledPickupAt, new Date())) {
+      throw new BadRequestException('PICKUP_TOO_SOON');
+    }
 
     const plants = await this.plantRepo.find({
       where: { serviceOrderId: order.id },
@@ -404,10 +418,18 @@ export class OrdersService {
     // D5: khoá dòng đơn + kiểm lại trạng thái trong transaction — bấm "gửi đơn"
     // 2 lần cùng lúc chỉ 1 request đi tiếp (không lật trạng thái, không 500 vì unique).
     return this.dataSource.transaction(async (manager) => {
-      const saved = await this.orderState.transition(
+      const locked = await this.orderState.lock(manager, order.id);
+      if (!locked || locked.status !== 'DRAFT') {
+        throw new ConflictException('INVALID_STATE_TRANSITION');
+      }
+      // Hạn vườn trả lời = sớm hơn trong (lúc gửi + 24 giờ) và (giờ hẹn − 3 giờ); quá hạn → EXPIRED.
+      locked.providerRespondDueAt = waitDueAt(
+        new Date(),
+        locked.scheduledPickupAt,
+      );
+      const saved = await this.orderState.apply(
         manager,
-        order.id,
-        'DRAFT',
+        locked,
         'PENDING_PROVIDER',
       );
       await manager.save(
@@ -616,8 +638,25 @@ export class OrdersService {
       .getRepository(Dispute)
       .findOne({ where: { serviceOrderId: order.id } });
 
+    // Khách xem trước "huỷ bây giờ nhận lại bao nhiêu" — chỉ khi đơn đã thanh toán và vườn chưa mở phiên.
+    const cancelPreview =
+      role === 'CUSTOMER'
+        ? await this.orderCancel.previewCancel(order, now)
+        : null;
+
     return {
       ...order,
+      // Các mốc giờ để app hiện đồng hồ đếm. Ba hạn chờ rỗng với đơn tạo trước khi có luật hạn.
+      // freeCancelUntil: khách huỷ đơn đã thanh toán miễn phí tới mốc này (giờ hẹn − 3 giờ);
+      // noShowFrom: từ mốc này (giờ hẹn + 30 phút) mới báo được "vườn không tới" / "khách vắng nhà".
+      deadlines: {
+        providerRespondDueAt: order.providerRespondDueAt,
+        agreementDueAt: order.agreementDueAt,
+        paymentDueAt: order.paymentDueAt,
+        freeCancelUntil: freeCancelUntil(order.scheduledPickupAt),
+        noShowFrom: noShowFrom(order.scheduledPickupAt),
+      },
+      ...(role === 'CUSTOMER' ? { cancelPreview } : {}),
       settlement,
       // Tiền bảo đảm khai giá khách nộp cùng tiền đơn (từng cây ở plants[].declaredDeposit).
       declaredDepositTotal: this.sumDeclaredDeposit(order.plants),
@@ -982,6 +1021,11 @@ export class OrdersService {
       if (!locked || locked.status !== 'PENDING_PROVIDER') {
         throw new ConflictException('INVALID_STATE_TRANSITION');
       }
+      // Quá hạn trả lời (bộ quét 5 phút chưa kịp chuyển EXPIRED) → không nhận, không từ chối được nữa.
+      const now = new Date();
+      if (isPastDue(locked.providerRespondDueAt, now)) {
+        throw new ConflictException('ORDER_DEADLINE_PASSED');
+      }
 
       if (dto.response === 'REJECT') {
         await manager.update(
@@ -1042,7 +1086,9 @@ export class OrdersService {
           status: 'PENDING',
         }),
       );
-      // apply lưu luôn provisionalTotal (nếu vườn đề xuất giá) cùng lần đổi trạng thái.
+      // Hạn hai bên ký = sớm hơn trong (lúc vườn nhận + 24 giờ) và (giờ hẹn − 3 giờ); quá hạn → CANCELLED.
+      locked.agreementDueAt = waitDueAt(now, locked.scheduledPickupAt);
+      // apply lưu luôn provisionalTotal (nếu vườn đề xuất giá) + hạn ký cùng lần đổi trạng thái.
       await this.orderState.apply(manager, locked, 'AGREEMENT_PENDING');
       return {
         status: locked.status,
@@ -1073,6 +1119,10 @@ export class OrdersService {
     const order = await this.getOrderAsParty(accountId, role, orderId);
     if (order.status !== 'AGREEMENT_PENDING') {
       throw new ConflictException('INVALID_STATE_TRANSITION');
+    }
+    // Quá hạn ký (bộ quét 5 phút chưa kịp huỷ đơn) → không ký được nữa.
+    if (isPastDue(order.agreementDueAt, new Date())) {
+      throw new ConflictException('ORDER_DEADLINE_PASSED');
     }
     const signerRole = role as 'CUSTOMER' | 'PROVIDER';
 
@@ -1176,6 +1226,11 @@ export class OrdersService {
       await manager.save(components);
 
       locked.provisionalLockedAt = new Date();
+      // Hạn khách thanh toán = sớm hơn trong (lúc đủ 2 chữ ký + 24 giờ) và (giờ hẹn − 3 giờ); quá hạn → CANCELLED.
+      locked.paymentDueAt = waitDueAt(
+        locked.provisionalLockedAt,
+        locked.scheduledPickupAt,
+      );
       await manager.save(locked);
 
       const amountDue = (

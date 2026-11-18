@@ -214,7 +214,8 @@ describe('Bộ quét ba hạn tự chạy (e2e)', () => {
     const order = await orderRow(id);
     expect(order).toMatchObject({
       status: 'CANCELLED',
-      cancelled_by: 'PROVIDER',
+      // Hệ thống tự huỷ → SYSTEM (từ 17/11; trước đó ghi PROVIDER). Lỗi của ai đọc ở cancel_code.
+      cancelled_by: 'SYSTEM',
       cancel_reason: UNPAID_DEPOSIT_EXPIRED_REASON,
     });
     expect(order.cancelled_at).not.toBeNull();
@@ -359,6 +360,11 @@ describe('Bộ quét ba hạn tự chạy (e2e)', () => {
       expiredDeposits: 0,
       autoConfirmedReturns: 0,
       escalatedDisputes: 0,
+      expiredOrders: 0,
+      cancelledUnsigned: 0,
+      cancelledUnpaid: 0,
+      cancelledNoShows: 0,
+      cancelledUnconfirmed: 0,
     });
     expect((await disputeRow(dueId)).status).toBe('NEGOTIATING');
 

@@ -70,6 +70,11 @@ export class ProviderProfile extends BaseEntity {
   })
   ratingAvg!: string | null;
 
+  // Số lần vườn "nhận đơn rồi bỏ": tự huỷ đơn đã nhận, không tới lấy cây, tới nơi mà không nhận,
+  // không nộp tiền bảo đảm. Ghi chú nội bộ cho admin (chưa phạt tiền); đơn Hết hạn vì im lặng KHÔNG tính.
+  @Column({ type: 'integer', name: 'cancelled_order_count', default: 0 })
+  cancelledOrderCount!: number;
+
   // Địa chỉ chữ CHỈ để hiển thị; tính phí ship luôn dùng GPS do provider tự ghim trên bản đồ.
   @Column({ type: 'varchar', length: 255, nullable: true })
   address!: string | null;
