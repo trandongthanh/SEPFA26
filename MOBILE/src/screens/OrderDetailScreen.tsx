@@ -15,7 +15,17 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { DisputeReason, OrderDisputeItem, OrderItem, orderService } from '../services/orderService';
+import {
+  AddonItem,
+  AddonPaymentQrResponse,
+  AddonStatus,
+  DisputeDetail,
+  DisputeReason,
+  OrderDisputeItem,
+  OrderItem,
+  orderService,
+} from '../services/orderService';
+import { customerService } from '../services/customerService';
 import { uploadService } from '../services/uploadService';
 import {
   CareEvidenceType,
@@ -110,41 +120,86 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
   // Care reports v2 (2-tier)
   const [careReports, setCareReports] = useState<CareReportItem[]>([]);
   const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'care' | 'support'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'care' | 'addons' | 'support'>('overview');
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
 
-  // Dispute state
-  const [disputeModalVisible, setDisputeModalVisible] = useState<boolean>(false);
-  const [disputes, setDisputes] = useState<OrderDisputeItem[]>([]);
-  const [disputesLoading, setDisputesLoading] = useState<boolean>(false);
+  // Addons state (Dịch vụ thêm ngoài gói)
+  const [addons, setAddons] = useState<AddonItem[]>([]);
+  const [addonPaymentModalVisible, setAddonPaymentModalVisible] = useState<boolean>(false);
+  const [addonQrLoading, setAddonQrLoading] = useState<boolean>(false);
+  const [selectedAddonQr, setSelectedAddonQr] = useState<AddonPaymentQrResponse | null>(null);
+  const [selectedAddonForPayment, setSelectedAddonForPayment] = useState<AddonItem | null>(null);
+  const [checkingAddonPayment, setCheckingAddonPayment] = useState<boolean>(false);
+  const [respondingAddonId, setRespondingAddonId] = useState<string | null>(null);
+  const [addonNotes, setAddonNotes] = useState<Record<string, string>>({});
+
+  // Dispute state (PR #37 Dispute Room & Open Dispute)
+  const [disputeRoomVisible, setDisputeRoomVisible] = useState<boolean>(false);
+  const [openDisputeModalVisible, setOpenDisputeModalVisible] = useState<boolean>(false);
+  const [disputeDetail, setDisputeDetail] = useState<DisputeDetail | null>(null);
+  const [disputeLoading, setDisputeLoading] = useState<boolean>(false);
+  const [selectedDisputePlantIds, setSelectedDisputePlantIds] = useState<string[]>([]);
+  const [disputeReasonText, setDisputeReasonText] = useState<string>('Cây bị hư hại sau khi chăm sóc');
+  const [disputeDescription, setDisputeDescription] = useState<string>('');
+  const [disputeEvidence, setDisputeEvidence] = useState<Array<{ photoUrl: string; caption?: string; plantId?: string }>>([]);
   const [disputeSubmitting, setDisputeSubmitting] = useState<boolean>(false);
   const [disputeUploading, setDisputeUploading] = useState<boolean>(false);
-  const [disputeReason, setDisputeReason] = useState<DisputeReason>('MISMATCHED_PLANT');
-  const [disputeDescription, setDisputeDescription] = useState<string>('');
-  const [disputeEvidence, setDisputeEvidence] = useState<Array<{ photoUrl: string; caption?: string }>>([]);
+  const [offerRefund, setOfferRefund] = useState<string>('');
+  const [offerCompensation, setOfferCompensation] = useState<string>('');
+  const [offerMessage, setOfferMessage] = useState<string>('');
+  const [offerSubmitting, setOfferSubmitting] = useState<boolean>(false);
+  const [acceptingOfferId, setAcceptingOfferId] = useState<string | null>(null);
+  const [disputeBankName, setDisputeBankName] = useState<string>('');
+  const [disputeBankAccount, setDisputeBankAccount] = useState<string>('');
+  const [disputeBankHolder, setDisputeBankHolder] = useState<string>('');
+  const [hasDisputeBankInfo, setHasDisputeBankInfo] = useState<boolean>(false);
 
-  const handleOpenDisputeModal = async () => {
-    setDisputeModalVisible(true);
-    setDisputeReason('MISMATCHED_PLANT');
-    setDisputeDescription('');
-    setDisputeEvidence([]);
-    setDisputesLoading(true);
+  const handleOpenDisputeRoom = async () => {
+    setDisputeRoomVisible(true);
+    setDisputeLoading(true);
     try {
-      const list = await orderService.listDisputes(orderId);
-      setDisputes(list);
+      const data = await orderService.getDispute(orderId);
+      setDisputeDetail(data);
     } catch (err: any) {
-      Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể tải danh sách tranh chấp.');
-      setDisputes([]);
+      Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể tải hồ sơ tranh chấp.');
+      setDisputeDetail(null);
     } finally {
-      setDisputesLoading(false);
+      setDisputeLoading(false);
     }
   };
 
-  const handlePickDisputePhoto = async () => {
+  const handleStartOpenDispute = async () => {
+    const defaultPlantIds = (order?.plants || []).map((p: any) => p.id);
+    setSelectedDisputePlantIds(defaultPlantIds.slice(0, 1));
+    setDisputeReasonText('Cây bị hư hại sau thời gian gửi chăm sóc');
+    setDisputeDescription('');
+    setDisputeEvidence([]);
+
+    try {
+      const prof = await customerService.getMyProfile();
+      if (prof.bankName && prof.bankAccount && prof.bankHolder) {
+        setDisputeBankName(prof.bankName);
+        setDisputeBankAccount(prof.bankAccount);
+        setDisputeBankHolder(prof.bankHolder);
+        setHasDisputeBankInfo(true);
+      } else {
+        setDisputeBankName(prof.bankName || '');
+        setDisputeBankAccount(prof.bankAccount || '');
+        setDisputeBankHolder(prof.bankHolder || '');
+        setHasDisputeBankInfo(false);
+      }
+    } catch (_) {
+      setHasDisputeBankInfo(false);
+    }
+
+    setOpenDisputeModalVisible(true);
+  };
+
+  const handlePickDisputePhoto = async (forExistingDispute = false) => {
     try {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert('Thiếu quyền', 'Vui lòng cấp quyền sử dụng camera để chụp ảnh bằng chứng.');
+        Alert.alert('Thiếu quyền', 'Vui lòng cấp quyền camera để chụp ảnh bằng chứng.');
         return;
       }
       const result = await ImagePicker.launchCameraAsync({
@@ -154,7 +209,16 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
       if (result.canceled || !result.assets?.[0]?.uri) return;
       setDisputeUploading(true);
       const url = await uploadService.uploadDocumentImage(result.assets[0].uri);
-      setDisputeEvidence((prev) => [...prev, { photoUrl: url }]);
+      if (forExistingDispute) {
+        await orderService.addDisputeEvidence(orderId, {
+          photos: [{ photoUrl: url }],
+        });
+        Alert.alert('Thành công', 'Đã nộp thêm ảnh bằng chứng.');
+        const data = await orderService.getDispute(orderId);
+        setDisputeDetail(data);
+      } else {
+        setDisputeEvidence((prev) => [...prev, { photoUrl: url }]);
+      }
     } catch (err: any) {
       Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể tải ảnh bằng chứng.');
     } finally {
@@ -162,31 +226,197 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
     }
   };
 
-  const handleSubmitDispute = async () => {
+  const handleSubmitOpenDispute = async () => {
+    if (selectedDisputePlantIds.length === 0) {
+      Alert.alert('Chưa chọn cây', 'Vui lòng chọn ít nhất 1 cây lan bị khiếu nại.');
+      return;
+    }
     if (!disputeDescription.trim()) {
-      Alert.alert('Thiếu thông tin', 'Vui lòng nhập mô tả chi tiết vấn đề tranh chấp.');
+      Alert.alert('Thiếu thông tin', 'Vui lòng mô tả cụ thể tình trạng hư hại của cây.');
       return;
     }
     if (disputeEvidence.length === 0) {
-      Alert.alert('Thiếu bằng chứng', 'Vui lòng tải lên ít nhất 1 ảnh bằng chứng.');
+      Alert.alert('Thiếu ảnh bằng chứng', 'Vui lòng chụp hoặc tải lên ít nhất 1 ảnh bằng chứng (tối đa 10 ảnh).');
+      return;
+    }
+    if (!disputeBankName.trim() || !disputeBankAccount.trim() || !disputeBankHolder.trim()) {
+      Alert.alert(
+        'Thiếu thông tin ngân hàng',
+        'Vui lòng điền đầy đủ Tên ngân hàng, Số tài khoản và Tên chủ tài khoản để nhận tiền hoàn / bồi thường khi mở khiếu nại.',
+      );
       return;
     }
     setDisputeSubmitting(true);
     try {
+      // Cập nhật thông tin ngân hàng vào hồ sơ khách hàng nếu chưa có hoặc có thay đổi
+      await customerService.updateMyProfile({
+        bankName: disputeBankName.trim(),
+        bankAccount: disputeBankAccount.trim(),
+        bankHolder: disputeBankHolder.trim().toUpperCase(),
+      });
+
       await orderService.openDispute(orderId, {
-        reason: disputeReason,
+        reason: disputeReasonText.trim(),
         description: disputeDescription.trim(),
+        plantIds: selectedDisputePlantIds,
         evidence: disputeEvidence,
       });
-      Alert.alert('Thành công', 'Đã gửi khiếu nại / mở tranh chấp thành công.');
-      setDisputeDescription('');
-      setDisputeEvidence([]);
-      const list = await orderService.listDisputes(orderId);
-      setDisputes(list);
+      Alert.alert('Đã mở tranh chấp', 'Hồ sơ tranh chấp đã được mở. Hai bên có 3 ngày để tự thương lượng.');
+      setOpenDisputeModalVisible(false);
+      fetchDetail();
     } catch (err: any) {
-      Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể gửi tranh chấp.');
+      Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể mở tranh chấp.');
     } finally {
       setDisputeSubmitting(false);
+    }
+  };
+
+  const handleCustomerCreateOffer = async () => {
+    const refNum = parseInt(offerRefund || '0', 10);
+    const compNum = parseInt(offerCompensation || '0', 10);
+    if (isNaN(refNum) || isNaN(compNum) || (refNum === 0 && compNum === 0)) {
+      Alert.alert('Thiếu thông tin', 'Vui lòng nhập số tiền hoàn công hoặc bồi thường lớn hơn 0.');
+      return;
+    }
+    if (disputeDetail?.caps) {
+      const maxRef = parseInt(disputeDetail.caps.refundCap, 10);
+      const maxComp = parseInt(disputeDetail.caps.compensationCap, 10);
+      if (refNum > maxRef) {
+        Alert.alert('Vượt hạn mức', `Tiền hoàn công không được vượt quá trần ${maxRef.toLocaleString('vi-VN')} đ.`);
+        return;
+      }
+      if (compNum > maxComp) {
+        Alert.alert('Vượt hạn mức', `Tiền bồi thường không được vượt quá trần ${maxComp.toLocaleString('vi-VN')} đ.`);
+        return;
+      }
+    }
+    setOfferSubmitting(true);
+    try {
+      await orderService.createDisputeOffer(orderId, {
+        refundAmount: refNum.toString(),
+        compensationAmount: compNum.toString(),
+        message: offerMessage.trim() || undefined,
+      });
+      Alert.alert('Thành công', 'Đã gửi đề xuất thương lượng mới cho nhà vườn.');
+      setOfferRefund('');
+      setOfferCompensation('');
+      setOfferMessage('');
+      const data = await orderService.getDispute(orderId);
+      setDisputeDetail(data);
+    } catch (err: any) {
+      Alert.alert('Lỗi', err?.response?.data?.message || 'Gửi đề xuất thương lượng thất bại.');
+    } finally {
+      setOfferSubmitting(false);
+    }
+  };
+
+  const handleCustomerAcceptOffer = async (offerId: string) => {
+    Alert.alert(
+      'Xác nhận đồng ý',
+      'Bạn có chắc chắn đồng ý với phương án thương lượng này? Tranh chấp sẽ kết thúc và tiền sẽ được thanh toán cho bạn.',
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Đồng ý',
+          onPress: async () => {
+            setAcceptingOfferId(offerId);
+            try {
+              await orderService.acceptDisputeOffer(orderId, offerId);
+              Alert.alert('Thành công', 'Đã đồng ý đề xuất thương lượng. Tranh chấp đã hoàn tất!');
+              const data = await orderService.getDispute(orderId);
+              setDisputeDetail(data);
+              fetchDetail();
+            } catch (err: any) {
+              Alert.alert('Lỗi', err?.response?.data?.message || 'Chấp nhận đề xuất thất bại.');
+            } finally {
+              setAcceptingOfferId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleCustomerWithdrawDispute = async () => {
+    Alert.alert(
+      'Xác nhận rút khiếu nại',
+      'Bạn có chắc chắn muốn rút khiếu nại tranh chấp này? Đơn hàng sẽ hoàn tất và quyết toán bình thường.',
+      [
+        { text: 'Quay lại', style: 'cancel' },
+        {
+          text: 'Rút khiếu nại',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await orderService.withdrawDispute(orderId);
+              Alert.alert('Đã rút khiếu nại', 'Bạn đã rút khiếu nại tranh chấp thành công.');
+              setDisputeRoomVisible(false);
+              fetchDetail();
+            } catch (err: any) {
+              Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể rút khiếu nại.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleRespondAddon = async (addonId: string, decision: 'ACCEPT' | 'REJECT') => {
+    const note = addonNotes[addonId]?.trim();
+    setRespondingAddonId(addonId);
+    try {
+      await orderService.respondAddon(orderId, addonId, {
+        decision,
+        note: note || undefined,
+      });
+      Alert.alert(
+        decision === 'ACCEPT' ? 'Đã đồng ý' : 'Đã từ chối',
+        decision === 'ACCEPT'
+          ? 'Bạn đã đồng ý đề xuất. Vui lòng chuyển khoản trong 24 giờ để nhà vườn tiến hành.'
+          : 'Bạn đã từ chối đề xuất dịch vụ thêm.'
+      );
+      const updatedAddons = await orderService.listAddons(orderId);
+      setAddons(updatedAddons);
+    } catch (err: any) {
+      Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể phản hồi đề xuất.');
+    } finally {
+      setRespondingAddonId(null);
+    }
+  };
+
+  const handleOpenAddonPayment = async (addon: AddonItem) => {
+    setSelectedAddonForPayment(addon);
+    setSelectedAddonQr(null);
+    setAddonPaymentModalVisible(true);
+    setAddonQrLoading(true);
+    try {
+      const qr = await orderService.getAddonPaymentQr(orderId, addon.id);
+      setSelectedAddonQr(qr);
+    } catch (err: any) {
+      Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể lấy mã QR thanh toán.');
+      setAddonPaymentModalVisible(false);
+    } finally {
+      setAddonQrLoading(false);
+    }
+  };
+
+  const handleCheckAddonPaymentStatus = async () => {
+    if (!selectedAddonForPayment) return;
+    setCheckingAddonPayment(true);
+    try {
+      const updatedAddons = await orderService.listAddons(orderId);
+      setAddons(updatedAddons);
+      const target = updatedAddons.find((a) => a.id === selectedAddonForPayment.id);
+      if (target?.status === 'PAID' || target?.status === 'DONE') {
+        Alert.alert('Thành công', 'Thanh toán dịch vụ thêm đã được xác nhận!');
+        setAddonPaymentModalVisible(false);
+      } else {
+        Alert.alert('Chờ xác nhận', 'Hệ thống đang chờ ngân hàng đối soát. Vui lòng thử lại sau giây lát.');
+      }
+    } catch {
+      Alert.alert('Lỗi', 'Không thể kiểm tra trạng thái thanh toán.');
+    } finally {
+      setCheckingAddonPayment(false);
     }
   };
 
@@ -194,17 +424,19 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
     if (!silent) setLoading(true);
     setErrorMsg(null);
     try {
-      const [orderData, historyData, activeData, reportsData] = await Promise.all([
+      const [orderData, historyData, activeData, reportsData, addonsData] = await Promise.all([
         orderService.getOrderDetail(orderId),
         videoCallService.listHistory(orderId).catch(() => []),
         videoCallService.getActive(orderId).catch(() => ({ call: null })),
         careReportService.listByOrder(orderId).catch(() => []),
+        orderService.listAddons(orderId).catch(() => []),
       ]);
 
       setOrder(orderData);
       setCallHistory(historyData || []);
       setActiveCall(activeData?.call || null);
       setCareReports(reportsData || []);
+      setAddons(addonsData || []);
     } catch (err: any) {
       console.error('Failed to load order detail:', err);
       setErrorMsg('Không thể tải thông tin đơn hàng.');
@@ -364,11 +596,28 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
             setConfirmingHandover(true);
             try {
               await orderService.confirmHandover(orderId);
-              Alert.alert('Thành công', 'Đã xác nhận bàn giao thành công! Cây của bạn đã chính thức chuyển sang giai đoạn chăm sóc.');
+              Alert.alert(
+                'Thành công',
+                'Đã xác nhận bàn giao thành công! Bạn đã hoàn tất phần việc của mình. Đang chờ nhà vườn nộp tiền bảo lãnh trách nhiệm để chính thức kích hoạt chu kỳ chăm sóc.'
+              );
+              setOrder((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      handoverStatus: 'AWAITING_DEPOSIT',
+                      handover: prev.handover
+                        ? { ...prev.handover, status: 'AWAITING_DEPOSIT' }
+                        : { status: 'AWAITING_DEPOSIT' },
+                    }
+                  : prev
+              );
               fetchDetail();
             } catch (err: any) {
-              console.error('Confirm handover failed:', err);
-              const msg = err?.response?.data?.message || 'Xác nhận bàn giao thất bại.';
+              console.warn('Confirm handover failed:', err);
+              const msg =
+                err?.response?.data?.message ||
+                err?.message ||
+                'Xác nhận bàn giao thất bại.';
               Alert.alert('Lỗi', Array.isArray(msg) ? msg.join('\n') : msg);
             } finally {
               setConfirmingHandover(false);
@@ -428,11 +677,23 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
     );
   }
 
-  const statusInfo = STATUS_MAP[order.status] || {
+  let statusInfo = STATUS_MAP[order.status] || {
     label: order.status,
     color: '#4A5568',
     bg: '#EDF2F7',
   };
+
+  const isAwaitingDeposit =
+    order.status === 'HANDOVER_AWAITING_CONFIRM' &&
+    (order.handoverStatus === 'AWAITING_DEPOSIT' || order.handover?.status === 'AWAITING_DEPOSIT');
+
+  if (isAwaitingDeposit) {
+    statusInfo = {
+      label: 'Chờ vườn nộp tiền bảo lãnh',
+      color: '#2563EB',
+      bg: '#EFF6FF',
+    };
+  }
 
   const formattedPickupDate = order.scheduledPickupAt
     ? new Date(order.scheduledPickupAt).toLocaleString('vi-VN')
@@ -528,36 +789,54 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
         )}
 
         {order.status === 'HANDOVER_AWAITING_CONFIRM' && (
-          <View style={[styles.actionBannerCard, { borderColor: '#D97706', backgroundColor: '#FFFBEB' }]}>
-            <View style={styles.actionBannerHeader}>
-              <View style={[styles.actionIconCircle, { backgroundColor: '#FEF3C7' }]}>
-                <Ionicons name="shield-checkmark" size={22} color="#D97706" />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.actionBannerTitle, { color: '#B45309' }]}>
-                  Xác nhận bàn giao cây
-                </Text>
-                <Text style={styles.actionBannerSub}>
-                  Nhà vườn đã hoàn tất thẩm định hiện trạng cây tại vườn. Vui lòng xác nhận để kích hoạt chu kỳ chăm sóc.
-                </Text>
+          isAwaitingDeposit ? (
+            <View style={[styles.actionBannerCard, { borderColor: '#3B82F6', backgroundColor: '#EFF6FF' }]}>
+              <View style={styles.actionBannerHeader}>
+                <View style={[styles.actionIconCircle, { backgroundColor: '#DBEAFE' }]}>
+                  <Ionicons name="time" size={22} color="#2563EB" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.actionBannerTitle, { color: '#1D4ED8' }]}>
+                    Đã xác nhận bàn giao cây
+                  </Text>
+                  <Text style={styles.actionBannerSub}>
+                    Bạn đã xác nhận bàn giao thành công. Hệ thống đang chờ nhà vườn nộp tiền bảo lãnh trách nhiệm (trong vòng 2 giờ) để chính thức kích hoạt chu kỳ chăm sóc.
+                  </Text>
+                </View>
               </View>
             </View>
-            <TouchableOpacity
-              style={[styles.primaryActionBtn, { backgroundColor: '#6027D2' }]}
-              onPress={handleConfirmHandover}
-              disabled={confirmingHandover}
-              activeOpacity={0.85}
-            >
-              {confirmingHandover ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <>
-                  <Ionicons name="checkmark-done" size={18} color="#FFFFFF" />
-                  <Text style={styles.primaryActionBtnText}>Xác nhận bàn giao cây</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
+          ) : (
+            <View style={[styles.actionBannerCard, { borderColor: '#D97706', backgroundColor: '#FFFBEB' }]}>
+              <View style={styles.actionBannerHeader}>
+                <View style={[styles.actionIconCircle, { backgroundColor: '#FEF3C7' }]}>
+                  <Ionicons name="shield-checkmark" size={22} color="#D97706" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.actionBannerTitle, { color: '#B45309' }]}>
+                    Xác nhận bàn giao cây
+                  </Text>
+                  <Text style={styles.actionBannerSub}>
+                    Nhà vườn đã hoàn tất thẩm định hiện trạng cây tại vườn. Vui lòng xác nhận để kích hoạt chu kỳ chăm sóc.
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={[styles.primaryActionBtn, { backgroundColor: '#6027D2' }]}
+                onPress={handleConfirmHandover}
+                disabled={confirmingHandover}
+                activeOpacity={0.85}
+              >
+                {confirmingHandover ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-done" size={18} color="#FFFFFF" />
+                    <Text style={styles.primaryActionBtnText}>Xác nhận bàn giao cây</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          )
         )}
 
         {order.status === 'RETURN_AWAITING_CONFIRM' && (
@@ -697,9 +976,9 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
               </TouchableOpacity>
             )}
 
-            {['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'DISPUTED'].includes(order.status) && (
+            {order.status === 'RETURN_AWAITING_CONFIRM' && (
               <TouchableOpacity
-                onPress={handleOpenDisputeModal}
+                onPress={handleStartOpenDispute}
                 activeOpacity={0.8}
                 style={{
                   flex: 1,
@@ -710,17 +989,100 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                   gap: 6,
                   backgroundColor: '#FFFFFF',
                   borderWidth: 1,
-                  borderColor: '#DDD6FE',
+                  borderColor: '#F87171',
                   paddingVertical: 10,
                   paddingHorizontal: 12,
                   borderRadius: 10,
                 }}
               >
-                <Ionicons name="alert-circle-outline" size={16} color="#6027D2" />
-                <Text style={{ color: '#6027D2', fontWeight: '700', fontSize: 12 }}>Tranh chấp</Text>
+                <Ionicons name="alert-circle-outline" size={16} color="#DC2626" />
+                <Text style={{ color: '#DC2626', fontWeight: '700', fontSize: 12 }}>Khiếu nại</Text>
+              </TouchableOpacity>
+            )}
+
+            {order.status === 'DISPUTED' && (
+              <TouchableOpacity
+                onPress={handleOpenDisputeRoom}
+                activeOpacity={0.8}
+                style={{
+                  flex: 1,
+                  minWidth: 105,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  backgroundColor: '#FEE2E2',
+                  borderWidth: 1,
+                  borderColor: '#EF4444',
+                  paddingVertical: 10,
+                  paddingHorizontal: 12,
+                  borderRadius: 10,
+                }}
+              >
+                <Ionicons name="alert-circle" size={16} color="#DC2626" />
+                <Text style={{ color: '#DC2626', fontWeight: '700', fontSize: 12 }}>Tranh chấp</Text>
               </TouchableOpacity>
             )}
           </View>
+        )}
+
+        {/* Addon Notifications if pending or accepted */}
+        {addons.some((a) => a.status === 'PENDING') && (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => setActiveTab('addons')}
+            style={{
+              backgroundColor: '#FEF3C7',
+              borderWidth: 1,
+              borderColor: '#F59E0B',
+              borderRadius: 12,
+              padding: 12,
+              marginBottom: 12,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10,
+            }}
+          >
+            <Ionicons name="sparkles" size={22} color="#D97706" />
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 13, fontWeight: '700', color: '#92400E' }}>
+                Có {addons.filter((a) => a.status === 'PENDING').length} đề xuất dịch vụ phát sinh từ nhà vườn
+              </Text>
+              <Text style={{ fontSize: 11, color: '#B45309', marginTop: 2 }}>
+                Bấm để xem lý do, ảnh minh chứng & phản hồi đồng ý / từ chối
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#D97706" />
+          </TouchableOpacity>
+        )}
+
+        {addons.some((a) => a.status === 'ACCEPTED') && (
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => setActiveTab('addons')}
+            style={{
+              backgroundColor: '#EFF6FF',
+              borderWidth: 1,
+              borderColor: '#3B82F6',
+              borderRadius: 12,
+              padding: 12,
+              marginBottom: 12,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10,
+            }}
+          >
+            <Ionicons name="qr-code-outline" size={22} color="#2563EB" />
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 13, fontWeight: '700', color: '#1E40AF' }}>
+                Có {addons.filter((a) => a.status === 'ACCEPTED').length} dịch vụ đã duyệt chờ thanh toán
+              </Text>
+              <Text style={{ fontSize: 11, color: '#1D4ED8', marginTop: 2 }}>
+                Bấm để lấy mã VietQR chuyển khoản trong 24 giờ
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#2563EB" />
+          </TouchableOpacity>
         )}
 
         {/* Segmented Tabs */}
@@ -738,10 +1100,14 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
               { key: 'overview', label: 'Thông tin' },
               {
                 key: 'care',
-                label: careReports.length > 0 ? `Cây & Báo cáo (${careReports.length})` : 'Cây & Báo cáo',
+                label: careReports.length > 0 ? `Báo cáo (${careReports.length})` : 'Báo cáo',
               },
-              { key: 'support', label: 'Lịch sử & Hỗ trợ' },
-            ] as Array<{ key: 'overview' | 'care' | 'support'; label: string }>
+              {
+                key: 'addons',
+                label: addons.length > 0 ? `Dịch vụ thêm (${addons.length})` : 'Dịch vụ thêm',
+              },
+              { key: 'support', label: 'Hỗ trợ' },
+            ] as Array<{ key: 'overview' | 'care' | 'addons' | 'support'; label: string }>
           ).map((tab) => {
             const active = activeTab === tab.key;
             return (
@@ -1061,6 +1427,287 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
           </>
         )}
 
+        {activeTab === 'addons' && (
+          <>
+            <View style={styles.card}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="sparkles" size={18} color="#6027D2" />
+                  <Text style={styles.cardTitle}>Dịch vụ phát sinh ngoài gói ({addons.length})</Text>
+                </View>
+              </View>
+
+              {addons.length === 0 ? (
+                <View style={{ padding: 16, alignItems: 'center' }}>
+                  <Text style={styles.emptyText}>
+                    Đơn hàng hiện chưa có dịch vụ phát sinh nào.
+                  </Text>
+                  <Text style={{ fontSize: 11, color: '#A0AEC0', textAlign: 'center', marginTop: 4 }}>
+                    Nếu trong lúc chăm sóc phát sinh vấn đề (thay chậu, trị bệnh...), nhà vườn sẽ gửi đề xuất tại đây.
+                  </Text>
+                </View>
+              ) : (
+                addons.map((ad) => {
+                  const statusInfo =
+                    ad.status === 'PENDING'
+                      ? { label: 'Chờ bạn duyệt (48h)', color: '#D97706', bg: '#FEF3C7' }
+                      : ad.status === 'ACCEPTED'
+                        ? { label: 'Chờ thanh toán (24h)', color: '#2563EB', bg: '#EFF6FF' }
+                        : ad.status === 'PAID'
+                          ? { label: 'Đã thanh toán - Đang làm', color: '#6027D2', bg: '#F3E8FF' }
+                          : ad.status === 'DONE'
+                            ? { label: 'Đã hoàn tất', color: '#059669', bg: '#ECFDF5' }
+                            : ad.status === 'REJECTED'
+                              ? { label: 'Bạn đã từ chối', color: '#DC2626', bg: '#FEF2F2' }
+                              : { label: 'Đã hết hạn', color: '#6B7280', bg: '#F3F4F6' };
+
+                  const isResponding = respondingAddonId === ad.id;
+
+                  return (
+                    <View
+                      key={ad.id}
+                      style={{
+                        backgroundColor: '#FFFFFF',
+                        borderRadius: 12,
+                        padding: 14,
+                        marginBottom: 14,
+                        borderWidth: 1,
+                        borderColor: '#E2E8F0',
+                      }}
+                    >
+                      {/* Top Header */}
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 8 }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 14, fontWeight: '700', color: '#1A202C' }}>
+                            {ad.title}
+                          </Text>
+                          <Text style={{ fontSize: 11, color: '#6027D2', fontWeight: '600', marginTop: 2 }}>
+                            Mã đề xuất: #{ad.addonCode}
+                          </Text>
+                          <Text style={{ fontSize: 11, color: '#718096', marginTop: 1 }}>
+                            Áp dụng: {ad.plant?.name ? `Chậu ${ad.plant.name}` : 'Toàn bộ đơn hàng'}
+                          </Text>
+                        </View>
+                        <View style={{ backgroundColor: statusInfo.bg, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 }}>
+                          <Text style={{ fontSize: 11, fontWeight: '700', color: statusInfo.color }}>
+                            {statusInfo.label}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Pricing Breakdown */}
+                      <View style={{ backgroundColor: '#F8FAFC', borderRadius: 8, padding: 10, marginVertical: 8 }}>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <Text style={{ fontSize: 12, color: '#4A5568' }}>Giá dịch vụ đề xuất:</Text>
+                          <Text style={{ fontSize: 12, fontWeight: '600', color: '#1A202C' }}>
+                            {Number(ad.price || 0).toLocaleString('vi-VN')} VNĐ
+                          </Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <Text style={{ fontSize: 11, color: '#718096' }}>Phí nền tảng (6%):</Text>
+                          <Text style={{ fontSize: 11, color: '#718096' }}>
+                            +{Number(ad.customerFee || 0).toLocaleString('vi-VN')} VNĐ
+                          </Text>
+                        </View>
+                        <View style={{ height: 1, backgroundColor: '#E2E8F0', marginVertical: 4 }} />
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                          <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C' }}>Tổng thanh toán:</Text>
+                          <Text style={{ fontSize: 13, fontWeight: '800', color: '#6027D2' }}>
+                            {Number(ad.amountDue || ad.price).toLocaleString('vi-VN')} VNĐ
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Reason & Photos */}
+                      <Text style={{ fontSize: 12, color: '#4A5568', lineHeight: 18, marginTop: 4 }}>
+                        <Text style={{ fontWeight: '700' }}>Lý do phát sinh: </Text>
+                        {ad.reason}
+                      </Text>
+
+                      {Array.isArray(ad.photoUrls) && ad.photoUrls.length > 0 && (
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 8 }}>
+                          {ad.photoUrls.map((url, pIdx) => (
+                            <TouchableOpacity
+                              key={`${ad.id}-p-${pIdx}`}
+                              activeOpacity={0.85}
+                              onPress={() => setPreviewImageUrl(url)}
+                            >
+                              <Image source={{ uri: url }} style={styles.photoThumb} />
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                      )}
+
+                      {/* If Customer Note exists */}
+                      {ad.customerNote ? (
+                        <View style={{ marginTop: 8, padding: 8, borderRadius: 8, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA' }}>
+                          <Text style={{ fontSize: 11, color: '#991B1B' }}>
+                            <Text style={{ fontWeight: '700' }}>Ghi chú của bạn: </Text>
+                            {ad.customerNote}
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {/* Completed Result Photos & Note */}
+                      {ad.status === 'DONE' && (
+                        <View style={{ marginTop: 10, padding: 10, borderRadius: 8, backgroundColor: '#ECFDF5', borderWidth: 1, borderColor: '#A7F3D0' }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4, flexWrap: 'wrap', gap: 4 }}>
+                            <Text style={{ fontSize: 12, fontWeight: '700', color: '#065F46' }}>
+                              ✓ Đã hoàn thành ({ad.doneAt ? new Date(ad.doneAt).toLocaleDateString('vi-VN') : ''})
+                            </Text>
+                            {ad.donePlantHealth ? (
+                              <View style={{
+                                paddingHorizontal: 6,
+                                paddingVertical: 2,
+                                borderRadius: 4,
+                                backgroundColor:
+                                  ad.donePlantHealth === 'GOOD'
+                                    ? '#DEF7EC'
+                                    : ad.donePlantHealth === 'AVERAGE'
+                                    ? '#FEF08A'
+                                    : '#FDE8E8',
+                              }}>
+                                <Text style={{
+                                  fontSize: 10,
+                                  fontWeight: '700',
+                                  color:
+                                    ad.donePlantHealth === 'GOOD'
+                                      ? '#03543F'
+                                      : ad.donePlantHealth === 'AVERAGE'
+                                      ? '#713F12'
+                                      : '#9B1C1C',
+                                }}>
+                                  {ad.donePlantHealth === 'GOOD'
+                                    ? '🌿 Cây tốt'
+                                    : ad.donePlantHealth === 'AVERAGE'
+                                    ? '🌱 Trung bình'
+                                    : '🥀 Cây kém'}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </View>
+                          {ad.doneNote ? (
+                            <Text style={{ fontSize: 11, color: '#047857', marginBottom: 6 }}>
+                              {ad.doneNote}
+                            </Text>
+                          ) : null}
+                          {Array.isArray(ad.donePhotoUrls) && ad.donePhotoUrls.length > 0 && (
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                              {ad.donePhotoUrls.map((url, dIdx) => (
+                                <TouchableOpacity
+                                  key={`${ad.id}-done-${dIdx}`}
+                                  activeOpacity={0.85}
+                                  onPress={() => setPreviewImageUrl(url)}
+                                >
+                                  <Image source={{ uri: url }} style={styles.photoThumb} />
+                                </TouchableOpacity>
+                              ))}
+                            </ScrollView>
+                          )}
+                        </View>
+                      )}
+
+                      {/* Actions for PENDING status */}
+                      {ad.status === 'PENDING' && (
+                        <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#EDF2F7' }}>
+                          <Text style={{ fontSize: 11, color: '#D97706', marginBottom: 8 }}>
+                            Hạn phản hồi: {new Date(ad.respondDueAt).toLocaleString('vi-VN')}
+                          </Text>
+
+                          <TextInput
+                            value={addonNotes[ad.id] || ''}
+                            onChangeText={(text) =>
+                              setAddonNotes((prev) => ({ ...prev, [ad.id]: text }))
+                            }
+                            placeholder="Ghi chú phản hồi (tuỳ chọn)..."
+                            style={{
+                              borderWidth: 1,
+                              borderColor: '#E2E8F0',
+                              borderRadius: 8,
+                              padding: 8,
+                              fontSize: 12,
+                              color: '#1A202C',
+                              marginBottom: 10,
+                              backgroundColor: '#FFFFFF',
+                            }}
+                          />
+
+                          <View style={{ flexDirection: 'row', gap: 10 }}>
+                            <TouchableOpacity
+                              disabled={isResponding}
+                              onPress={() => handleRespondAddon(ad.id, 'REJECT')}
+                              style={{
+                                flex: 1,
+                                paddingVertical: 10,
+                                borderRadius: 8,
+                                borderWidth: 1,
+                                borderColor: '#CBD5E0',
+                                backgroundColor: '#FFFFFF',
+                                alignItems: 'center',
+                              }}
+                            >
+                              <Text style={{ fontSize: 13, fontWeight: '700', color: '#4A5568' }}>
+                                Từ chối
+                              </Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              disabled={isResponding}
+                              onPress={() => handleRespondAddon(ad.id, 'ACCEPT')}
+                              style={{
+                                flex: 1.5,
+                                paddingVertical: 10,
+                                borderRadius: 8,
+                                backgroundColor: '#6027D2',
+                                alignItems: 'center',
+                              }}
+                            >
+                              {isResponding ? (
+                                <ActivityIndicator size="small" color="#FFFFFF" />
+                              ) : (
+                                <Text style={{ fontSize: 13, fontWeight: '700', color: '#FFFFFF' }}>
+                                  Đồng ý đề xuất
+                                </Text>
+                              )}
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      )}
+
+                      {/* Action for ACCEPTED status: Pay via QR */}
+                      {ad.status === 'ACCEPTED' && (
+                        <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#EDF2F7' }}>
+                          <Text style={{ fontSize: 11, color: '#2563EB', marginBottom: 8 }}>
+                            Hạn chuyển khoản: {ad.paymentDueAt ? new Date(ad.paymentDueAt).toLocaleString('vi-VN') : '24 giờ'}
+                          </Text>
+
+                          <TouchableOpacity
+                            onPress={() => handleOpenAddonPayment(ad)}
+                            style={{
+                              backgroundColor: '#2563EB',
+                              paddingVertical: 11,
+                              borderRadius: 8,
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              gap: 6,
+                            }}
+                          >
+                            <Ionicons name="qr-code-outline" size={18} color="#FFFFFF" />
+                            <Text style={{ fontSize: 13, fontWeight: '700', color: '#FFFFFF' }}>
+                              Quét VietQR thanh toán ({Number(ad.amountDue).toLocaleString('vi-VN')}đ)
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          </>
+        )}
+
         {activeTab === 'support' && (
           <>
         {/* Call History Section */}
@@ -1119,20 +1766,18 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
           </View>
         )}
 
-        {['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'DISPUTED'].includes(order.status) && (
-          <View style={[styles.card, { borderColor: '#DDD6FE', borderWidth: 1, backgroundColor: '#FAF8FE' }]}>
-            <Text style={[styles.cardTitle, { color: '#1A202C', marginBottom: 6 }]}>
-              Khiếu nại / Tranh chấp
+        {order.status === 'RETURN_AWAITING_CONFIRM' && (
+          <View style={[styles.card, { borderColor: '#FCA5A5', borderWidth: 1, backgroundColor: '#FEF2F2' }]}>
+            <Text style={[styles.cardTitle, { color: '#991B1B', marginBottom: 6 }]}>
+              Kiểm tra cây & Khiếu nại (trong 48h)
             </Text>
-            <Text style={{ fontSize: 13, color: '#4A5568', marginBottom: 12, lineHeight: 18 }}>
-              Nếu cây bàn giao không đúng mô tả hoặc có hư hại trong quá trình giao nhận/chăm sóc, bạn có thể mở tranh chấp kèm ảnh bằng chứng.
+            <Text style={{ fontSize: 13, color: '#7F1D1D', marginBottom: 12, lineHeight: 18 }}>
+              Nếu cây nhận lại bị hư hại, thối rễ hoặc không đúng mô tả, bạn có quyền mở tranh chấp để yêu cầu hoàn tiền công và bồi thường cây.
             </Text>
             <TouchableOpacity
-              onPress={handleOpenDisputeModal}
+              onPress={handleStartOpenDispute}
               style={{
-                backgroundColor: '#FFFFFF',
-                borderWidth: 1,
-                borderColor: '#DDD6FE',
+                backgroundColor: '#DC2626',
                 paddingVertical: 11,
                 borderRadius: 10,
                 flexDirection: 'row',
@@ -1141,9 +1786,42 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                 gap: 6,
               }}
             >
-              <Ionicons name="alert-circle-outline" size={18} color="#6027D2" />
-              <Text style={{ color: '#6027D2', fontWeight: '700', fontSize: 14 }}>
-                Xem / Mở tranh chấp
+              <Ionicons name="alert-circle-outline" size={18} color="#FFFFFF" />
+              <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>
+                Mở khiếu nại / Tranh chấp
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {order.status === 'DISPUTED' && (
+          <View style={[styles.card, { borderColor: '#DDD6FE', borderWidth: 1, backgroundColor: '#FAF8FE' }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <Text style={[styles.cardTitle, { color: '#6027D2', marginBottom: 0 }]}>
+                Đang giải quyết tranh chấp (3 ngày)
+              </Text>
+              <View style={{ backgroundColor: '#FEE2E2', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6 }}>
+                <Text style={{ color: '#DC2626', fontSize: 11, fontWeight: '700' }}>DISPUTED</Text>
+              </View>
+            </View>
+            <Text style={{ fontSize: 13, color: '#4B4764', marginBottom: 12, lineHeight: 18 }}>
+              Đơn hàng đang trong quá trình tự thương lượng giữa bạn và nhà vườn. Bạn có thể xem đề xuất bồi thường, gửi đề xuất mới hoặc rút khiếu nại.
+            </Text>
+            <TouchableOpacity
+              onPress={handleOpenDisputeRoom}
+              style={{
+                backgroundColor: '#6027D2',
+                paddingVertical: 11,
+                borderRadius: 10,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+              }}
+            >
+              <Ionicons name="chatbubbles-outline" size={18} color="#FFFFFF" />
+              <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>
+                Xem hồ sơ tranh chấp & Thương lượng
               </Text>
             </TouchableOpacity>
           </View>
@@ -1758,22 +2436,135 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
         </SafeAreaView>
       </Modal>
 
-      {/* Dispute Modal */}
+      {/* Addon VietQR Payment Modal */}
       <Modal
-        visible={disputeModalVisible}
+        visible={addonPaymentModalVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setAddonPaymentModalVisible(false)}
+      >
+        <SafeAreaView style={styles.modalSafeArea}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity
+              onPress={() => setAddonPaymentModalVisible(false)}
+              style={styles.modalCloseBtn}
+            >
+              <Ionicons name="close" size={24} color="#1A202C" />
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Thanh toán dịch vụ thêm</Text>
+            <View style={{ width: 40 }} />
+          </View>
+
+          {addonQrLoading ? (
+            <View style={styles.modalLoadingArea}>
+              <ActivityIndicator size="large" color="#6027D2" />
+              <Text style={styles.loadingText}>Đang tạo mã VietQR dịch vụ thêm...</Text>
+            </View>
+          ) : selectedAddonQr ? (
+            <ScrollView style={styles.modalScrollView} contentContainerStyle={styles.paymentScrollContent}>
+              {/* QR Image Box */}
+              <View style={styles.qrContainer}>
+                <Image
+                  source={{ uri: selectedAddonQr.qrImageUrl }}
+                  style={styles.qrImage}
+                  resizeMode="contain"
+                />
+                <Text style={styles.qrScanGuide}>Quét mã QR bằng ứng dụng ngân hàng bất kỳ</Text>
+              </View>
+
+              {/* Transfer Details Card */}
+              <View style={styles.paymentCard}>
+                <Text style={styles.paymentCardTitle}>
+                  {selectedAddonForPayment?.title || 'Thông tin chuyển khoản'}
+                </Text>
+
+                <View style={styles.payInfoRow}>
+                  <Text style={styles.payInfoLabel}>Ngân hàng nhận:</Text>
+                  <Text style={styles.payInfoValue}>{selectedAddonQr.bankBin || 'Hệ thống Napas'}</Text>
+                </View>
+
+                <View style={styles.payInfoRow}>
+                  <Text style={styles.payInfoLabel}>Số tài khoản:</Text>
+                  <Text style={[styles.payInfoValue, styles.highlightValue]} selectable>
+                    {selectedAddonQr.bankAccountNumber}
+                  </Text>
+                </View>
+
+                <View style={styles.payInfoRow}>
+                  <Text style={styles.payInfoLabel}>Chủ tài khoản:</Text>
+                  <Text style={styles.payInfoValue} selectable>
+                    {selectedAddonQr.bankAccountName}
+                  </Text>
+                </View>
+
+                <View style={styles.payInfoRow}>
+                  <Text style={styles.payInfoLabel}>Số tiền cần chuyển:</Text>
+                  <Text style={[styles.payInfoValue, styles.amountHighlight]} selectable>
+                    {Number(selectedAddonQr.amount || 0).toLocaleString('vi-VN')} VNĐ
+                  </Text>
+                </View>
+
+                <View style={styles.payBreakdownBox}>
+                  <Ionicons name="information-circle" size={16} color="#6027D2" />
+                  <Text style={styles.payBreakdownText}>
+                    Gồm: Giá dịch vụ ({Number(selectedAddonForPayment?.price || 0).toLocaleString('vi-VN')}đ) + Phí nền tảng 6% ({Number(selectedAddonForPayment?.customerFee || 0).toLocaleString('vi-VN')}đ)
+                  </Text>
+                </View>
+
+                <View style={[styles.payInfoRow, styles.memoBox]}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.memoLabel}>Nội dung chuyển khoản (bắt buộc):</Text>
+                    <Text style={styles.memoValue} selectable>
+                      {selectedAddonQr.transferContent}
+                    </Text>
+                    <Text style={styles.memoWarning}>
+                      * Vui lòng giữ nguyên mã {selectedAddonQr.transferContent} để SePay tự động xác nhận tiền add-on.
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Check Payment Button */}
+              <TouchableOpacity
+                style={[styles.checkPaymentBtn, { backgroundColor: '#6027D2' }]}
+                onPress={handleCheckAddonPaymentStatus}
+                disabled={checkingAddonPayment}
+                activeOpacity={0.85}
+              >
+                {checkingAddonPayment ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <>
+                    <Ionicons name="refresh-outline" size={20} color="#FFFFFF" />
+                    <Text style={styles.checkPaymentBtnText}>Tôi đã chuyển khoản - Kiểm tra trạng thái</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          ) : (
+            <View style={styles.modalLoadingArea}>
+              <Text style={styles.errorText}>Không thể tạo thông tin thanh toán.</Text>
+            </View>
+          )}
+        </SafeAreaView>
+      </Modal>
+
+      {/* Modal 1: Mở tranh chấp mới (dành cho Khách hàng lúc nhận lại cây) */}
+      <Modal
+        visible={openDisputeModalVisible}
         animationType="slide"
         presentationStyle="pageSheet"
         onRequestClose={() => {
-          if (!disputeSubmitting) setDisputeModalVisible(false);
+          if (!disputeSubmitting) setOpenDisputeModalVisible(false);
         }}
       >
-        <SafeAreaView style={{ flex: 1, backgroundColor: '#F7FAFC' }}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#F8F9FA' }}>
           <View style={styles.modalHeader}>
             <Text style={{ fontSize: 16, fontWeight: '700', color: '#1A202C' }}>
-              Tranh chấp đơn #{order.orderCode || '---'}
+              Mở khiếu nại tranh chấp
             </Text>
             <TouchableOpacity
-              onPress={() => !disputeSubmitting && setDisputeModalVisible(false)}
+              onPress={() => !disputeSubmitting && setOpenDisputeModalVisible(false)}
               style={{ padding: 6 }}
             >
               <Ionicons name="close" size={24} color="#4A5568" />
@@ -1781,216 +2572,593 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
           </View>
 
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
-            <Text style={{ fontSize: 13, fontWeight: '700', color: '#4A5568', marginBottom: 10 }}>
-              LỊCH SỬ TRANH CHẤP CỦA ĐƠN
-            </Text>
+            <View style={{ backgroundColor: '#FEF2F2', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#FCA5A5', marginBottom: 16 }}>
+              <Text style={{ fontSize: 12, color: '#991B1B', lineHeight: 18 }}>
+                ⚠️ Bạn có 48 giờ sau khi nhận lại cây để mở tranh chấp nếu cây bị hư hại, chết hoặc không đúng chậu. Sau khi gửi, hai bên sẽ có 3 ngày để tự thương lượng bồi hoàn.
+              </Text>
+            </View>
 
-            {disputesLoading ? (
-              <ActivityIndicator color="#6027D2" style={{ marginVertical: 20 }} />
-            ) : disputes.length === 0 ? (
-              <View style={{ padding: 16, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 }}>
-                <Text style={{ fontSize: 13, color: '#718096', textAlign: 'center' }}>
-                  Chưa có tranh chấp nào cho đơn hàng này.
-                </Text>
-              </View>
-            ) : (
-              disputes.map((d) => {
-                const reasonLabel =
-                  d.reason === 'MISMATCHED_PLANT'
-                    ? 'Sai cây / Không đúng mô tả'
-                    : d.reason === 'DAMAGE'
-                      ? 'Cây hư hại'
-                      : d.reason === 'PICKUP'
-                        ? 'Vấn đề giao nhận'
-                        : 'Khác';
+            {/* Chọn cây bị khiếu nại */}
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C', marginBottom: 8 }}>
+              1. Chọn cây lan bị khiếu nại (tối thiểu 1 cây) *
+            </Text>
+            <View style={{ marginBottom: 14 }}>
+              {(order.plants || []).map((pl: any, idx: number) => {
+                const isSelected = selectedDisputePlantIds.includes(pl.id);
                 return (
-                  <View
-                    key={d.id}
+                  <TouchableOpacity
+                    key={pl.id || idx}
+                    onPress={() => {
+                      if (isSelected) {
+                        if (selectedDisputePlantIds.length > 1) {
+                          setSelectedDisputePlantIds((prev) => prev.filter((id) => id !== pl.id));
+                        }
+                      } else {
+                        setSelectedDisputePlantIds((prev) => [...prev, pl.id]);
+                      }
+                    }}
                     style={{
-                      backgroundColor: '#FFFFFF',
-                      borderRadius: 12,
-                      padding: 14,
-                      marginBottom: 12,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      padding: 12,
+                      backgroundColor: isSelected ? '#EFF6FF' : '#FFFFFF',
+                      borderRadius: 10,
                       borderWidth: 1,
-                      borderColor: '#E2E8F0',
+                      borderColor: isSelected ? '#3B82F6' : '#E2E8F0',
+                      marginBottom: 8,
                     }}
                   >
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C' }}>{reasonLabel}</Text>
-                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#D97706' }}>{d.status}</Text>
+                    <Ionicons
+                      name={isSelected ? 'checkbox' : 'square-outline'}
+                      size={20}
+                      color={isSelected ? '#2563EB' : '#A0AEC0'}
+                      style={{ marginRight: 10 }}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C' }}>
+                        🌿 {pl.name || `Chậu lan #${idx + 1}`}
+                      </Text>
+                      {pl.customNote ? (
+                        <Text style={{ fontSize: 11, color: '#718096', marginTop: 2 }}>{pl.customNote}</Text>
+                      ) : null}
                     </View>
-                    <Text style={{ fontSize: 13, color: '#4A5568', lineHeight: 19 }}>{d.description}</Text>
-                    {Array.isArray(d.evidence) && d.evidence.length > 0 && (
-                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 10 }}>
-                        {d.evidence.map((ev, idx) => (
-                          <TouchableOpacity
-                            key={`${d.id}-ev-${idx}`}
-                            activeOpacity={0.85}
-                            onPress={() => setPreviewImageUrl(ev.photoUrl)}
-                          >
-                            <Image
-                              source={{ uri: ev.photoUrl }}
-                              style={{ width: 72, height: 72, borderRadius: 8, marginRight: 8, backgroundColor: '#EDF2F7' }}
-                            />
-                          </TouchableOpacity>
-                        ))}
-                      </ScrollView>
-                    )}
-                    {d.resolution ? (
-                      <View style={{ marginTop: 10, padding: 10, borderRadius: 8, backgroundColor: '#ECFDF5', borderWidth: 1, borderColor: '#A7F3D0' }}>
-                        <Text style={{ fontSize: 12, color: '#065F46', fontWeight: '600' }}>
-                          Kết luận của Admin: {d.resolution}
-                        </Text>
-                      </View>
-                    ) : null}
-                  </View>
+                  </TouchableOpacity>
                 );
-              })
-            )}
+              })}
+            </View>
 
-            {['HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE'].includes(order.status) && (
-              <View style={{ backgroundColor: '#FFFFFF', borderRadius: 12, padding: 14, marginTop: 8, borderWidth: 1, borderColor: '#E2E8F0' }}>
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#1A202C', marginBottom: 10 }}>
-                  Mở tranh chấp mới
-                </Text>
+            {/* Lý do khiếu nại */}
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C', marginBottom: 6 }}>
+              2. Tiêu đề / Lý do khiếu nại *
+            </Text>
+            <TextInput
+              value={disputeReasonText}
+              onChangeText={setDisputeReasonText}
+              placeholder="VD: Cây bị thối rễ, héo lá không cứu được..."
+              style={{
+                backgroundColor: '#FFFFFF',
+                borderWidth: 1,
+                borderColor: '#CBD5E0',
+                borderRadius: 10,
+                padding: 12,
+                fontSize: 13,
+                color: '#1A202C',
+                marginBottom: 14,
+              }}
+            />
 
-                <Text style={{ fontSize: 12, fontWeight: '600', color: '#4A5568', marginBottom: 6 }}>
-                  Lý do tranh chấp
-                </Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-                  {(
-                    [
-                      { value: 'MISMATCHED_PLANT', label: 'Sai cây' },
-                      { value: 'DAMAGE', label: 'Hư hại' },
-                      { value: 'PICKUP', label: 'Giao nhận' },
-                      { value: 'OTHER', label: 'Khác' },
-                    ] as Array<{ value: DisputeReason; label: string }>
-                  ).map((opt) => {
-                    const selected = disputeReason === opt.value;
-                    return (
-                      <TouchableOpacity
-                        key={opt.value}
-                        onPress={() => setDisputeReason(opt.value)}
-                        style={{
-                          paddingHorizontal: 12,
-                          paddingVertical: 7,
-                          borderRadius: 20,
-                          backgroundColor: selected ? '#6027D2' : '#EDF2F7',
-                        }}
-                      >
-                        <Text style={{ fontSize: 12, fontWeight: '600', color: selected ? '#FFFFFF' : '#4A5568' }}>
-                          {opt.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+            {/* Mô tả chi tiết */}
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C', marginBottom: 6 }}>
+              3. Mô tả chi tiết vấn đề gặp phải *
+            </Text>
+            <TextInput
+              multiline
+              numberOfLines={4}
+              value={disputeDescription}
+              onChangeText={setDisputeDescription}
+              placeholder="Mô tả cụ thể tình trạng lúc nhận cây, đối chiếu với ảnh ban đầu để làm căn cứ thương lượng..."
+              style={{
+                backgroundColor: '#FFFFFF',
+                borderWidth: 1,
+                borderColor: '#CBD5E0',
+                borderRadius: 10,
+                padding: 12,
+                minHeight: 90,
+                textAlignVertical: 'top',
+                fontSize: 13,
+                color: '#1A202C',
+                marginBottom: 14,
+              }}
+            />
 
-                <Text style={{ fontSize: 12, fontWeight: '600', color: '#4A5568', marginBottom: 6 }}>
-                  Mô tả chi tiết
-                </Text>
-                <TextInput
-                  multiline
-                  numberOfLines={4}
-                  value={disputeDescription}
-                  onChangeText={setDisputeDescription}
-                  placeholder="Mô tả rõ tình trạng sai lệch, hư hại hoặc vấn đề gặp phải..."
-                  style={{
-                    borderWidth: 1,
-                    borderColor: '#CBD5E0',
-                    borderRadius: 10,
-                    padding: 10,
-                    minHeight: 90,
-                    textAlignVertical: 'top',
-                    fontSize: 13,
-                    color: '#1A202C',
-                    marginBottom: 12,
-                  }}
-                />
-
-                <Text style={{ fontSize: 12, fontWeight: '600', color: '#4A5568', marginBottom: 6 }}>
-                  Ảnh bằng chứng (tối thiểu 1 ảnh)
-                </Text>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-                  {disputeEvidence.map((ev, idx) => (
-                    <View key={`new-ev-${idx}`} style={{ position: 'relative' }}>
-                      <TouchableOpacity
-                        activeOpacity={0.85}
-                        onPress={() => setPreviewImageUrl(ev.photoUrl)}
-                      >
-                        <Image
-                          source={{ uri: ev.photoUrl }}
-                          style={{ width: 68, height: 68, borderRadius: 8, backgroundColor: '#EDF2F7' }}
-                        />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        onPress={() => setDisputeEvidence((prev) => prev.filter((_, i) => i !== idx))}
-                        style={{
-                          position: 'absolute',
-                          top: -6,
-                          right: -6,
-                          width: 20,
-                          height: 20,
-                          borderRadius: 10,
-                          backgroundColor: '#DC2626',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>×</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ))}
-
+            {/* Ảnh bằng chứng */}
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C', marginBottom: 6 }}>
+              4. Ảnh chụp bằng chứng thực tế (tối thiểu 1 ảnh, tối đa 10 ảnh) *
+            </Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+              {disputeEvidence.map((ev, idx) => (
+                <View key={`ev-${idx}`} style={{ position: 'relative' }}>
+                  <Image
+                    source={{ uri: ev.photoUrl }}
+                    style={{ width: 72, height: 72, borderRadius: 8, backgroundColor: '#EDF2F7' }}
+                  />
                   <TouchableOpacity
-                    onPress={handlePickDisputePhoto}
-                    disabled={disputeUploading}
+                    onPress={() => setDisputeEvidence((prev) => prev.filter((_, i) => i !== idx))}
                     style={{
-                      width: 68,
-                      height: 68,
-                      borderRadius: 8,
-                      borderWidth: 1,
-                      borderStyle: 'dashed',
-                      borderColor: '#6027D2',
+                      position: 'absolute',
+                      top: -6,
+                      right: -6,
+                      width: 22,
+                      height: 22,
+                      borderRadius: 11,
+                      backgroundColor: '#DC2626',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      backgroundColor: '#FAF8FE',
                     }}
                   >
-                    {disputeUploading ? (
-                      <ActivityIndicator size="small" color="#6027D2" />
-                    ) : (
-                      <>
-                        <Ionicons name="camera-outline" size={20} color="#6027D2" />
-                        <Text style={{ fontSize: 10, color: '#6027D2', fontWeight: '600', marginTop: 2 }}>
-                          Chụp ảnh
+                    <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>×</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+
+              {disputeEvidence.length < 10 && (
+                <TouchableOpacity
+                  onPress={() => handlePickDisputePhoto(false)}
+                  disabled={disputeUploading}
+                  style={{
+                    width: 72,
+                    height: 72,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderStyle: 'dashed',
+                    borderColor: '#DC2626',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: '#FEF2F2',
+                  }}
+                >
+                  {disputeUploading ? (
+                    <ActivityIndicator size="small" color="#DC2626" />
+                  ) : (
+                    <>
+                      <Ionicons name="camera-outline" size={22} color="#DC2626" />
+                      <Text style={{ fontSize: 10, color: '#DC2626', fontWeight: '600', marginTop: 2 }}>
+                        Chụp ảnh
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* 5. Thông tin tài khoản ngân hàng nhận tiền bồi hoàn */}
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C', marginBottom: 6 }}>
+              5. Tài khoản ngân hàng nhận tiền bồi hoàn *
+            </Text>
+            <View
+              style={{
+                backgroundColor: '#F8FAFC',
+                padding: 14,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: '#E2E8F0',
+                marginBottom: 20,
+              }}
+            >
+              <Text style={{ fontSize: 12, color: '#64748B', lineHeight: 17, marginBottom: 12 }}>
+                ℹ️ Hệ thống sẽ chuyển tiền hoàn gói hoặc tiền bồi thường (nếu có) vào tài khoản này sau khi kết thúc thương lượng hoặc có phán quyết từ Admin.
+              </Text>
+
+              <View style={{ marginBottom: 10 }}>
+                <Text style={{ fontSize: 12, fontWeight: '600', color: '#334155', marginBottom: 4 }}>
+                  Tên ngân hàng *:
+                </Text>
+                <TextInput
+                  value={disputeBankName}
+                  onChangeText={setDisputeBankName}
+                  placeholder="Ví dụ: Vietcombank, MB Bank, Techcombank..."
+                  style={{
+                    backgroundColor: '#FFFFFF',
+                    borderWidth: 1,
+                    borderColor: '#CBD5E1',
+                    borderRadius: 8,
+                    paddingHorizontal: 12,
+                    paddingVertical: 9,
+                    fontSize: 13,
+                    color: '#1A202C',
+                  }}
+                />
+              </View>
+
+              <View style={{ marginBottom: 10 }}>
+                <Text style={{ fontSize: 12, fontWeight: '600', color: '#334155', marginBottom: 4 }}>
+                  Số tài khoản *:
+                </Text>
+                <TextInput
+                  value={disputeBankAccount}
+                  onChangeText={setDisputeBankAccount}
+                  keyboardType="numeric"
+                  placeholder="Ví dụ: 0123456789"
+                  style={{
+                    backgroundColor: '#FFFFFF',
+                    borderWidth: 1,
+                    borderColor: '#CBD5E1',
+                    borderRadius: 8,
+                    paddingHorizontal: 12,
+                    paddingVertical: 9,
+                    fontSize: 13,
+                    color: '#1A202C',
+                  }}
+                />
+              </View>
+
+              <View>
+                <Text style={{ fontSize: 12, fontWeight: '600', color: '#334155', marginBottom: 4 }}>
+                  Tên chủ tài khoản (in hoa không dấu) *:
+                </Text>
+                <TextInput
+                  value={disputeBankHolder}
+                  onChangeText={setDisputeBankHolder}
+                  autoCapitalize="characters"
+                  placeholder="Ví dụ: NGUYEN VAN A"
+                  style={{
+                    backgroundColor: '#FFFFFF',
+                    borderWidth: 1,
+                    borderColor: '#CBD5E1',
+                    borderRadius: 8,
+                    paddingHorizontal: 12,
+                    paddingVertical: 9,
+                    fontSize: 13,
+                    color: '#1A202C',
+                  }}
+                />
+              </View>
+            </View>
+
+            <TouchableOpacity
+              onPress={handleSubmitOpenDispute}
+              disabled={disputeSubmitting}
+              style={{
+                backgroundColor: '#DC2626',
+                paddingVertical: 14,
+                borderRadius: 12,
+                alignItems: 'center',
+              }}
+            >
+              {disputeSubmitting ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 15 }}>
+                  Xác nhận mở khiếu nại tranh chấp
+                </Text>
+              )}
+            </TouchableOpacity>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Modal 2: Hồ sơ tranh chấp & Phòng thương lượng (Dispute Room) */}
+      <Modal
+        visible={disputeRoomVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setDisputeRoomVisible(false)}
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#F8F9FA' }}>
+          <View style={styles.modalHeader}>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: '#1A202C' }}>
+              Hồ sơ tranh chấp #{order.orderCode || '---'}
+            </Text>
+            <TouchableOpacity onPress={() => setDisputeRoomVisible(false)} style={{ padding: 6 }}>
+              <Ionicons name="close" size={24} color="#4A5568" />
+            </TouchableOpacity>
+          </View>
+
+          {disputeLoading ? (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <ActivityIndicator size="large" color="#6027D2" />
+              <Text style={{ marginTop: 10, color: '#718096', fontSize: 13 }}>Đang tải hồ sơ tranh chấp...</Text>
+            </View>
+          ) : !disputeDetail ? (
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+              <Text style={{ color: '#718096', fontSize: 13 }}>Chưa có thông tin tranh chấp.</Text>
+            </View>
+          ) : (
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, paddingBottom: 40 }}>
+              {/* Status Banner */}
+              <View
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  backgroundColor:
+                    disputeDetail.status === 'NEGOTIATING'
+                      ? '#FEF3C7'
+                      : disputeDetail.status === 'ADMIN_REVIEW'
+                      ? '#F3E8FF'
+                      : '#D1FAE5',
+                  borderColor:
+                    disputeDetail.status === 'NEGOTIATING'
+                      ? '#FCD34D'
+                      : disputeDetail.status === 'ADMIN_REVIEW'
+                      ? '#D8B4FE'
+                      : '#6EE7B7',
+                  marginBottom: 14,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 13,
+                    fontWeight: '700',
+                    color:
+                      disputeDetail.status === 'NEGOTIATING'
+                        ? '#92400E'
+                        : disputeDetail.status === 'ADMIN_REVIEW'
+                        ? '#6B21A8'
+                        : '#065F46',
+                    marginBottom: 4,
+                  }}
+                >
+                  Trạng thái:{' '}
+                  {disputeDetail.status === 'NEGOTIATING'
+                    ? '⚡ Đang trong 3 ngày tự thương lượng'
+                    : disputeDetail.status === 'ADMIN_REVIEW'
+                    ? '⚖️ Đang chờ Ban quản trị phân xử'
+                    : '✓ Tranh chấp đã được giải quyết'}
+                </Text>
+                {disputeDetail.status === 'NEGOTIATING' && disputeDetail.negotiationDueAt ? (
+                  <Text style={{ fontSize: 11, color: '#92400E' }}>
+                    Hạn chót: {new Date(disputeDetail.negotiationDueAt).toLocaleString('vi-VN')}. Quá hạn sẽ chuyển lên Admin phân xử.
+                  </Text>
+                ) : null}
+                {disputeDetail.status === 'RESOLVED' && disputeDetail.customerReceives ? (
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#065F46', marginTop: 2 }}>
+                    Bạn nhận bồi hoàn: {Number(disputeDetail.customerReceives).toLocaleString('vi-VN')} VNĐ
+                  </Text>
+                ) : null}
+                {disputeDetail.status === 'RESOLVED' && disputeDetail.declaredForfeitAmount && Number(disputeDetail.declaredForfeitAmount) > 0 ? (
+                  <Text style={{ fontSize: 11, fontWeight: '600', color: '#B91C1C', marginTop: 3 }}>
+                    🛡️ Tiền bảo đảm khai giá bị phạt (chuyển cho vườn do khiếu nại sai): -{Number(disputeDetail.declaredForfeitAmount).toLocaleString('vi-VN')} VNĐ
+                  </Text>
+                ) : null}
+              </View>
+
+              {/* Thông tin khiếu nại */}
+              <View style={{ backgroundColor: '#FFFFFF', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 14 }}>
+                <Text style={{ fontSize: 11, color: '#718096', textTransform: 'uppercase', fontWeight: '700', marginBottom: 4 }}>
+                  Lý do khiếu nại của bạn:
+                </Text>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: '#1A202C', marginBottom: 6 }}>
+                  {disputeDetail.reason}
+                </Text>
+                {disputeDetail.description ? (
+                  <Text style={{ fontSize: 13, color: '#4A5568', lineHeight: 18, backgroundColor: '#F8FAFC', padding: 10, borderRadius: 8 }}>
+                    {disputeDetail.description}
+                  </Text>
+                ) : null}
+              </View>
+
+              {/* Hạn mức trần */}
+              {disputeDetail.caps ? (
+                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
+                  <View style={{ flex: 1, backgroundColor: '#EFF6FF', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#BFDBFE' }}>
+                    <Text style={{ fontSize: 11, color: '#1D4ED8', fontWeight: '600' }}>Trần hoàn công:</Text>
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#1E40AF', marginTop: 2 }}>
+                      {Number(disputeDetail.caps.refundCap).toLocaleString('vi-VN')} đ
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1, backgroundColor: '#FEF2F2', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#FECACA' }}>
+                    <Text style={{ fontSize: 11, color: '#DC2626', fontWeight: '600' }}>Trần đền bù cây:</Text>
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#991B1B', marginTop: 2 }}>
+                      {Number(disputeDetail.caps.compensationCap).toLocaleString('vi-VN')} đ
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
+
+              {/* Bằng chứng 2 bên */}
+              <View style={{ backgroundColor: '#FFFFFF', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 14 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C' }}>
+                    Bằng chứng hình ảnh
+                  </Text>
+                  {disputeDetail.status !== 'RESOLVED' ? (
+                    <TouchableOpacity
+                      onPress={() => handlePickDisputePhoto(true)}
+                      disabled={disputeUploading}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+                    >
+                      <Ionicons name="camera-outline" size={16} color="#6027D2" />
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#6027D2' }}>
+                        {disputeUploading ? 'Đang nộp...' : '+ Nộp thêm ảnh'}
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+
+                {/* Ảnh từ khách */}
+                <Text style={{ fontSize: 11, fontWeight: '600', color: '#DC2626', marginBottom: 6 }}>
+                  Ảnh từ bạn ({disputeDetail.evidence?.customer?.length || 0}):
+                </Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
+                  {(disputeDetail.evidence?.customer || []).map((ev, i) => (
+                    <TouchableOpacity key={i} onPress={() => setPreviewImageUrl(ev.photoUrl)}>
+                      <Image source={{ uri: ev.photoUrl }} style={{ width: 68, height: 68, borderRadius: 8, marginRight: 8, backgroundColor: '#F1F5F9' }} />
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+
+                {/* Ảnh từ vườn */}
+                <Text style={{ fontSize: 11, fontWeight: '600', color: '#059669', marginBottom: 6 }}>
+                  Ảnh từ nhà vườn ({disputeDetail.evidence?.provider?.length || 0}):
+                </Text>
+                {disputeDetail.evidence?.provider?.length ? (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    {disputeDetail.evidence.provider.map((ev, i) => (
+                      <TouchableOpacity key={i} onPress={() => setPreviewImageUrl(ev.photoUrl)}>
+                        <Image source={{ uri: ev.photoUrl }} style={{ width: 68, height: 68, borderRadius: 8, marginRight: 8, backgroundColor: '#F1F5F9' }} />
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                ) : (
+                  <Text style={{ fontSize: 11, color: '#A0AEC0', fontStyle: 'italic' }}>Nhà vườn chưa nộp thêm ảnh.</Text>
+                )}
+              </View>
+
+              {/* Lịch sử đề xuất thương lượng */}
+              <View style={{ backgroundColor: '#FFFFFF', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 14 }}>
+                <Text style={{ fontSize: 13, fontWeight: '700', color: '#1A202C', marginBottom: 10 }}>
+                  Đề xuất thương lượng ({disputeDetail.offers?.length || 0})
+                </Text>
+
+                {(disputeDetail.offers || []).length === 0 ? (
+                  <Text style={{ fontSize: 12, color: '#A0AEC0', fontStyle: 'italic' }}>Chưa có đề xuất nào được đưa ra.</Text>
+                ) : (
+                  disputeDetail.offers.map((off) => (
+                    <View
+                      key={off.id}
+                      style={{
+                        padding: 12,
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor: off.status === 'ACCEPTED' ? '#6EE7B7' : off.status === 'PENDING' ? '#DDD6FE' : '#E2E8F0',
+                        backgroundColor: off.status === 'ACCEPTED' ? '#ECFDF5' : off.status === 'PENDING' ? '#FAF8FE' : '#F8FAFC',
+                        marginBottom: 10,
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                        <Text style={{ fontSize: 12, fontWeight: '700', color: '#1A202C' }}>
+                          {off.proposedBy === 'PROVIDER' ? '🏡 Nhà vườn đề xuất' : '👤 Bạn đề xuất'}
                         </Text>
-                      </>
+                        <View style={{ backgroundColor: off.status === 'ACCEPTED' ? '#D1FAE5' : off.status === 'PENDING' ? '#FEF3C7' : '#E2E8F0', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                          <Text style={{ fontSize: 10, fontWeight: '700', color: off.status === 'ACCEPTED' ? '#065F46' : off.status === 'PENDING' ? '#92400E' : '#718096' }}>
+                            {off.status === 'ACCEPTED' ? 'Đã chấp nhận' : off.status === 'PENDING' ? 'Chờ duyệt' : 'Bị thay thế'}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#FFFFFF', padding: 8, borderRadius: 6, marginBottom: 6 }}>
+                        <Text style={{ fontSize: 11, color: '#4A5568' }}>
+                          Hoàn công: <Text style={{ fontWeight: '700' }}>{Number(off.refundAmount).toLocaleString('vi-VN')} đ</Text>
+                        </Text>
+                        <Text style={{ fontSize: 11, color: '#4A5568' }}>
+                          Đền bù: <Text style={{ fontWeight: '700' }}>{Number(off.compensationAmount).toLocaleString('vi-VN')} đ</Text>
+                        </Text>
+                      </View>
+
+                      <Text style={{ fontSize: 12, fontWeight: '700', color: '#059669', marginBottom: 4 }}>
+                        Tổng bạn nhận: {Number(off.customerReceives).toLocaleString('vi-VN')} đ
+                      </Text>
+
+                      {off.message ? (
+                        <Text style={{ fontSize: 11, color: '#718096', fontStyle: 'italic', marginBottom: 6 }}>
+                          &ldquo;{off.message}&rdquo;
+                        </Text>
+                      ) : null}
+
+                      {/* Nút chấp nhận nếu là đề xuất từ nhà vườn */}
+                      {off.proposedBy === 'PROVIDER' && off.status === 'PENDING' && disputeDetail.status === 'NEGOTIATING' ? (
+                        <TouchableOpacity
+                          onPress={() => handleCustomerAcceptOffer(off.id)}
+                          disabled={acceptingOfferId === off.id}
+                          style={{
+                            backgroundColor: '#059669',
+                            paddingVertical: 9,
+                            borderRadius: 8,
+                            alignItems: 'center',
+                            marginTop: 4,
+                          }}
+                        >
+                          {acceptingOfferId === off.id ? (
+                            <ActivityIndicator size="small" color="#FFFFFF" />
+                          ) : (
+                            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 13 }}>
+                              Đồng ý nhận tiền & Kết thúc tranh chấp
+                            </Text>
+                          )}
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
+                  ))
+                )}
+              </View>
+
+              {/* Form gửi đề xuất mới */}
+              {disputeDetail.status === 'NEGOTIATING' ? (
+                <View style={{ backgroundColor: '#FFFFFF', padding: 14, borderRadius: 12, borderWidth: 1, borderColor: '#DDD6FE', marginBottom: 16 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: '#6027D2', marginBottom: 10 }}>
+                    Gửi đề xuất thương lượng mới cho nhà vườn
+                  </Text>
+                  <Text style={{ fontSize: 11, color: '#4A5568', fontWeight: '600', marginBottom: 4 }}>
+                    Số tiền hoàn công muốn nhận (VNĐ):
+                  </Text>
+                  <TextInput
+                    value={offerRefund}
+                    onChangeText={(t) => setOfferRefund(t.replace(/\D/g, ''))}
+                    placeholder="VD: 200000"
+                    keyboardType="numeric"
+                    style={{ backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#CBD5E0', borderRadius: 8, padding: 10, fontSize: 13, marginBottom: 10 }}
+                  />
+
+                  <Text style={{ fontSize: 11, color: '#4A5568', fontWeight: '600', marginBottom: 4 }}>
+                    Số tiền bồi thường cây muốn nhận (VNĐ):
+                  </Text>
+                  <TextInput
+                    value={offerCompensation}
+                    onChangeText={(t) => setOfferCompensation(t.replace(/\D/g, ''))}
+                    placeholder="VD: 500000"
+                    keyboardType="numeric"
+                    style={{ backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#CBD5E0', borderRadius: 8, padding: 10, fontSize: 13, marginBottom: 10 }}
+                  />
+
+                  <Text style={{ fontSize: 11, color: '#4A5568', fontWeight: '600', marginBottom: 4 }}>
+                    Lời nhắn gửi nhà vườn:
+                  </Text>
+                  <TextInput
+                    multiline
+                    numberOfLines={2}
+                    value={offerMessage}
+                    onChangeText={setOfferMessage}
+                    placeholder="VD: Đề nghị nhà vườn bồi thường phần rễ úng và hoàn lại tiền công..."
+                    style={{ backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#CBD5E0', borderRadius: 8, padding: 10, fontSize: 13, minHeight: 60, textAlignVertical: 'top', marginBottom: 12 }}
+                  />
+
+                  <TouchableOpacity
+                    onPress={handleCustomerCreateOffer}
+                    disabled={offerSubmitting}
+                    style={{ backgroundColor: '#6027D2', paddingVertical: 12, borderRadius: 10, alignItems: 'center' }}
+                  >
+                    {offerSubmitting ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>
+                        Gửi đề xuất thương lượng
+                      </Text>
                     )}
                   </TouchableOpacity>
                 </View>
+              ) : null}
 
+              {/* Rút khiếu nại nếu còn thương lượng */}
+              {disputeDetail.status === 'NEGOTIATING' ? (
                 <TouchableOpacity
-                  onPress={handleSubmitDispute}
-                  disabled={disputeSubmitting}
+                  onPress={handleCustomerWithdrawDispute}
                   style={{
-                    backgroundColor: '#DC2626',
+                    backgroundColor: '#FFFFFF',
+                    borderWidth: 1,
+                    borderColor: '#CBD5E0',
                     paddingVertical: 12,
                     borderRadius: 10,
                     alignItems: 'center',
                   }}
                 >
-                  {disputeSubmitting ? (
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                  ) : (
-                    <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 14 }}>
-                      Gửi tranh chấp
-                    </Text>
-                  )}
+                  <Text style={{ color: '#718096', fontWeight: '600', fontSize: 13 }}>
+                    Rút khiếu nại (bỏ qua tranh chấp)
+                  </Text>
                 </TouchableOpacity>
-              </View>
-            )}
-          </ScrollView>
+              ) : null}
+            </ScrollView>
+          )}
         </SafeAreaView>
       </Modal>
 

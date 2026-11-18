@@ -174,6 +174,10 @@ const ERROR_CODE_MAP: Record<string, string> = {
   IMAGE_FILE_REQUIRED: 'Vui lòng chọn hình ảnh để tải lên.',
   IMAGE_FILE_INVALID: 'Định dạng ảnh không hợp lệ (chỉ hỗ trợ JPG, PNG, WEBP).',
   IMAGE_FILE_TOO_LARGE: 'Kích thước ảnh quá lớn (tối đa 5MB). Vui lòng chọn ảnh nhẹ hơn.',
+  REFUND_BANK_ACCOUNT_REQUIRED: 'Vui lòng cập nhật đầy đủ thông tin tài khoản ngân hàng (Tên ngân hàng, Số TK, Tên chủ TK) trong Hồ sơ cá nhân để nhận tiền hoàn/bồi thường trước khi mở khiếu nại.',
+  DISPUTE_WINDOW_CLOSED: 'Đã quá thời hạn 48 giờ để mở khiếu nại tranh chấp.',
+  PLANT_NOT_IN_CARE: 'Chậu cây được chọn không nằm trong danh sách chăm sóc của đơn hàng.',
+  DISPUTE_ALREADY_OPENED: 'Đơn hàng này đã mở khiếu nại trước đó.',
 };
 
 export function toFriendlyUserMessage(raw: unknown): string {

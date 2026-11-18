@@ -108,7 +108,9 @@ export default function ProviderSidebar({
         {/* Primary Navigation Links */}
         <nav className="space-y-1">
           {navItems.map((item) => {
-            const isActive = pathname === item.key;
+            const isActive =
+              pathname === item.key ||
+              (item.key !== '/provider/dashboard' && pathname.startsWith(item.key));
             return (
               <button
                 key={item.key}
