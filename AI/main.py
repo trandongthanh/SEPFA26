@@ -70,8 +70,19 @@ app.add_middleware(
 
 
 # ================================================================
-#  Health Check
+#  Root & Health Check
 # ================================================================
+
+@app.get('/')
+async def root():
+    return {
+        'status': 'healthy',
+        'service': 'LanCare Hub AI eKYC',
+        'version': '1.0.0',
+        'docs': '/docs',
+        'health': '/health',
+    }
+
 
 @app.get('/health')
 async def health_check():
@@ -94,9 +105,9 @@ async def health_check():
 @app.post('/api/ocr')
 async def ocr_endpoint(file: UploadFile = File(...)):
     """
-    Extract information from Vietnamese CCCD (Citizen ID Card).
+    Extract allowed identity information from Vietnamese ID card in RAM.
     Accepts a single image file (JPEG, PNG).
-    Returns structured data: id_number, full_name, date_of_birth, gender, etc.
+    Returns structured data: full_name, date_of_birth, gender, place_of_origin, place_of_residence (excludes ID number).
     """
     start = time.time()
     
