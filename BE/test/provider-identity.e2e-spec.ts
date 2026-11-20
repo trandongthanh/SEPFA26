@@ -7,6 +7,12 @@ const PHONE = '0909123456';
 const DOB = '20/10/1985';
 const ORIGIN = 'TP. Bảo Lộc, Lâm Đồng';
 const ADDRESS = '12 Nguyễn Văn Bảo, Gò Vấp, TP.HCM';
+// Luật 21/11: vườn phải có tài khoản nhận tiền mới được duyệt / nhận đơn.
+const BANK = {
+  bankName: 'Vietcombank',
+  bankAccount: '9876543210',
+  bankHolder: 'VUON LAN',
+};
 
 // Provider khai SĐT + Địa chỉ + Ngày sinh + Quê quán (KHÔNG lưu số CCCD hay ảnh CCCD/chân dung).
 describe('Provider identity (e2e)', () => {
@@ -160,6 +166,41 @@ describe('Provider identity (e2e)', () => {
       expect(res.body.message).toBe('PROVIDER_PROFILE_NOT_SUBMITTED');
     });
 
+    it('đủ định danh nhưng chưa khai ngân hàng → canVerify=false, duyệt → 400 PROVIDER_BANK_INFO_REQUIRED; khai xong → duyệt được', async () => {
+      const { auth, providerId } = await createProvider();
+      await putProvider(auth, {
+        phone: PHONE,
+        dateOfBirth: DOB,
+        placeOfOrigin: ORIGIN,
+        address: ADDRESS,
+      }).expect(200);
+      const admin = await adminAuth();
+
+      const list = await request(http)
+        .get(`${API}/admin/providers`)
+        .set(admin)
+        .expect(200);
+      expect(
+        (list.body as { id: string; canVerify: boolean }[]).find(
+          (p) => p.id === providerId,
+        )?.canVerify,
+      ).toBe(false);
+
+      const res = await request(http)
+        .post(`${API}/admin/providers/${providerId}/verify`)
+        .send({ decision: 'APPROVED' })
+        .set(admin)
+        .expect(400);
+      expect(res.body.message).toBe('PROVIDER_BANK_INFO_REQUIRED');
+
+      await putProvider(auth, BANK).expect(200);
+      await request(http)
+        .post(`${API}/admin/providers/${providerId}/verify`)
+        .send({ decision: 'APPROVED' })
+        .set(admin)
+        .expect(201);
+    });
+
     it('đủ bộ → canVerify=true, APPROVED; admin thấy SĐT giải mã, không lộ CCCD/hash', async () => {
       const { auth, providerId } = await createProvider();
       await putProvider(auth, {
@@ -167,6 +208,7 @@ describe('Provider identity (e2e)', () => {
         dateOfBirth: DOB,
         placeOfOrigin: ORIGIN,
         address: ADDRESS,
+        ...BANK,
       }).expect(200);
       const admin = await adminAuth();
 
@@ -223,6 +265,7 @@ describe('Provider identity (e2e)', () => {
         dateOfBirth: DOB,
         placeOfOrigin: ORIGIN,
         address: ADDRESS,
+        ...BANK,
       }).expect(200);
       const admin = await adminAuth();
       await request(http)
@@ -270,7 +313,7 @@ describe('Provider identity (e2e)', () => {
     const CUSTOMER_DOB = '15/05/1992';
     const CUSTOMER_ORIGIN = 'Quận 1, TP.HCM';
 
-    const seedOrder = async (withIdentity: boolean) => {
+    const seedOrder = async (withIdentity: boolean, withBank = true) => {
       const { auth: providerAuth, providerId } = await createProvider();
       if (withIdentity) {
         await putProvider(providerAuth, {
@@ -278,6 +321,7 @@ describe('Provider identity (e2e)', () => {
           dateOfBirth: DOB,
           placeOfOrigin: ORIGIN,
           address: ADDRESS,
+          ...(withBank ? BANK : {}),
         }).expect(200);
       }
       await ctx.dataSource.query(
@@ -342,6 +386,19 @@ describe('Provider identity (e2e)', () => {
       const { providerAuth, orderId } = await seedOrder(false);
       const res = await respond(providerAuth, orderId, 'ACCEPT').expect(403);
       expect(res.body.message).toBe('PROVIDER_IDENTITY_INCOMPLETE');
+      const [{ count }] = (await ctx.dataSource.query(
+        'SELECT COUNT(*)::int AS count FROM service_agreements',
+      )) as { count: number }[];
+      expect(count).toBe(0);
+
+      await respond(providerAuth, orderId, 'REJECT').expect(200);
+    });
+
+    // Vườn được duyệt trước luật 21/11 có thể chưa khai ngân hàng → chặn lúc nhận đơn.
+    it('vườn APPROVED đủ định danh nhưng chưa khai ngân hàng: ACCEPT → 409 PROVIDER_BANK_INFO_REQUIRED; REJECT vẫn được', async () => {
+      const { providerAuth, orderId } = await seedOrder(true, false);
+      const res = await respond(providerAuth, orderId, 'ACCEPT').expect(409);
+      expect(res.body.message).toBe('PROVIDER_BANK_INFO_REQUIRED');
       const [{ count }] = (await ctx.dataSource.query(
         'SELECT COUNT(*)::int AS count FROM service_agreements',
       )) as { count: number }[];

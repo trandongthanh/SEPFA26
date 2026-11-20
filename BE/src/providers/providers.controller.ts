@@ -56,7 +56,8 @@ export class ProvidersController {
   })
   @ApiResponse({
     status: 400,
-    description: 'PROVIDER_PROFILE_FIELDS_REQUIRED | GPS_PAIR_REQUIRED',
+    description:
+      'PROVIDER_PROFILE_FIELDS_REQUIRED | GPS_PAIR_REQUIRED | BANK_INFO_INCOMPLETE (gửi thiếu 1 trong 3 trường ngân hàng hoặc bankBin một mình) | BANK_INFO_CANNOT_BE_CLEARED (gửi rỗng/null để xoá)',
   })
   @ApiResponse({
     status: 409,

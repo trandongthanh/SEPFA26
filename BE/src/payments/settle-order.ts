@@ -282,6 +282,7 @@ export async function createCustomerDisbursement(
       bankName: customer?.bankName ?? null,
       bankAccount: customer?.bankAccount ?? null,
       bankHolder: customer?.bankHolder ?? null,
+      bankBin: customer?.bankBin ?? null,
       status: 'PENDING' as const,
     }),
   );
@@ -313,6 +314,7 @@ export async function createProviderDisbursement(
       bankName: provider?.bankName ?? null,
       bankAccount: provider?.bankAccount ?? null,
       bankHolder: provider?.bankHolder ?? null,
+      bankBin: provider?.bankBin ?? null,
       status: 'PENDING' as const,
     }),
   );

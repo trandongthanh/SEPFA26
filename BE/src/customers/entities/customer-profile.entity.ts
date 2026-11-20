@@ -79,6 +79,10 @@ export class CustomerProfile extends BaseEntity {
   @Column({ type: 'varchar', length: 100, name: 'bank_holder', nullable: true })
   bankHolder!: string | null;
 
+  // Mã BIN 6 số của ngân hàng (không bắt buộc, đi kèm bộ 3 trường trên).
+  @Column({ type: 'varchar', length: 6, name: 'bank_bin', nullable: true })
+  bankBin!: string | null;
+
   // Số lần khách thua tranh chấp (admin kết luận mọi cây bị khiếu nại đều không lỗi). Không phạt tiền.
   @Column({ type: 'int', name: 'lost_dispute_count', default: 0 })
   lostDisputeCount!: number;

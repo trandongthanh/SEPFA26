@@ -99,17 +99,7 @@ describe('Phí lấy cây — xem trước + 1 lần cho cả đơn (e2e)', () =
       homeQuery(provider.packageId),
     ).expect(200);
 
-    const created = await request(http)
-      .post(`${API}/orders`)
-      .set(customer.auth)
-      .send({
-        servicePackageId: provider.packageId,
-        scheduledPickupAt: new Date(Date.now() + 3 * 86_400_000).toISOString(),
-        pickupGpsLat: HOME.lat,
-        pickupGpsLng: HOME.lng,
-        plants: [{ name: 'Lan 1' }, { name: 'Lan 2' }, { name: 'Lan 3' }],
-      })
-      .expect(201);
+    const created = await createOrder(customer, provider).expect(201);
 
     const [order] = await sql(
       'SELECT plant_count, pickup_fee_snapshot FROM service_orders WHERE id = $1',
@@ -119,6 +109,38 @@ describe('Phí lấy cây — xem trước + 1 lần cho cả đơn (e2e)', () =
     expect(order.pickup_fee_snapshot).toBe(
       (quoted.body as { pickupFee: string }).pickupFee,
     );
+  });
+
+  // Luật 21/11: khách phải khai tài khoản nhận tiền hoàn trước khi đặt đơn.
+  it('POST /orders khi khách chưa khai ngân hàng → 409 REFUND_BANK_ACCOUNT_REQUIRED, không tạo đơn; khai xong → 201', async () => {
+    const customer = await seed.customer();
+    const provider = await providerWithGps();
+    await seedRates();
+    await verifyCustomer(customer, { bank: false });
+
+    const blocked = await createOrder(customer, provider).expect(409);
+    expect(blocked.body.message).toBe('REFUND_BANK_ACCOUNT_REQUIRED');
+    expect(await sql('SELECT id FROM service_orders')).toHaveLength(0);
+
+    await request(http)
+      .put(`${API}/customers/me/profile`)
+      .set(customer.auth)
+      .send({
+        bankName: 'MBBank',
+        bankAccount: '0123456789',
+        bankHolder: 'NGUYEN VAN MINH',
+      })
+      .expect(200);
+    await createOrder(customer, provider).expect(201);
+  });
+
+  it('POST /orders khi khách chưa được duyệt → 403 PROFILE_NOT_APPROVED', async () => {
+    const customer = await seed.customer();
+    const provider = await providerWithGps();
+    await seedRates();
+
+    const res = await createOrder(customer, provider).expect(403);
+    expect(res.body.message).toBe('PROFILE_NOT_APPROVED');
   });
 
   it('bảng phí rỗng → phí 0 (không chặn khách)', async () => {
@@ -196,8 +218,22 @@ describe('Phí lấy cây — xem trước + 1 lần cho cả đơn (e2e)', () =
     await quote(provider.auth, homeQuery(provider.packageId)).expect(403);
   });
 
-  // Khách đủ điều kiện đặt đơn: hồ sơ APPROVED + đủ thông tin cơ bản + SĐT (mã hoá như code thật).
-  async function verifyCustomer(customer: OrderActor) {
+  function createOrder(customer: OrderActor, provider: OrderProvider) {
+    return request(http)
+      .post(`${API}/orders`)
+      .set(customer.auth)
+      .send({
+        servicePackageId: provider.packageId,
+        scheduledPickupAt: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+        pickupGpsLat: HOME.lat,
+        pickupGpsLng: HOME.lng,
+        plants: [{ name: 'Lan 1' }, { name: 'Lan 2' }, { name: 'Lan 3' }],
+      });
+  }
+
+  // Khách đủ điều kiện đặt đơn: hồ sơ APPROVED + đủ thông tin cơ bản + SĐT (mã hoá như code thật)
+  // + tài khoản ngân hàng (luật 21/11; `bank: false` để thử ca chưa khai).
+  async function verifyCustomer(customer: OrderActor, { bank = true } = {}) {
     await sql(
       `UPDATE customer_profiles
           SET verification_status = 'APPROVED',
@@ -207,6 +243,14 @@ describe('Phí lấy cây — xem trước + 1 lần cho cả đơn (e2e)', () =
         WHERE id = $1`,
       [customer.profileId],
     );
+    if (bank) {
+      await sql(
+        `UPDATE customer_profiles
+            SET bank_name = 'MBBank', bank_account = '0123456789', bank_holder = 'NGUYEN VAN MINH'
+          WHERE id = $1`,
+        [customer.profileId],
+      );
+    }
     await sql('UPDATE accounts SET phone = $2 WHERE id = $1', [
       customer.accountId,
       ctx.app.get(CryptoService).encrypt('0909000001'),

@@ -5,29 +5,12 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { pickBank } from '../common/bank-info';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { MarkDisbursementPaidDto } from './dto/mark-disbursement-paid.dto';
 import { QueryDisbursementDto } from './dto/query-disbursement.dto';
 import { Disbursement } from './entities/disbursement.entity';
-
-export interface BankInfo {
-  bankName: string;
-  bankAccount: string;
-  bankHolder: string;
-}
-
-// Đủ cả 3 trường mới coi là có tài khoản nhận tiền (thiếu 1 trường thì admin không chuyển được).
-function pickBank(source: {
-  bankName: string | null;
-  bankAccount: string | null;
-  bankHolder: string | null;
-}): BankInfo | null {
-  const { bankName, bankAccount, bankHolder } = source;
-  return bankName && bankAccount && bankHolder
-    ? { bankName, bankAccount, bankHolder }
-    : null;
-}
 
 /**
  * Lệnh chi cho admin: xem danh sách và bấm "Đã chuyển" sau khi chuyển khoản tay.

@@ -52,6 +52,16 @@ export class OrdersController {
   @Roles('CUSTOMER')
   @Post()
   @ApiOperation({ summary: 'Khách tạo đơn nháp (DRAFT) — server tự tính phí' })
+  @ApiResponse({
+    status: 403,
+    description:
+      'PROFILE_NOT_APPROVED (khách chưa được duyệt hoặc chưa có SĐT)',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'REFUND_BANK_ACCOUNT_REQUIRED (khách chưa khai đủ tên ngân hàng, số tài khoản, chủ tài khoản)',
+  })
   createOrder(
     @CurrentUser() user: CurrentUserData,
     @Body() dto: CreateOrderDto,
@@ -101,6 +111,11 @@ export class OrdersController {
     status: 403,
     description:
       'PROFILE_NOT_APPROVED | PROVIDER_IDENTITY_INCOMPLETE (ACCEPT khi vườn chưa đủ SĐT/Địa chỉ/Ngày sinh/Quê quán)',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'PROVIDER_BANK_INFO_REQUIRED (ACCEPT khi vườn chưa khai đủ tên ngân hàng, số tài khoản, chủ tài khoản)',
   })
   respondNegotiation(
     @CurrentUser() user: CurrentUserData,

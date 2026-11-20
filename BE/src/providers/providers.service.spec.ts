@@ -219,6 +219,36 @@ describe('ProvidersService — thông tin định danh hợp lệ (không lưu C
       expect(res.displayName).toBe('Vườn Lan A');
     });
 
+    describe('tài khoản ngân hàng — cho sửa, cấm xoá', () => {
+      const BANK = {
+        bankName: 'Vietcombank',
+        bankAccount: '9876543210',
+        bankHolder: 'NGUYEN VAN A',
+      };
+
+      it('gửi đủ bộ 3 + BIN → lưu cả bộ', async () => {
+        stored = makeProfile();
+        const res = await upsert({ ...BANK, bankBin: '970436' });
+        expect(res).toMatchObject({ ...BANK, bankBin: '970436' });
+      });
+
+      it('gửi thiếu chủ tài khoản → 400 BANK_INFO_INCOMPLETE, không ghi', async () => {
+        stored = makeProfile();
+        await expect(
+          upsert({ bankName: BANK.bankName, bankAccount: BANK.bankAccount }),
+        ).rejects.toThrow(new BadRequestException('BANK_INFO_INCOMPLETE'));
+        expect(manager.save).not.toHaveBeenCalled();
+      });
+
+      it('gửi rỗng để xoá → 400 BANK_INFO_CANNOT_BE_CLEARED, không ghi', async () => {
+        stored = makeProfile({ ...BANK, bankBin: null });
+        await expect(upsert({ ...BANK, bankAccount: '' })).rejects.toThrow(
+          new BadRequestException('BANK_INFO_CANNOT_BE_CLEARED'),
+        );
+        expect(manager.save).not.toHaveBeenCalled();
+      });
+    });
+
     describe('luật sau duyệt (APPROVED)', () => {
       it('đổi Ngày sinh hoặc Quê quán hoặc GPKD → về PENDING (duyệt lại)', async () => {
         stored = makeProfile({
@@ -298,6 +328,9 @@ describe('ProvidersService — thông tin định danh hợp lệ (không lưu C
         address: ADDRESS,
         dateOfBirth: DOB,
         placeOfOrigin: ORIGIN,
+        bankName: 'Vietcombank',
+        bankAccount: '9876543210',
+        bankHolder: 'NGUYEN VAN A',
         account: Object.assign(account, encryptedPhone(PHONE)),
       });
 
@@ -345,6 +378,16 @@ describe('ProvidersService — thông tin định danh hợp lệ (không lưu C
       expect(JSON.stringify(res)).not.toContain('bcrypt-hash');
     });
 
+    it('verify APPROVED đủ định danh nhưng thiếu ngân hàng → 400 PROVIDER_BANK_INFO_REQUIRED', async () => {
+      profileRepo.findOne.mockResolvedValueOnce(
+        Object.assign(complete(), { bankHolder: null }),
+      );
+      await expect(
+        service.verifyProvider(PROFILE_ID, { decision: 'APPROVED' }),
+      ).rejects.toThrow(new BadRequestException('PROVIDER_BANK_INFO_REQUIRED'));
+      expect(accountRepo.save).not.toHaveBeenCalled();
+    });
+
     it('REJECTED không cần đủ thông tin', async () => {
       profileRepo.findOne.mockResolvedValueOnce(
         makeProfile({ account, dateOfBirth: null }),
@@ -356,12 +399,13 @@ describe('ProvidersService — thông tin định danh hợp lệ (không lưu C
       expect(res.verificationStatus).toBe('REJECTED');
     });
 
-    it('danh sách: canVerify chỉ true khi PENDING + đủ bộ', async () => {
+    it('danh sách: canVerify chỉ true khi PENDING + đủ bộ + có ngân hàng', async () => {
       const ok = complete();
       const missing = makeProfile({ id: 'p2', account });
-      profileRepo.find.mockResolvedValueOnce([ok, missing]);
+      const noBank = Object.assign(complete(), { id: 'p3', bankAccount: null });
+      profileRepo.find.mockResolvedValueOnce([ok, missing, noBank]);
       const list = await service.listAllForAdmin();
-      expect(list.map((p) => p.canVerify)).toEqual([true, false]);
+      expect(list.map((p) => p.canVerify)).toEqual([true, false, false]);
     });
   });
 
