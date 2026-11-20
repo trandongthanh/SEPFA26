@@ -2419,7 +2419,7 @@ function OrdersPageContent() {
                 {disputeDetail.status === 'RESOLVED' && (
                   <div className="space-y-1 text-[11px] text-emerald-800">
                     <p>
-                      Kết quả: <strong>{disputeDetail.outcome === 'OFFER_ACCEPTED' ? 'Hai bên đã thống nhất đề xuất' : disputeDetail.outcome === 'WITHDRAWN' ? 'Khách hàng đã rút khiếu nại' : 'Admin đã ra quyết định'}</strong>
+                      Kết quả: <strong>{disputeDetail.outcome === 'AGREED' ? 'Hai bên đã thống nhất đề xuất' : disputeDetail.outcome === 'WITHDRAWN' ? 'Khách hàng đã rút khiếu nại' : 'Admin đã ra quyết định'}</strong>
                       {disputeDetail.customerReceives && (
                         <span> · Khách nhận bồi hoàn: <strong>{Number(disputeDetail.customerReceives).toLocaleString('vi-VN')} VNĐ</strong></span>
                       )}

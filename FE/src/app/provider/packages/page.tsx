@@ -270,6 +270,13 @@ function PackagesPageContent() {
                       </div>
                     )}
 
+                    {pkg.approvalStatus === 'REJECTED' && (
+                      <div className="text-[11px] text-[#991B1B] bg-[#FEF2F2] p-2 rounded-xl border border-[#FECACA] mb-3">
+                        <span className="font-semibold">Lý do Admin từ chối: </span>
+                        {pkg.rejectionReason || 'Admin không ghi lý do.'}
+                      </div>
+                    )}
+
                     <p className="text-xs text-[#4B4764] leading-relaxed mb-4 line-clamp-3">
                       {pkg.description || 'Chưa có mô tả chi tiết cho gói chăm sóc này.'}
                     </p>
