@@ -33,13 +33,16 @@ export interface AdminProviderItem {
   bankName: string | null;
   bankAccount: string | null;
   bankHolder: string | null;
+  // Mã BIN 6 số của ngân hàng (không bắt buộc).
+  bankBin: string | null;
   phone?: string | null;
-  cccdNumber?: string | null;
-  cccdFrontUrl: string | null;
-  cccdBackUrl: string | null;
-  selfieUrl: string | null;
+  // Người đại diện — không thu số CCCD hay ảnh giấy tờ tuỳ thân.
+  dateOfBirth: string | null;
+  placeOfOrigin: string | null;
   businessLicenseUrl: string | null;
-  canVerify: boolean;
+  cancelledOrderCount?: number;
+  // Chỉ có ở GET /admin/providers (danh sách).
+  canVerify?: boolean;
   account: AdminAccountInfo | null;
   createdAt: string;
   updatedAt: string;
@@ -72,21 +75,32 @@ export interface AdminPackageWithProvider extends AdminServicePackage {
   provider: Pick<AdminProviderItem, 'id' | 'displayName' | 'verificationStatus'> | null;
 }
 
+// NOT_SUBMITTED: chưa làm eKYC · APPROVED: eKYC đạt · REJECTED: eKYC không đạt.
+// PENDING chỉ còn ở dữ liệu cũ (hồ sơ tự khai trước khi chốt xác thực bằng eKYC).
+export type CustomerVerificationStatus = 'NOT_SUBMITTED' | 'PENDING' | 'APPROVED' | 'REJECTED';
+
+// GET /customers/admin(/:id) — không còn số CCCD hay ảnh; danh tính lấy từ eKYC.
 export interface AdminCustomerItem {
   id: string;
   accountId: string;
+  // Địa chỉ thường trú (eKYC đọc từ thẻ).
   address: string | null;
   defaultPickupAddress: string | null;
   gpsLat: string | null;
   gpsLng: string | null;
-  cccdNumber: string | null;
-  cccdFrontUrl: string | null;
-  cccdBackUrl: string | null;
-  selfieWithIdUrl: string | null;
-  verificationStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
+  dateOfBirth: string | null;
+  placeOfOrigin: string | null;
+  verificationStatus: CustomerVerificationStatus;
   verificationNote: string | null;
+  bankName: string | null;
+  bankAccount: string | null;
+  bankHolder: string | null;
+  bankBin: string | null;
+  lostDisputeCount: number;
+  fullName: string | null;
+  email: string | null;
   phone: string | null;
-  account: AdminAccountInfo;
+  account: AdminAccountInfo | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -136,21 +150,6 @@ export const adminApi = {
 
   getCustomerDetail: async (customerId: string) => {
     const res = await api.get<AdminCustomerItem>(`/api/v1/customers/admin/${customerId}`);
-    return res.data;
-  },
-
-  verifyCustomer: async (customerId: string, payload: VerifyDecisionPayload) => {
-    const res = await api.post(`/api/v1/customers/admin/${customerId}/verify`, payload);
-    return res.data;
-  },
-
-  // --- Khung API cập nhật trạng thái người dùng (ACTIVE / SUSPENDED) ---
-  // Ảnh eKYC của khách lưu trên Cloudinary ở chế độ bảo mật — DB chỉ giữ public_id,
-  // phải xin link có chữ ký (sống 10 phút) mới xem được.
-  getEkycDocumentUrl: async (field: EkycDocumentField, targetAccountId: string) => {
-    const res = await api.get<EkycDocumentUrlResponse>(`/api/v1/ekyc/documents/${field}`, {
-      params: { targetAccountId },
-    });
     return res.data;
   },
 
@@ -272,6 +271,7 @@ export interface DisbursementItem {
     bankName: string;
     bankAccount: string;
     bankHolder: string;
+    bankBin: string | null;
   } | null;
   transferCode: string | null;
   paidAt: string | null;
@@ -452,17 +452,6 @@ export interface ShippingRateInput {
   perKmFee: number;
   billingUnitKm: number | null;
   isActive?: boolean;
-}
-
-// ===== Ảnh eKYC bảo mật — GET /ekyc/documents/:field?targetAccountId= =====
-
-export type EkycDocumentField = 'front' | 'back' | 'selfie';
-
-export interface EkycDocumentUrlResponse {
-  // null với hồ sơ eKYC cũ (trước khi có Cloudinary) — kèm message giải thích.
-  url: string | null;
-  expiresInSeconds: number;
-  message: string;
 }
 
 // ===== Add-on của đơn — GET /orders/:orderId/addons (khớp BE addons.service toViews) =====

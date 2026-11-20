@@ -30,7 +30,7 @@ interface MergedUser {
   role: 'CUSTOMER' | 'PROVIDER' | 'ADMIN';
   status: 'ACTIVE' | 'SUSPENDED' | 'PENDING';
   createdAt: string;
-  verificationStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
+  verificationStatus: AdminCustomerItem['verificationStatus'] | AdminProviderItem['verificationStatus'];
   providerType?: 'NURSERY' | 'EXPERT';
 }
 
