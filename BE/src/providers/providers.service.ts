@@ -151,7 +151,15 @@ export class ProvidersService {
           (dto.placeOfOrigin !== undefined &&
             existing.placeOfOrigin !== dto.placeOfOrigin);
 
-        if (sensitiveChanged && existing.verificationStatus === 'APPROVED') {
+        if (existing.verificationStatus === 'REJECTED') {
+          // Vườn bị từ chối nộp lại hồ sơ → quay lại hàng chờ PENDING và xoá ghi chú từ chối cũ
+          // để admin thấy ở tab "Chờ duyệt" và không dính note cũ khi duyệt lại.
+          existing.verificationStatus = 'PENDING';
+          existing.verificationNote = null;
+        } else if (
+          sensitiveChanged &&
+          existing.verificationStatus === 'APPROVED'
+        ) {
           existing.verificationStatus = 'PENDING';
         }
       }

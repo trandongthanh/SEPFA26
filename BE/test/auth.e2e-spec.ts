@@ -939,12 +939,12 @@ describe('Auth (e2e)', () => {
         .send(body);
 
     describe('customer', () => {
-      it('GET lần đầu → 200 hồ sơ rỗng PENDING (tự tạo), gọi lại không tạo thêm', async () => {
+      it('GET lần đầu → 200 hồ sơ rỗng NOT_SUBMITTED (tự tạo), gọi lại không tạo thêm', async () => {
         const token = await session('khach@example.com', 'CUSTOMER');
         const res = await getCustomer(token).expect(200);
         expect(res.body).toMatchObject({
           accountId: expect.any(String),
-          verificationStatus: 'PENDING',
+          verificationStatus: 'NOT_SUBMITTED',
           address: null,
           phone: null,
           dateOfBirth: null,
@@ -966,13 +966,15 @@ describe('Auth (e2e)', () => {
         expect(await countRows('customer_profiles')).toBe(1);
       });
 
-      it('PUT ngày sinh + quê quán + SĐT rồi PUT địa chỉ → giữ nguyên thông tin cũ', async () => {
+      it('PUT ngày sinh + quê quán + SĐT rồi PUT địa chỉ → giữ nguyên thông tin cũ và chuyển sang PENDING', async () => {
         const token = await session('khach@example.com', 'CUSTOMER');
-        await putCustomer(token, {
+        const partial = await putCustomer(token, {
           dateOfBirth: '15/05/1992',
           placeOfOrigin: 'Quận 1, TP.HCM',
           phone: '0909123456',
         }).expect(200);
+        expect(partial.body.verificationStatus).toBe('NOT_SUBMITTED');
+
         const res = await putCustomer(token, { address: '25 Lê Lợi' }).expect(
           200,
         );
@@ -981,6 +983,7 @@ describe('Auth (e2e)', () => {
           dateOfBirth: '15/05/1992',
           placeOfOrigin: 'Quận 1, TP.HCM',
           phone: '0909123456',
+          verificationStatus: 'PENDING',
         });
         await getCustomer(token).expect(200);
       });

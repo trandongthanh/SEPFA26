@@ -258,6 +258,30 @@ describe('ProvidersService — thông tin định danh hợp lệ (không lưu C
         expect(res.address).toBe('99 Hai Bà Trưng');
       });
     });
+
+    describe('luật nộp lại sau khi bị từ chối (REJECTED)', () => {
+      it('đang REJECTED mà sửa trường không nhạy cảm (Địa chỉ) → về PENDING và xoá verificationNote', async () => {
+        stored = makeProfile({
+          verificationStatus: 'REJECTED',
+          verificationNote: 'Thiếu thông tin quê quán',
+        });
+        const res = await upsert({ address: '99 Hai Bà Trưng' });
+        expect(res.verificationStatus).toBe('PENDING');
+        expect(res.verificationNote).toBeNull();
+        expect(res.address).toBe('99 Hai Bà Trưng');
+      });
+
+      it('đang REJECTED mà sửa trường nhạy cảm (Ngày sinh) → về PENDING và xoá verificationNote', async () => {
+        stored = makeProfile({
+          verificationStatus: 'REJECTED',
+          verificationNote: 'Sai ngày sinh',
+        });
+        const res = await upsert({ dateOfBirth: '01/01/1990' });
+        expect(res.verificationStatus).toBe('PENDING');
+        expect(res.verificationNote).toBeNull();
+        expect(res.dateOfBirth).toBe('01/01/1990');
+      });
+    });
   });
 
   describe('GET /providers/me', () => {

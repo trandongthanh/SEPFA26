@@ -11,7 +11,7 @@ import { BaseEntity } from '../../common/entities/base.entity';
 import { Account } from '../../accounts/entities/account.entity';
 
 @Entity({ name: 'customer_profiles' })
-@Check(`"verification_status" IN ('PENDING','APPROVED','REJECTED')`)
+@Check(`"verification_status" IN ('NOT_SUBMITTED','PENDING','APPROVED','REJECTED')`)
 export class CustomerProfile extends BaseEntity {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -62,8 +62,8 @@ export class CustomerProfile extends BaseEntity {
   @Column({ type: 'varchar', length: 255, name: 'place_of_origin', nullable: true })
   placeOfOrigin!: string | null;
 
-  @Column({ type: 'varchar', length: 20, name: 'verification_status', default: 'PENDING' })
-  verificationStatus!: 'PENDING' | 'APPROVED' | 'REJECTED';
+  @Column({ type: 'varchar', length: 20, name: 'verification_status', default: 'NOT_SUBMITTED' })
+  verificationStatus!: 'NOT_SUBMITTED' | 'PENDING' | 'APPROVED' | 'REJECTED';
 
   @Column({ type: 'text', name: 'verification_note', nullable: true })
   verificationNote!: string | null;

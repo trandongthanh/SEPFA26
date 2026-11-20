@@ -242,6 +242,26 @@ describe('Provider identity (e2e)', () => {
       }).expect(200);
       expect(dobChanged.body.verificationStatus).toBe('PENDING');
     });
+
+    it('sau REJECTED: vườn cập nhật nộp lại hồ sơ → về PENDING và xoá verificationNote', async () => {
+      const { auth, providerId } = await createProvider();
+      const admin = await adminAuth();
+
+      await request(http)
+        .post(`${API}/admin/providers/${providerId}/verify`)
+        .send({ decision: 'REJECTED', note: 'Thiếu thông tin quê quán' })
+        .set(admin)
+        .expect(201);
+
+      const resubmitted = await putProvider(auth, {
+        address: '99 Hai Bà Trưng',
+        dateOfBirth: DOB,
+        placeOfOrigin: ORIGIN,
+        phone: PHONE,
+      }).expect(200);
+      expect(resubmitted.body.verificationStatus).toBe('PENDING');
+      expect(resubmitted.body.verificationNote).toBeNull();
+    });
   });
 
   // Vườn ACCEPT → snapshot hợp đồng v3 (không chứa số CCCD hay ảnh) → GET đơn + hợp đồng đọc bản đóng băng.

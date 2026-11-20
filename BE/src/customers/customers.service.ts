@@ -31,7 +31,7 @@ export class CustomersService {
   ) {}
 
   /**
-   * Hồ sơ khách của account — CHƯA có thì tạo hồ sơ rỗng (PENDING).
+   * Hồ sơ khách của account — CHƯA có thì tạo hồ sơ rỗng (NOT_SUBMITTED).
    * Đăng ký thường/Google chỉ tạo ACCOUNT; hồ sơ sinh ở lần đầu khách dùng tới
    * (GET/PUT /customers/me/profile, eKYC). Ngoài account_id, mọi cột đều nullable/default.
    */
@@ -48,7 +48,7 @@ export class CustomersService {
       .createQueryBuilder()
       .insert()
       .into(CustomerProfile)
-      .values({ accountId })
+      .values({ accountId, verificationStatus: 'NOT_SUBMITTED' })
       .orIgnore()
       .execute();
     return repo.findOneOrFail({ where: { accountId } });
@@ -71,6 +71,9 @@ export class CustomersService {
       // SĐT/Họ tên (bảng accounts) + hồ sơ ghi cùng 1 transaction: lỗi 1 bên thì không bên nào đổi.
       await this.dataSource.transaction(async (manager) => {
         const profile = await this.getOrCreateProfile(accountId, manager);
+        const account = await manager.findOne(Account, {
+          where: { id: accountId },
+        });
 
         // Đã duyệt → khóa ngày sinh & quê quán (không cho tự ý đổi sau khi đã duyệt).
         const identityChangedAfterApproval =
@@ -118,6 +121,29 @@ export class CustomersService {
           }
           accountPatch.phone = this.crypto.encrypt(normalized);
           accountPatch.phoneHash = phoneHash;
+        }
+
+        const effectiveFullName = (
+          accountPatch.fullName ??
+          account?.fullName ??
+          ''
+        ).trim();
+        const effectivePhone = accountPatch.phone ?? account?.phone ?? null;
+        const isIdentityComplete = Boolean(
+          effectiveFullName &&
+            effectivePhone &&
+            profile.address?.trim() &&
+            profile.dateOfBirth?.trim() &&
+            profile.placeOfOrigin?.trim(),
+        );
+
+        if (
+          isIdentityComplete &&
+          (profile.verificationStatus === 'NOT_SUBMITTED' ||
+            profile.verificationStatus === 'REJECTED')
+        ) {
+          profile.verificationStatus = 'PENDING';
+          profile.verificationNote = null;
         }
 
         if (Object.keys(accountPatch).length > 0) {
