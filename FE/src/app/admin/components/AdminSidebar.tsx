@@ -4,9 +4,6 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   CarOutlined,
   AuditOutlined,
-  BarChartOutlined,
-  CustomerServiceOutlined,
-  DashboardOutlined,
   InteractionOutlined,
   LogoutOutlined,
   SettingOutlined,
@@ -44,7 +41,6 @@ export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' 
     }
   };
 
-  const comingSoon = () => message.info('Tính năng đang phát triển');
   const [passwordOpen, setPasswordOpen] = useState(false);
 
   // Xác định selectedKeys và openKeys dựa trên pathname
@@ -62,13 +58,8 @@ export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' 
     return [];
   };
 
+  // Chỉ giữ các mục đã có trang thật. "Tổng quan" và "Báo cáo" đã bỏ vì BE chưa có API.
   const menuItems: MenuProps['items'] = [
-    {
-      key: '/admin/dashboard',
-      icon: <DashboardOutlined />,
-      label: 'Tổng quan',
-      onClick: comingSoon,
-    },
     {
       key: 'verify-submenu',
       icon: <AuditOutlined />,
@@ -110,38 +101,10 @@ export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' 
       onClick: () => router.push('/admin/shipping-rates'),
     },
     {
-      key: '/admin/reports',
-      icon: <BarChartOutlined />,
-      label: 'Báo cáo',
-      onClick: comingSoon,
-    },
-    {
       key: '/admin/users',
       icon: <TeamOutlined />,
       label: 'Người dùng',
       onClick: () => router.push('/admin/users'),
-    },
-  ];
-
-  const bottomItems: MenuProps['items'] = [
-    {
-      key: 'support',
-      icon: <CustomerServiceOutlined />,
-      label: 'Hỗ trợ hệ thống',
-      onClick: comingSoon,
-    },
-    {
-      key: 'settings',
-      icon: <SettingOutlined />,
-      label: 'Cài đặt',
-      onClick: comingSoon,
-    },
-    {
-      key: 'logout',
-      icon: <LogoutOutlined />,
-      label: 'Đăng xuất',
-      danger: true,
-      onClick: handleLogout,
     },
   ];
 
@@ -187,17 +150,8 @@ export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' 
         />
       </div>
 
-      {/* Bottom Section */}
-      <div className="border-t border-[#ECE7FA]">
-        <Menu
-          mode="inline"
-          selectable={false}
-          items={bottomItems}
-          className="!border-none"
-          style={{ background: 'transparent' }}
-        />
-
-        {/* Admin User Card */}
+      {/* Bottom Section: đổi mật khẩu và đăng xuất nằm trong menu của thẻ admin */}
+      <div className="border-t border-[#ECE7FA] pt-3">
         <Dropdown
           menu={{
             items: [
@@ -206,12 +160,6 @@ export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' 
                 icon: <KeyOutlined />,
                 label: 'Đổi mật khẩu',
                 onClick: () => setPasswordOpen(true),
-              },
-              {
-                key: 'settings',
-                icon: <SettingOutlined />,
-                label: 'Cài đặt tài khoản',
-                onClick: comingSoon,
               },
               { type: 'divider' },
               {

@@ -28,12 +28,32 @@ import { useAuthStore } from '@/lib/auth.store';
 import {
   DisbursementItem,
   DisbursementStatus,
+  DisbursementType,
   adminApi,
 } from '@/lib/admin.api';
 import AdminSidebar from '../components/AdminSidebar';
 import AdminHeader from '../components/AdminHeader';
 
 type FilterStatus = 'ALL' | DisbursementStatus;
+
+// Nhãn từng loại lệnh chi. Đơn bình thường sinh PAYOUT + SECURITY_RETURN (vườn) + DECLARED_RETURN (khách);
+// sau tranh chấp có thêm REFUND / COMPENSATION (khách) hoặc DECLARED_FORFEIT (vườn).
+const TYPE_LABELS: Record<DisbursementType, string> = {
+  PAYOUT: 'Tiền công cho vườn',
+  SECURITY_RETURN: 'Trả lại tiền bảo đảm cho vườn',
+  DECLARED_FORFEIT: 'Tiền khai giá của khách chuyển cho vườn',
+  REFUND: 'Hoàn tiền công cho khách',
+  COMPENSATION: 'Đền giá trị cây cho khách',
+  DECLARED_RETURN: 'Trả lại tiền khai giá cho khách',
+};
+
+const RECIPIENT_LABELS = { CUSTOMER: 'Khách hàng', PROVIDER: 'Nhà vườn' } as const;
+
+const recipientOf = (record: DisbursementItem) =>
+  record.recipient ?? (record.customerId ? 'CUSTOMER' : 'PROVIDER');
+
+const recipientNameOf = (record: DisbursementItem) =>
+  record.recipientName ?? record.providerName ?? 'Chưa rõ tên';
 
 export default function AdminDisbursementsPage() {
   const router = useRouter();
@@ -120,6 +140,8 @@ export default function AdminDisbursementsPage() {
           ? 'Chưa hết thời gian chờ 3 ngày khiếu nại nên chưa thể giải ngân.'
           : raw === 'PROVIDER_BANK_INFO_MISSING'
             ? 'Nhà vườn chưa cập nhật đầy đủ thông tin ngân hàng.'
+            : raw === 'DISBURSEMENT_BANK_INFO_MISSING'
+              ? 'Khách hàng chưa khai báo đầy đủ thông tin ngân hàng.'
             : raw === 'DISBURSEMENT_ALREADY_PAID'
               ? 'Lệnh chi này đã được xác nhận thanh toán trước đó.'
               : raw || 'Xác nhận chuyển khoản thất bại.';
@@ -144,18 +166,28 @@ export default function AdminDisbursementsPage() {
             #{record.orderCode}
           </span>
           <div className="text-[11px] text-[#6E6A8A] mt-0.5">
-            {record.type === 'PAYOUT' ? 'Chi trả nhà vườn' : 'Hoàn tiền khách'}
+            {TYPE_LABELS[record.type] ?? record.type}
           </div>
         </div>
       ),
     },
     {
-      title: 'Nhà vườn nhận',
-      dataIndex: 'providerName',
-      key: 'providerName',
-      render: (name: string) => (
-        <span className="font-semibold text-[#1E1B2E] text-xs">{name}</span>
-      ),
+      title: 'Người nhận',
+      key: 'recipient',
+      render: (_, record) => {
+        const toCustomer = recipientOf(record) === 'CUSTOMER';
+        return (
+          <div className="flex flex-col items-start gap-1">
+            <span className="font-semibold text-[#1E1B2E] text-xs">{recipientNameOf(record)}</span>
+            <Tag
+              color={toCustomer ? 'blue' : 'green'}
+              className="!m-0 !rounded-md !text-[10px] !leading-4"
+            >
+              {RECIPIENT_LABELS[recipientOf(record)]}
+            </Tag>
+          </div>
+        );
+      },
     },
     {
       title: 'Số tiền giải ngân',
@@ -247,25 +279,41 @@ export default function AdminDisbursementsPage() {
           );
         }
 
-        const disabledReason = !record.isEligible
-          ? 'Chưa hết 3 ngày chờ khiếu nại'
-          : !record.bank
-            ? 'Nhà vườn chưa khai báo đủ thông tin ngân hàng'
-            : '';
+        // Chưa đủ 3 ngày chờ khiếu nại: hiện số ngày còn lại thay cho nút bị khoá (nút tím khoá rất khó đọc).
+        if (!record.isEligible) {
+          const hoursLeft = Math.max(1, dayjs(record.eligibleAt).diff(dayjs(), 'hour'));
+          const remaining = hoursLeft < 24 ? `${hoursLeft} giờ` : `${Math.ceil(hoursLeft / 24)} ngày`;
+          return (
+            <Tooltip title={`Chưa hết 3 ngày chờ khiếu nại · đủ điều kiện lúc ${dayjs(record.eligibleAt).format('DD/MM/YYYY HH:mm')}`}>
+              <Tag icon={<ClockCircleOutlined />} className="!rounded-lg !m-0 !text-xs !bg-[#F3F2F7] !border-[#E2DFEC] !text-[#4B4764]">
+                Còn {remaining}
+              </Tag>
+            </Tooltip>
+          );
+        }
+
+        if (!record.bank) {
+          return (
+            <Tooltip
+              title={`${RECIPIENT_LABELS[recipientOf(record)]} chưa khai báo đủ thông tin ngân hàng`}
+            >
+              <Tag color="orange" className="!rounded-lg !m-0 !text-xs">
+                Thiếu TK ngân hàng
+              </Tag>
+            </Tooltip>
+          );
+        }
 
         return (
-          <Tooltip title={disabledReason}>
-            <Button
-              type="primary"
-              size="small"
-              icon={<SendOutlined />}
-              disabled={!record.isEligible || !record.bank}
-              onClick={() => handleOpenPayModal(record)}
-              className="!rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !border-none !font-semibold text-xs"
-            >
-              Đã chuyển
-            </Button>
-          </Tooltip>
+          <Button
+            type="primary"
+            size="small"
+            icon={<SendOutlined />}
+            onClick={() => handleOpenPayModal(record)}
+            className="!rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !border-none !font-semibold text-xs whitespace-nowrap"
+          >
+            Xác nhận đã chuyển
+          </Button>
         );
       },
     },
@@ -292,7 +340,7 @@ export default function AdminDisbursementsPage() {
                 Quản lý giải ngân (Payout)
               </h1>
               <p className="text-xs text-[#6E6A8A] mt-1">
-                Danh sách lệnh chi cho nhà vườn sau khi đơn hoàn tất và qua 3 ngày chờ khiếu nại
+                Lệnh chi khi đơn hoàn tất: tiền cho khách chi ngay, tiền cho nhà vườn chi sau 3 ngày chờ khiếu nại
               </p>
             </div>
             <Button
@@ -394,8 +442,16 @@ export default function AdminDisbursementsPage() {
           <div className="space-y-4 pt-2">
             <div className="p-3.5 rounded-xl bg-[#FAF8FE] border border-[#ECE7FA] text-xs space-y-1">
               <div className="flex justify-between">
-                <span className="text-[#6E6A8A]">Nhà vườn:</span>
-                <span className="font-bold text-[#1E1B2E]">{selectedItem.providerName}</span>
+                <span className="text-[#6E6A8A]">Loại lệnh chi:</span>
+                <span className="font-semibold text-[#1E1B2E]">
+                  {TYPE_LABELS[selectedItem.type] ?? selectedItem.type}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[#6E6A8A]">
+                  {RECIPIENT_LABELS[recipientOf(selectedItem)]} nhận:
+                </span>
+                <span className="font-bold text-[#1E1B2E]">{recipientNameOf(selectedItem)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-[#6E6A8A]">Số tiền:</span>

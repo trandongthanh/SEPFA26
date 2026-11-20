@@ -241,13 +241,29 @@ export const adminApi = {
 
 export type DisbursementStatus = 'PENDING' | 'PAID';
 
+// Loại lệnh chi BE tạo khi đơn kết thúc (payments/settle-order.ts).
+export type DisbursementType =
+  | 'PAYOUT' // tiền công còn lại → vườn
+  | 'SECURITY_RETURN' // trả lại tiền bảo đảm → vườn
+  | 'DECLARED_FORFEIT' // tiền bảo đảm khai giá của khách → vườn (khách khiếu nại sai)
+  | 'REFUND' // hoàn tiền công + 6% → khách
+  | 'COMPENSATION' // đền giá trị cây → khách
+  | 'DECLARED_RETURN'; // trả lại tiền bảo đảm khai giá → khách
+
+export type DisbursementRecipient = 'CUSTOMER' | 'PROVIDER';
+
 export interface DisbursementItem {
   id: string;
   orderId: string;
   orderCode: string;
-  providerId: string;
-  providerName: string;
-  type: 'PAYOUT' | 'REFUND';
+  recipient: DisbursementRecipient;
+  // Tên người nhận đúng bên: tên vườn hoặc họ tên khách.
+  recipientName: string | null;
+  customerId: string | null;
+  // Lệnh của khách thì providerId / providerName là null.
+  providerId: string | null;
+  providerName: string | null;
+  type: DisbursementType;
   amount: string | number;
   eligibleAt: string;
   isEligible: boolean;

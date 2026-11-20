@@ -126,6 +126,8 @@ export interface ServicePackageItem {
   maxDeclaredValue: string | number;
   isActive?: boolean;
   approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  // Lý do admin ghi khi từ chối gói (null khi chưa từng bị từ chối).
+  rejectionReason?: string | null;
   pricePerMonth?: string;
   status?: string;
   createdAt?: string;
@@ -541,7 +543,8 @@ export interface AddonItem {
 }
 
 export type DisputeStatus = 'NEGOTIATING' | 'ADMIN_REVIEW' | 'RESOLVED';
-export type DisputeOutcome = 'OFFER_ACCEPTED' | 'WITHDRAWN' | 'ADMIN_RESOLVED';
+// Đúng mã BE (orders/dispute-rules.ts DISPUTE_OUTCOMES).
+export type DisputeOutcome = 'AGREED' | 'WITHDRAWN' | 'ADJUDICATED';
 
 export interface DisputeEvidenceItem {
   id: string;

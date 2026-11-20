@@ -243,10 +243,15 @@ export default function ProviderOrderDetailPage() {
 
   useEffect(() => {
     setMounted(true);
+  }, []);
+
+  // Chỉ kiểm tra đăng nhập sau khi mount (store đã đọc xong localStorage) — giống trang danh sách đơn.
+  useEffect(() => {
+    if (!mounted) return;
     if (!isAuthenticated) {
-      router.push('/login');
+      router.replace('/auth/login');
     }
-  }, [isAuthenticated, router]);
+  }, [mounted, isAuthenticated, router]);
 
   const loadData = async () => {
     if (!orderId) return;
@@ -731,7 +736,8 @@ export default function ProviderOrderDetailPage() {
                 </>
               )}
 
-              {(order.handoverStatus === 'AWAITING_DEPOSIT' || order.status === 'HANDOVER_AWAITING_CONFIRM') && (
+              {/* Khoản bảo đảm chỉ có sau khi khách đồng ý biên bản (phiên nhận cây sang AWAITING_DEPOSIT). */}
+              {order.status === 'HANDOVER_AWAITING_CONFIRM' && order.handoverStatus === 'AWAITING_DEPOSIT' && (
                 <Button
                   type="primary"
                   icon={<DollarOutlined />}
@@ -791,11 +797,22 @@ export default function ProviderOrderDetailPage() {
                   Hồ sơ tranh chấp
                 </Button>
               )}
+
+              {/* Tranh chấp đã kết thúc (đơn đã hoàn tất): vẫn cho xem lại kết quả và số tiền. */}
+              {order.status !== 'DISPUTED' && order.dispute && (
+                <Button
+                  icon={<ExclamationCircleOutlined />}
+                  onClick={handleOpenDisputeModal}
+                  className="!h-9 !px-4 !rounded-xl !bg-white !border !border-rose-200 !text-rose-600 hover:!bg-rose-50 font-semibold text-xs"
+                >
+                  Xem kết quả tranh chấp
+                </Button>
+              )}
             </div>
           </div>
 
           {/* Alert banner if AWAITING_DEPOSIT */}
-          {(order.handoverStatus === 'AWAITING_DEPOSIT' || (order.status === 'HANDOVER_AWAITING_CONFIRM' && !order.handoverStatus)) && (
+          {order.status === 'HANDOVER_AWAITING_CONFIRM' && order.handoverStatus === 'AWAITING_DEPOSIT' && (
             <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
               <div className="flex items-center gap-3">
                 <DollarOutlined className="text-amber-600 text-xl shrink-0" />
@@ -1032,6 +1049,58 @@ export default function ProviderOrderDetailPage() {
                 </span>
               </div>
             </div>
+
+            {/* Quyết toán khi đơn hoàn tất — đọc số BE đã chia (settlement), không tự tính lại. */}
+            {order.status === 'COMPLETED' && order.settlement?.providerReceives != null && (() => {
+              const s = order.settlement;
+              const vnd = (v: string | number | null | undefined) => `${Number(v || 0).toLocaleString('vi-VN')} VNĐ`;
+              const compensation = Number(s.compensationAmount || 0);
+              const deposit = order.securityDeposit?.status === 'PAID' ? Number(order.securityDeposit.amount || 0) : 0;
+              const depositReturn = Math.max(0, deposit - compensation);
+              const payout = s.payout;
+              return (
+                <div className="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200 text-xs space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold text-sm text-emerald-900">Quyết toán đơn</span>
+                    {payout && (
+                      <Tag color={payout.status === 'PAID' ? 'success' : 'gold'} className="!m-0 !rounded-lg">
+                        {payout.status === 'PAID'
+                          ? `Đã chuyển khoản${payout.paidAt ? ` lúc ${new Date(payout.paidAt).toLocaleString('vi-VN')}` : ''}`
+                          : `Admin chuyển khoản từ ${new Date(payout.eligibleAt).toLocaleString('vi-VN')}`}
+                      </Tag>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                    <div>
+                      <span className="text-[#6E6A8A] block text-[11px]">Tiền công (gồm add-on):</span>
+                      <span className="font-bold text-sm text-[#1E1B2E] mt-0.5 block">{vnd(s.serviceAmount)}</span>
+                    </div>
+                    <div>
+                      <span className="text-[#6E6A8A] block text-[11px]">Phí nền tảng (12%):</span>
+                      <span className="font-bold text-sm text-rose-600 mt-0.5 block">-{vnd(s.providerFee)}</span>
+                    </div>
+                    <div>
+                      <span className="text-[#6E6A8A] block text-[11px]">Phí lấy cây:</span>
+                      <span className="font-bold text-sm text-[#1E1B2E] mt-0.5 block">+{vnd(s.pickupFee)}</span>
+                    </div>
+                    <div>
+                      <span className="text-[#6E6A8A] block text-[11px]">Nhà vườn nhận:</span>
+                      <span className="font-extrabold text-base text-emerald-700 mt-0.5 block">{vnd(s.providerReceives)}</span>
+                    </div>
+                  </div>
+                  <ul className="m-0 pl-4 space-y-0.5 text-[11px] text-[#4B4764]">
+                    {Number(s.refundAmount || 0) > 0 && (
+                      <li>Đã hoàn cho khách (tiền công cây bị từ chối / tranh chấp, gồm 6%): {vnd(s.refundAmount)}</li>
+                    )}
+                    {compensation > 0 && <li>Đền khách từ tiền bảo đảm: {vnd(compensation)}</li>}
+                    {deposit > 0 && <li>Tiền bảo đảm trả lại cho vườn: {vnd(depositReturn)}</li>}
+                    {Number(s.declaredForfeitReceived || 0) > 0 && (
+                      <li>Tiền khai giá của khách chuyển cho vườn: {vnd(s.declaredForfeitReceived)}</li>
+                    )}
+                  </ul>
+                </div>
+              );
+            })()}
           </div>
 
           {/* 4. Add-on Services Section (Dịch vụ phát sinh ngoài gói) */}
@@ -1985,7 +2054,7 @@ export default function ProviderOrderDetailPage() {
                 {disputeDetail.status === 'RESOLVED' && (
                   <div className="space-y-1 text-[11px] text-emerald-800">
                     <p>
-                      Kết quả: <strong>{disputeDetail.outcome === 'OFFER_ACCEPTED' ? 'Hai bên đã thống nhất đề xuất' : disputeDetail.outcome === 'WITHDRAWN' ? 'Khách hàng đã rút khiếu nại' : 'Admin đã ra quyết định'}</strong>
+                      Kết quả: <strong>{disputeDetail.outcome === 'AGREED' ? 'Hai bên đã thống nhất đề xuất' : disputeDetail.outcome === 'WITHDRAWN' ? 'Khách hàng đã rút khiếu nại' : 'Admin đã ra quyết định'}</strong>
                       {disputeDetail.customerReceives && (
                         <span> · Khách nhận bồi hoàn: <strong>{Number(disputeDetail.customerReceives).toLocaleString('vi-VN')} VNĐ</strong></span>
                       )}

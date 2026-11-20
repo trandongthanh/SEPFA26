@@ -164,11 +164,11 @@ export default function AdminPackagesPage() {
             type="primary"
             loading={loading}
             onClick={stop(() => runAction(pkg, 'approve'))}
-            className="!bg-[#10B981] hover:!bg-[#059669] !border-none !rounded-lg !text-xs !font-semibold"
+            className="!bg-[#10B981] hover:!bg-[#059669] !border-none !rounded-lg !text-xs !font-semibold whitespace-nowrap shrink-0"
           >
             Duyệt
           </Button>
-          <Button size="small" danger onClick={stop(() => openDrawer(pkg, true))} className="!rounded-lg !text-xs">
+          <Button size="small" danger onClick={stop(() => openDrawer(pkg, true))} className="!rounded-lg !text-xs whitespace-nowrap shrink-0">
             Từ chối
           </Button>
         </div>
@@ -263,7 +263,7 @@ export default function AdminPackagesPage() {
         );
       },
     },
-    { title: 'Thao tác', key: 'action', align: 'right', width: 170, render: (_, p) => rowActions(p) },
+    { title: 'Thao tác', key: 'action', align: 'right', width: 190, render: (_, p) => rowActions(p) },
   ];
 
   if (!isAdmin) {
