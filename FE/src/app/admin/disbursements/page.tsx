@@ -25,6 +25,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { useAuthStore } from '@/lib/auth.store';
+import { getApiErrorCode } from '@/lib/api';
 import {
   DisbursementItem,
   DisbursementStatus,
@@ -48,6 +49,22 @@ const TYPE_LABELS: Record<DisbursementType, string> = {
 };
 
 const RECIPIENT_LABELS = { CUSTOMER: 'Khách hàng', PROVIDER: 'Nhà vườn' } as const;
+
+// Người nhận chưa khai tài khoản: khách bổ sung trên app, nhà vườn bổ sung ở web Hồ sơ.
+// BE tự lấy tài khoản mới trong hồ sơ khi admin bấm xác nhận, không cần thao tác gì thêm.
+const MISSING_BANK = {
+  CUSTOMER: { label: 'Khách chưa khai tài khoản', hint: 'Chờ khách bổ sung trên app' },
+  PROVIDER: { label: 'Nhà vườn chưa khai tài khoản', hint: 'Chờ nhà vườn bổ sung ở trang Hồ sơ' },
+} as const;
+
+const MARK_PAID_ERRORS: Record<string, string> = {
+  DISBURSEMENT_NOT_ELIGIBLE: 'Chưa hết thời gian chờ 3 ngày khiếu nại nên chưa thể giải ngân.',
+  DISBURSEMENT_BANK_INFO_MISSING:
+    'Khách chưa khai tài khoản ngân hàng nên chưa thể xác nhận đã chuyển. Đợi khách bổ sung trên app rồi thử lại.',
+  PROVIDER_BANK_INFO_MISSING:
+    'Nhà vườn chưa khai tài khoản ngân hàng nên chưa thể xác nhận đã chuyển. Nhắc nhà vườn bổ sung ở trang Hồ sơ rồi thử lại.',
+  DISBURSEMENT_ALREADY_PAID: 'Lệnh chi này đã được xác nhận thanh toán trước đó.',
+};
 
 const recipientOf = (record: DisbursementItem) =>
   record.recipient ?? (record.customerId ? 'CUSTOMER' : 'PROVIDER');
@@ -134,18 +151,18 @@ export default function AdminDisbursementsPage() {
       await fetchDisbursements(page, statusFilter);
     } catch (err: any) {
       if (err?.errorFields) return;
-      const raw = err?.response?.data?.message || '';
+      // Interceptor đã đổi data.message thành câu tiếng Việt → rẽ nhánh theo mã gốc (rawCode).
+      const code = getApiErrorCode(err);
       const friendly =
-        raw === 'DISBURSEMENT_NOT_ELIGIBLE'
-          ? 'Chưa hết thời gian chờ 3 ngày khiếu nại nên chưa thể giải ngân.'
-          : raw === 'PROVIDER_BANK_INFO_MISSING'
-            ? 'Nhà vườn chưa cập nhật đầy đủ thông tin ngân hàng.'
-            : raw === 'DISBURSEMENT_BANK_INFO_MISSING'
-              ? 'Khách hàng chưa khai báo đầy đủ thông tin ngân hàng.'
-            : raw === 'DISBURSEMENT_ALREADY_PAID'
-              ? 'Lệnh chi này đã được xác nhận thanh toán trước đó.'
-              : raw || 'Xác nhận chuyển khoản thất bại.';
+        (code && MARK_PAID_ERRORS[code]) ||
+        err?.response?.data?.message ||
+        'Xác nhận chuyển khoản thất bại.';
       message.error(friendly);
+      // Lệnh vừa được người khác xác nhận / hồ sơ ngân hàng vừa đổi → tải lại cho đúng trạng thái.
+      if (code && MARK_PAID_ERRORS[code]) {
+        setPayModalOpen(false);
+        await fetchDisbursements(page, statusFilter);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -215,9 +232,12 @@ export default function AdminDisbursementsPage() {
             </div>
           </div>
         ) : (
-          <Tag color="orange" className="!rounded-lg text-[11px]">
-            Chưa có TK ngân hàng
-          </Tag>
+          <div className="flex flex-col items-start gap-1">
+            <Tag color="orange" className="!m-0 !rounded-lg text-[11px]">
+              ⚠ {MISSING_BANK[recipientOf(record)].label}
+            </Tag>
+            <span className="text-[11px] text-[#6E6A8A]">{MISSING_BANK[recipientOf(record)].hint}</span>
+          </div>
         ),
     },
     {
@@ -294,12 +314,10 @@ export default function AdminDisbursementsPage() {
 
         if (!record.bank) {
           return (
-            <Tooltip
-              title={`${RECIPIENT_LABELS[recipientOf(record)]} chưa khai báo đủ thông tin ngân hàng`}
-            >
-              <Tag color="orange" className="!rounded-lg !m-0 !text-xs">
-                Thiếu TK ngân hàng
-              </Tag>
+            <Tooltip title={`${MISSING_BANK[recipientOf(record)].hint}, rồi mới xác nhận được.`}>
+              <Button size="small" disabled icon={<SendOutlined />} className="!rounded-xl !text-xs whitespace-nowrap">
+                Xác nhận đã chuyển
+              </Button>
             </Tooltip>
           );
         }
