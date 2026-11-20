@@ -100,7 +100,7 @@ export class OrdersController {
   @ApiResponse({
     status: 403,
     description:
-      'PROFILE_NOT_APPROVED | PROVIDER_IDENTITY_INCOMPLETE (ACCEPT khi vườn chưa khai SĐT/số CCCD)',
+      'PROFILE_NOT_APPROVED | PROVIDER_IDENTITY_INCOMPLETE (ACCEPT khi vườn chưa đủ SĐT/Địa chỉ/Ngày sinh/Quê quán)',
   })
   respondNegotiation(
     @CurrentUser() user: CurrentUserData,

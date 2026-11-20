@@ -52,7 +52,7 @@ export class AdminProvidersController {
   @ApiResponse({
     status: 400,
     description:
-      'PROVIDER_PROFILE_NOT_SUBMITTED (APPROVED khi thiếu SĐT/số CCCD/ảnh CCCD 2 mặt/selfie)',
+      'PROVIDER_PROFILE_NOT_SUBMITTED (APPROVED khi thiếu Họ tên/SĐT/Địa chỉ/Ngày sinh/Quê quán)',
   })
   @ApiResponse({ status: 404, description: 'PROVIDER_NOT_FOUND' })
   verify(

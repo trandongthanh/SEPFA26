@@ -1,7 +1,6 @@
 import { ConflictException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import {
-  CCCD_REGEX,
   VN_PHONE_REGEX,
   mapIdentityUniqueViolation,
   normalizePhone,
@@ -18,13 +17,6 @@ describe('identity helpers', () => {
       );
       expect(mapped).toBeInstanceOf(ConflictException);
       expect((mapped as ConflictException).message).toBe('PHONE_EXISTS');
-    });
-
-    it('23505 trên cccd_number_hash → 409 CCCD_NUMBER_EXISTS', () => {
-      const mapped = mapIdentityUniqueViolation(
-        pgErr('Key (cccd_number_hash)=(abc) already exists.'),
-      );
-      expect((mapped as ConflictException).message).toBe('CCCD_NUMBER_EXISTS');
     });
 
     it('23505 cột khác (vd account_id) hoặc lỗi khác → trả nguyên lỗi', () => {
@@ -71,12 +63,6 @@ describe('identity helpers', () => {
       expect(VN_PHONE_REGEX.test('+84389123456')).toBe(true);
       expect(VN_PHONE_REGEX.test('0109123456')).toBe(false);
       expect(VN_PHONE_REGEX.test('090912345')).toBe(false);
-    });
-
-    it('CCCD_REGEX chỉ nhận đúng 12 chữ số', () => {
-      expect(CCCD_REGEX.test('001234567890')).toBe(true);
-      expect(CCCD_REGEX.test('00123456789')).toBe(false);
-      expect(CCCD_REGEX.test('00123456789a')).toBe(false);
     });
   });
 });

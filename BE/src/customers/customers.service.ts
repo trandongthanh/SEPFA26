@@ -31,11 +31,9 @@ export class CustomersService {
   ) {}
 
   /**
-   * Hồ sơ khách của account — CHƯA có thì tạo hồ sơ rỗng (PENDING).
+   * Hồ sơ khách của account — CHƯA có thì tạo hồ sơ rỗng (NOT_SUBMITTED).
    * Đăng ký thường/Google chỉ tạo ACCOUNT; hồ sơ sinh ở lần đầu khách dùng tới
    * (GET/PUT /customers/me/profile, eKYC). Ngoài account_id, mọi cột đều nullable/default.
-   * INSERT ... ON CONFLICT DO NOTHING: 2 request đầu tiên chạy song song vẫn ra đúng 1 hồ sơ,
-   * và không làm hỏng transaction của caller (khác với bắt lỗi 23505).
    */
   async getOrCreateProfile(
     accountId: string,
@@ -50,13 +48,13 @@ export class CustomersService {
       .createQueryBuilder()
       .insert()
       .into(CustomerProfile)
-      .values({ accountId })
+      .values({ accountId, verificationStatus: 'NOT_SUBMITTED' })
       .orIgnore()
       .execute();
     return repo.findOneOrFail({ where: { accountId } });
   }
 
-  // GET /customers/me/profile — bản cho chủ hồ sơ: SĐT + CCCD đã giải mã.
+  // GET /customers/me/profile — bản cho chủ hồ sơ: SĐT đã giải mã + thông tin cơ bản (không lưu CCCD/ảnh).
   async getMyProfile(accountId: string) {
     const profile = await this.getOrCreateProfile(accountId);
     const account = await this.accountRepo.findOne({
@@ -66,39 +64,40 @@ export class CustomersService {
   }
 
   // C2: MERGE — chỉ cập nhật field client GỬI (!== undefined); field không gửi giữ nguyên.
-  // GPS là tiền đề tính phí ship: đổi mỗi địa chỉ KHÔNG được xoá mất GPS đã ghim
-  // (trước đây full-replace làm mất GPS → khách không đặt được đơn: CUSTOMER_GPS_REQUIRED).
-  // Sửa ENTITY (cccdNumber còn mã hoá), không sửa bản đã giải mã của getMyProfile — trước
-  // đây save bản giải mã → cột cccd_number bị ghi đè bằng số CCCD dạng rõ.
   async updateMyProfile(accountId: string, dto: UpsertCustomerProfileDto) {
     assertGpsPair(dto.gpsLat, dto.gpsLng);
 
     try {
-      // SĐT (bảng accounts) + hồ sơ ghi cùng 1 transaction: lỗi 1 bên thì không bên nào đổi.
+      // SĐT/Họ tên (bảng accounts) + hồ sơ ghi cùng 1 transaction: lỗi 1 bên thì không bên nào đổi.
       await this.dataSource.transaction(async (manager) => {
         const profile = await this.getOrCreateProfile(accountId, manager);
+        const account = await manager.findOne(Account, {
+          where: { id: accountId },
+        });
 
-        // Đã duyệt → khóa toàn bộ giấy tờ định danh, không cho sửa.
-        const identityFieldsSent =
-          dto.cccdNumber !== undefined ||
-          dto.cccdFrontUrl !== undefined ||
-          dto.cccdBackUrl !== undefined ||
-          dto.selfieWithIdUrl !== undefined;
-        if (identityFieldsSent && profile.verificationStatus === 'APPROVED') {
+        // Đã duyệt → khóa ngày sinh & quê quán (không cho tự ý đổi sau khi đã duyệt).
+        const identityChangedAfterApproval =
+          (dto.dateOfBirth !== undefined &&
+            dto.dateOfBirth !== profile.dateOfBirth) ||
+          (dto.placeOfOrigin !== undefined &&
+            dto.placeOfOrigin !== profile.placeOfOrigin);
+        if (
+          identityChangedAfterApproval &&
+          profile.verificationStatus === 'APPROVED'
+        ) {
           throw new BadRequestException('IDENTITY_LOCKED_AFTER_APPROVAL');
         }
 
+        if (dto.dateOfBirth !== undefined)
+          profile.dateOfBirth = dto.dateOfBirth || null;
+        if (dto.placeOfOrigin !== undefined)
+          profile.placeOfOrigin = dto.placeOfOrigin || null;
         if (dto.address !== undefined) profile.address = dto.address;
         if (dto.defaultPickupAddress !== undefined)
           profile.defaultPickupAddress = dto.defaultPickupAddress;
         if (dto.gpsLat !== undefined) profile.gpsLat = String(dto.gpsLat);
         if (dto.gpsLng !== undefined) profile.gpsLng = String(dto.gpsLng);
-        if (dto.cccdFrontUrl !== undefined)
-          profile.cccdFrontUrl = dto.cccdFrontUrl;
-        if (dto.cccdBackUrl !== undefined)
-          profile.cccdBackUrl = dto.cccdBackUrl;
-        if (dto.selfieWithIdUrl !== undefined)
-          profile.selfieWithIdUrl = dto.selfieWithIdUrl;
+
         // Tài khoản nhận tiền hoàn: gửi chuỗi rỗng (sau trim) = xoá trường đó.
         if (dto.bankName !== undefined) profile.bankName = dto.bankName || null;
         if (dto.bankAccount !== undefined)
@@ -106,17 +105,9 @@ export class CustomersService {
         if (dto.bankHolder !== undefined)
           profile.bankHolder = dto.bankHolder || null;
 
-        // Mã hóa AES + hash SHA-256 để check unique (giống SĐT).
-        if (dto.cccdNumber !== undefined) {
-          const cccdNumberHash = sha256Hex(dto.cccdNumber);
-          const duplicate = await manager.findOne(CustomerProfile, {
-            where: { cccdNumberHash },
-          });
-          if (duplicate && duplicate.accountId !== accountId) {
-            throw new ConflictException('CCCD_NUMBER_EXISTS');
-          }
-          profile.cccdNumber = this.crypto.encrypt(dto.cccdNumber);
-          profile.cccdNumberHash = cccdNumberHash;
+        const accountPatch: Partial<Account> = {};
+        if (dto.fullName !== undefined && dto.fullName.trim()) {
+          accountPatch.fullName = dto.fullName.trim();
         }
 
         if (dto.phone !== undefined) {
@@ -128,17 +119,40 @@ export class CustomersService {
           if (duplicate && duplicate.id !== accountId) {
             throw new ConflictException('PHONE_EXISTS');
           }
-          await manager.update(
-            Account,
-            { id: accountId },
-            { phone: this.crypto.encrypt(normalized), phoneHash },
-          );
+          accountPatch.phone = this.crypto.encrypt(normalized);
+          accountPatch.phoneHash = phoneHash;
+        }
+
+        const effectiveFullName = (
+          accountPatch.fullName ??
+          account?.fullName ??
+          ''
+        ).trim();
+        const effectivePhone = accountPatch.phone ?? account?.phone ?? null;
+        const isIdentityComplete = Boolean(
+          effectiveFullName &&
+            effectivePhone &&
+            profile.address?.trim() &&
+            profile.dateOfBirth?.trim() &&
+            profile.placeOfOrigin?.trim(),
+        );
+
+        if (
+          isIdentityComplete &&
+          (profile.verificationStatus === 'NOT_SUBMITTED' ||
+            profile.verificationStatus === 'REJECTED')
+        ) {
+          profile.verificationStatus = 'PENDING';
+          profile.verificationNote = null;
+        }
+
+        if (Object.keys(accountPatch).length > 0) {
+          await manager.update(Account, { id: accountId }, accountPatch);
         }
 
         await manager.save(profile);
       });
     } catch (err) {
-      // Check trùng ở trên có khe đua (2 khách cùng SĐT/CCCD song song) — UNIQUE là chốt cuối.
       throw mapIdentityUniqueViolation(err);
     }
 
@@ -170,10 +184,11 @@ export class CustomersService {
     if (!profile) throw new NotFoundException('CUSTOMER_PROFILE_NOT_FOUND');
     if (
       dto.decision === 'APPROVED' &&
-      (!profile.cccdFrontUrl ||
-        !profile.cccdBackUrl ||
-        !profile.selfieWithIdUrl ||
-        !profile.cccdNumber)
+      (!profile.account?.fullName ||
+        !profile.account?.phone ||
+        !profile.address ||
+        !profile.dateOfBirth ||
+        !profile.placeOfOrigin)
     ) {
       throw new ConflictException('CUSTOMER_IDENTITY_DOCUMENTS_REQUIRED');
     }
@@ -190,31 +205,31 @@ export class CustomersService {
     return this.toAdminView(await this.profileRepo.save(profile));
   }
 
-  // Bản cho chủ hồ sơ: giải mã SĐT/CCCD, bỏ cccdNumberHash (hash không khoá — dò ngược được).
-  // Bỏ cả lostDisputeCount: số lần thua tranh chấp là ghi chú nội bộ cho admin, khách không thấy.
+  // Bản cho chủ hồ sơ: giải mã SĐT, bỏ lostDisputeCount nội bộ.
   private toOwnerView(profile: CustomerProfile, account: Account | null) {
     const {
-      cccdNumberHash: _hash,
       account: _account,
       lostDisputeCount: _lostDisputeCount,
       ...rest
     } = profile;
     return {
       ...rest,
+      fullName: account?.fullName ?? null,
+      email: account?.email ?? null,
       phone: account?.phone ? this.crypto.decrypt(account.phone) : null,
-      cccdNumber: rest.cccdNumber ? this.crypto.decrypt(rest.cccdNumber) : null,
     };
   }
 
-  // Admin thấy bản giải mã SĐT/CCCD; account qua toAccountSummary, bỏ cccdNumberHash.
+  // Admin thấy bản giải mã SĐT; account qua toAccountSummary.
   private toAdminView(profile: CustomerProfile) {
-    const { account, cccdNumberHash: _hash, ...rest } = profile;
+    const { account, ...rest } = profile;
     const summary = account ? toAccountSummary(account, this.crypto) : null;
     return {
       ...rest,
       account: summary,
+      fullName: summary?.fullName ?? null,
+      email: summary?.email ?? null,
       phone: summary?.phone ?? null,
-      cccdNumber: rest.cccdNumber ? this.crypto.decrypt(rest.cccdNumber) : null,
     };
   }
 }

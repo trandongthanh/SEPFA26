@@ -678,9 +678,6 @@ describe('Auth (e2e)', () => {
       'bankAccount',
       'bankName',
       'bankHolder',
-      'cccdFrontUrl',
-      'cccdBackUrl',
-      'selfieUrl',
       'businessLicenseUrl',
       'licenseInfo',
       'verificationNote',
@@ -700,7 +697,7 @@ describe('Auth (e2e)', () => {
       return res.body as { accessToken: string; account: { id: string } };
     };
 
-    // Vườn APPROVED có đủ dữ liệu nhạy cảm (SĐT mã hoá, STK, ảnh CCCD, GPKD, ghi chú admin).
+    // Vườn APPROVED có dữ liệu nhạy cảm (SĐT mã hoá, STK, GPKD, ghi chú admin) — không lưu CCCD/ảnh chân dung.
     const seedProvider = async () => {
       const session = await loginAs('vuon@example.com', 'PROVIDER');
       const crypto = ctx.app.get(CryptoService);
@@ -711,12 +708,11 @@ describe('Auth (e2e)', () => {
       const [{ id }] = (await ctx.dataSource.query(
         `INSERT INTO provider_profiles
            (account_id, provider_type, display_name, verification_status, license_info,
-            verification_note, bank_name, bank_account, bank_holder, cccd_front_url,
-            cccd_back_url, selfie_url, business_license_url, specialties)
+            verification_note, bank_name, bank_account, bank_holder, business_license_url,
+            specialties, address, date_of_birth, place_of_origin)
          VALUES ($1, 'NURSERY', 'Vườn Lan A', 'APPROVED', 'GPKD 0123', 'ghi chú nội bộ',
-                 'VCB', '0123456789', 'NGUYEN VAN A', 'https://x/cccd-f.jpg',
-                 'https://x/cccd-b.jpg', 'https://x/selfie.jpg', 'https://x/gpkd.jpg',
-                 'Hồ Điệp')
+                 'VCB', '0123456789', 'NGUYEN VAN A', 'https://x/gpkd.jpg',
+                 'Hồ Điệp', '12 Nguyễn Văn Bảo', '20/10/1985', 'Lâm Đồng')
          RETURNING id`,
         [session.account.id],
       )) as { id: string }[];
@@ -821,13 +817,18 @@ describe('Auth (e2e)', () => {
       expectAbsent(mine.body, [...SECRET_KEYS, ...PRIVATE_PROFILE_KEYS]);
     });
 
-    it('màn admin (khách + vườn + duyệt khách): account rút gọn, SĐT/CCCD giải mã, không lộ hash', async () => {
+    it('màn admin (khách + vườn + duyệt khách): account rút gọn, SĐT giải mã, không chứa CCCD', async () => {
       const provider = await seedProvider();
       const customer = await loginAs('khach@example.com', 'CUSTOMER');
       await request(http)
         .put(`${API}/customers/me/profile`)
         .set('Authorization', `Bearer ${customer.accessToken}`)
-        .send({ phone: '0911222333', cccdNumber: '001234567890' })
+        .send({
+          phone: '0911222333',
+          dateOfBirth: '15/05/1992',
+          placeOfOrigin: 'Quận 1, TP.HCM',
+          address: '25 Lê Lợi',
+        })
         .expect(200);
 
       // ADMIN không tự đăng ký được → tạo account thường rồi nâng quyền trong DB.
@@ -857,26 +858,26 @@ describe('Auth (e2e)', () => {
       expect(Object.keys(row.account).sort()).toEqual(ACCOUNT_KEYS);
       expect(row).toMatchObject({
         phone: '0911222333',
-        cccdNumber: '001234567890',
+        dateOfBirth: '15/05/1992',
+        placeOfOrigin: 'Quận 1, TP.HCM',
       });
 
       const detail = await request(http)
         .get(`${API}/customers/admin/${row.id}`)
         .set(asAdmin)
         .expect(200);
-      expect(detail.body.cccdNumber).toBe('001234567890');
+      expect(detail.body.dateOfBirth).toBe('15/05/1992');
 
-      // Trước đây trả entity thô: cccdNumber còn mã hoá + cccdNumberHash + account entity.
       const verified = await request(http)
         .post(`${API}/customers/admin/${row.id}/verify`)
         .set(asAdmin)
-        .send({ decision: 'REJECTED', note: 'Ảnh CCCD bị mờ' })
+        .send({ decision: 'REJECTED', note: 'Thiếu thông tin quê quán rõ ràng' })
         .expect(201);
       expect(verified.body).toMatchObject({
         verificationStatus: 'REJECTED',
-        verificationNote: 'Ảnh CCCD bị mờ',
+        verificationNote: 'Thiếu thông tin quê quán rõ ràng',
         phone: '0911222333',
-        cccdNumber: '001234567890',
+        dateOfBirth: '15/05/1992',
       });
       expect(Object.keys(verified.body.account).sort()).toEqual(ACCOUNT_KEYS);
 
@@ -901,8 +902,10 @@ describe('Auth (e2e)', () => {
       for (const res of [customers, detail, verified, providers, vuonDetail]) {
         expectAbsent(res.body, [
           ...SECRET_KEYS,
+          'cccdNumber',
           'cccdNumberHash',
-          'cccd_number_hash',
+          'cccdFrontUrl',
+          'selfieUrl',
         ]);
       }
     });
@@ -936,16 +939,18 @@ describe('Auth (e2e)', () => {
         .send(body);
 
     describe('customer', () => {
-      it('GET lần đầu → 200 hồ sơ rỗng PENDING (tự tạo), gọi lại không tạo thêm', async () => {
+      it('GET lần đầu → 200 hồ sơ rỗng NOT_SUBMITTED (tự tạo), gọi lại không tạo thêm', async () => {
         const token = await session('khach@example.com', 'CUSTOMER');
         const res = await getCustomer(token).expect(200);
         expect(res.body).toMatchObject({
           accountId: expect.any(String),
-          verificationStatus: 'PENDING',
+          verificationStatus: 'NOT_SUBMITTED',
           address: null,
           phone: null,
-          cccdNumber: null,
+          dateOfBirth: null,
+          placeOfOrigin: null,
         });
+        expect(res.body).not.toHaveProperty('cccdNumber');
         expect(res.body).not.toHaveProperty('cccdNumberHash');
         await getCustomer(token).expect(200);
         expect(await countRows('customer_profiles')).toBe(1);
@@ -961,26 +966,25 @@ describe('Auth (e2e)', () => {
         expect(await countRows('customer_profiles')).toBe(1);
       });
 
-      it('PUT CCCD rồi PUT địa chỉ → CCCD vẫn đọc được, DB không lưu CCCD dạng rõ', async () => {
+      it('PUT ngày sinh + quê quán + SĐT rồi PUT địa chỉ → giữ nguyên thông tin cũ và chuyển sang PENDING', async () => {
         const token = await session('khach@example.com', 'CUSTOMER');
-        await putCustomer(token, {
-          cccdNumber: '001234567890',
+        const partial = await putCustomer(token, {
+          dateOfBirth: '15/05/1992',
+          placeOfOrigin: 'Quận 1, TP.HCM',
           phone: '0909123456',
         }).expect(200);
-        // Trước đây: lần PUT thứ 2 save bản đã giải mã → cột cccd_number thành "001234567890".
+        expect(partial.body.verificationStatus).toBe('NOT_SUBMITTED');
+
         const res = await putCustomer(token, { address: '25 Lê Lợi' }).expect(
           200,
         );
         expect(res.body).toMatchObject({
           address: '25 Lê Lợi',
-          cccdNumber: '001234567890',
+          dateOfBirth: '15/05/1992',
+          placeOfOrigin: 'Quận 1, TP.HCM',
           phone: '0909123456',
+          verificationStatus: 'PENDING',
         });
-        const [row] = (await ctx.dataSource.query(
-          'SELECT cccd_number FROM customer_profiles',
-        )) as { cccd_number: string }[];
-        expect(row.cccd_number).not.toBe('001234567890');
-        expect(row.cccd_number).not.toMatch(/^\d{12}$/);
         await getCustomer(token).expect(200);
       });
 
@@ -996,16 +1000,6 @@ describe('Auth (e2e)', () => {
         const profile = await getCustomer(b).expect(200);
         expect(profile.body.address).toBeNull();
         expect(profile.body.phone).toBeNull();
-      });
-
-      it('409 CCCD_NUMBER_EXISTS khi CCCD đã thuộc khách khác', async () => {
-        const a = await session('a@example.com', 'CUSTOMER');
-        const b = await session('b@example.com', 'CUSTOMER');
-        await putCustomer(a, { cccdNumber: '001234567890' }).expect(200);
-        const res = await putCustomer(b, {
-          cccdNumber: '001234567890',
-        }).expect(409);
-        expect(res.body.message).toBe('CCCD_NUMBER_EXISTS');
       });
 
       it('403 khi PROVIDER gọi API hồ sơ customer (không tạo hồ sơ customer cho provider)', async () => {

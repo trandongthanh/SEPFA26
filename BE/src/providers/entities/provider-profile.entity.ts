@@ -1,4 +1,3 @@
-import { Exclude } from 'class-transformer';
 import {
   Check,
   Column,
@@ -119,32 +118,13 @@ export class ProviderProfile extends BaseEntity {
   @Column({ type: 'varchar', length: 100, name: 'bank_holder', nullable: true })
   bankHolder!: string | null;
 
-  @Column({ type: 'varchar', length: 500, name: 'cccd_front_url', nullable: true })
-  cccdFrontUrl!: string | null;
+  // Ngày tháng năm sinh và Quê quán phục vụ xác minh pháp lý & hợp đồng điện tử
+  // (KHÔNG thu giữ/lưu trữ số CCCD, ảnh CCCD và ảnh chân dung).
+  @Column({ type: 'varchar', length: 20, name: 'date_of_birth', nullable: true })
+  dateOfBirth!: string | null;
 
-  @Column({ type: 'varchar', length: 500, name: 'cccd_back_url', nullable: true })
-  cccdBackUrl!: string | null;
-
-  // Số CCCD — mã hoá AES-256-GCM (CryptoService), chỉ chủ hồ sơ/admin/hợp đồng thấy bản giải mã.
-  // @Exclude: lỡ có chỗ trả entity thô (vd admin xem gói kèm provider) thì không lộ ciphertext.
-  @Exclude({ toPlainOnly: true })
-  @Column({ type: 'varchar', length: 500, name: 'cccd_number', nullable: true })
-  cccdNumber!: string | null;
-
-  // SHA-256 của số CCCD → UNIQUE: 2 vườn không khai trùng 1 CCCD (chỉ trong bảng provider —
-  // 1 người được có cả tài khoản khách lẫn vườn). Hash không khoá → KHÔNG BAO GIỜ trả ra API.
-  @Exclude({ toPlainOnly: true })
-  @Index('IDX_provider_profiles_cccd_number_hash', { unique: true })
-  @Column({
-    type: 'varchar',
-    length: 64,
-    name: 'cccd_number_hash',
-    nullable: true,
-  })
-  cccdNumberHash!: string | null;
-
-  @Column({ type: 'varchar', length: 500, name: 'selfie_url', nullable: true })
-  selfieUrl!: string | null;
+  @Column({ type: 'varchar', length: 255, name: 'place_of_origin', nullable: true })
+  placeOfOrigin!: string | null;
 
   @Column({ type: 'varchar', length: 500, name: 'business_license_url', nullable: true })
   businessLicenseUrl!: string | null;

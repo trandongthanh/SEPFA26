@@ -185,8 +185,7 @@ def _extract_with_easyocr(image_bytes: bytes) -> dict:
 
     doc_type = _detect_doc_type(all_text_upper)
 
-    # Extract fields with specialized logic for Vietnamese CCCD
-    id_number = _extract_id_number(text_lines, all_text, doc_type)
+    # Extract fields with specialized logic for Vietnamese CCCD (không thu thập số CCCD)
     full_name = _extract_name(text_lines)
     dob, expiry = _extract_dates(text_lines, all_text)
     gender = _extract_gender(all_text)
@@ -194,10 +193,8 @@ def _extract_with_easyocr(image_bytes: bytes) -> dict:
     origin = _extract_origin(text_lines)
     residence = _extract_residence(text_lines)
 
-    # Bắt buộc ảnh phải đầy đủ: không bị mất góc/cắt mất số CCCD, ngày sinh, họ tên hoặc phần dưới thẻ
+    # Bắt buộc ảnh phải đầy đủ: không bị mất góc/cắt mất họ tên, ngày sinh hoặc phần dưới thẻ
     missing_fields = []
-    if not id_number:
-        missing_fields.append("đủ 12 số CCCD")
     if not full_name:
         missing_fields.append("họ và tên")
     if not dob:
@@ -211,16 +208,18 @@ def _extract_with_easyocr(image_bytes: bytes) -> dict:
     if missing_fields or _has_clipped_text(text_lines, img_w, img_h):
         logger.warning(
             f"Rejected incomplete/cropped front CCCD: missing={missing_fields}, "
-            f"clipped={_has_clipped_text(text_lines, img_w, img_h)}, id={bool(id_number)}, dob={dob}"
+            f"clipped={_has_clipped_text(text_lines, img_w, img_h)}, dob={dob}"
         )
         return {
-            "error": "Ảnh mặt trước CCCD bị mất góc, thiếu thông tin hoặc chưa đủ rõ (cần thấy rõ 4 góc thẻ, đủ 12 số CCCD, họ tên và ngày sinh). Vui lòng chụp lại toàn bộ thẻ."
+            "error": "Ảnh mặt trước CCCD bị mất góc, thiếu thông tin hoặc chưa đủ rõ (cần thấy rõ 4 góc thẻ, họ tên, ngày sinh, quê quán và nơi thường trú). Vui lòng chụp lại toàn bộ thẻ."
         }
 
     avg_conf = sum(t['confidence'] for t in text_lines) / max(len(text_lines), 1)
+    # Loại bỏ mọi chuỗi 9-12 chữ số (số CCCD/CMND) khỏi raw_texts để không rò rỉ dữ liệu nhạy cảm
+    scrubbed_raw_texts = [re.sub(r'\b\d{9,12}\b', '', t['text']).strip() for t in text_lines]
+    scrubbed_raw_texts = [t for t in scrubbed_raw_texts if t]
 
     return {
-        'id_number': id_number,
         'full_name': full_name,
         'date_of_birth': dob,
         'gender': gender,
@@ -229,28 +228,9 @@ def _extract_with_easyocr(image_bytes: bytes) -> dict:
         'place_of_residence': residence,
         'expiry_date': expiry,
         'id_doc_type': doc_type,
-        'raw_texts': [t['text'] for t in text_lines],
+        'raw_texts': scrubbed_raw_texts,
         'confidence': round(avg_conf, 2)
     }
-
-def _extract_id_number(text_lines: List[Dict], all_text: str, doc_type: str = 'CCCD') -> Optional[str]:
-    """Extract exact 12-digit CCCD number (or 9-digit CMND only if card is CMND)."""
-    # CCCD bắt buộc phải đủ 12 chữ số liên tiếp (không nhận số bị cắt còn 9-11 chữ số)
-    match12 = re.search(r'(?<!\d)(\d{12})(?!\d)', all_text)
-    if match12:
-        return match12.group(1)
-
-    for line in text_lines:
-        digits = re.findall(r'(?<!\d)\d{12}(?!\d)', line['text'])
-        if digits:
-            return digits[0]
-
-    if doc_type == 'CMND':
-        match9 = re.search(r'(?<!\d)(\d{9})(?!\d)', all_text)
-        if match9:
-            return match9.group(1)
-
-    return None
 
 def _extract_name(text_lines: List[Dict]) -> Optional[str]:
     """
@@ -443,7 +423,6 @@ def _detect_doc_type(all_text_upper: str) -> str:
 def _extract_fallback(image_bytes: bytes) -> dict:
     """Fallback when EasyOCR is unavailable."""
     return {
-        'id_number': None,
         'full_name': None,
         'date_of_birth': None,
         'gender': 'Nam',

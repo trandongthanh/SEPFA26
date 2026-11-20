@@ -25,14 +25,15 @@ import { UpsertProfileDto } from './dto/upsert-profile.dto';
 import { VerifyProviderDto } from './dto/verify-provider.dto';
 import { UpsertPackageDto } from './dto/upsert-package.dto';
 
-// Đủ bộ định danh để admin duyệt + vườn nhận đơn (hợp đồng cần SĐT + số CCCD thật).
+// Đủ bộ định danh hợp lệ để admin duyệt + vườn nhận đơn: Họ tên, SĐT, Địa chỉ thường trú, Ngày sinh, Quê quán
+// (KHÔNG thu giữ số CCCD hay ảnh CCCD/chân dung).
 function hasCompleteIdentity(profile: ProviderProfile): boolean {
   return Boolean(
-    profile.cccdFrontUrl &&
-    profile.cccdBackUrl &&
-    profile.selfieUrl &&
-    profile.cccdNumber &&
-    profile.account?.phone,
+    profile.account?.fullName &&
+      profile.account?.phone &&
+      profile.address &&
+      profile.dateOfBirth &&
+      profile.placeOfOrigin,
   );
 }
 
@@ -60,7 +61,7 @@ export class ProvidersService {
   ) {}
 
   // Lấy hồ sơ của provider đang đăng nhập (GET /providers/me) — chủ hồ sơ thấy đủ field của mình
-  // (SĐT + số CCCD đã giải mã); không bao giờ thấy hash/ciphertext/passwordHash.
+  // (SĐT đã giải mã); không bao giờ thấy hash/ciphertext/passwordHash.
   async getMyProfile(accountId: string) {
     const profile = await this.profileRepo.findOne({
       where: { accountId },
@@ -75,7 +76,7 @@ export class ProvidersService {
   }
 
   // Upsert hồ sơ provider: chưa có → tạo (PENDING); có rồi → cập nhật. Trả cùng dạng GET /me.
-  // Đổi field nhạy cảm (license/type/ảnh giấy tờ/số CCCD) khi đang APPROVED → tự về PENDING.
+  // Đổi field nhạy cảm (license/type/GPKD/ngày sinh/quê quán) khi đang APPROVED → tự về PENDING.
   // address/gps/SĐT KHÔNG nhạy cảm (thông tin vận hành/liên lạc — đổi không cần duyệt lại).
   async upsertProfile(accountId: string, dto: UpsertProfileDto) {
     assertGpsPair(dto.gpsLat, dto.gpsLng);
@@ -97,9 +98,7 @@ export class ProvidersService {
     return this.getMyProfile(accountId);
   }
 
-  // Hồ sơ + SĐT (bảng accounts) ghi trong 1 transaction: lỗi 1 bên thì không bên nào đổi.
-  // Check trùng SĐT/CCCD bằng findOne trước; khe đua song song do UNIQUE index chặn (23505 → 409
-  // ở upsertProfile).
+  // Hồ sơ + SĐT/Họ tên (bảng accounts) ghi trong 1 transaction: lỗi 1 bên thì không bên nào đổi.
   private async writeProfile(
     accountId: string,
     dto: UpsertProfileDto,
@@ -113,17 +112,6 @@ export class ProvidersService {
       // providerType + displayName là 2 cột NOT NULL nên bắt buộc ở lần này.
       if (!existing && (!dto.providerType || !dto.displayName)) {
         throw new BadRequestException('PROVIDER_PROFILE_FIELDS_REQUIRED');
-      }
-
-      const cccdNumberHash =
-        dto.cccdNumber !== undefined ? sha256Hex(dto.cccdNumber) : undefined;
-      if (cccdNumberHash !== undefined) {
-        const duplicate = await manager.findOne(ProviderProfile, {
-          where: { cccdNumberHash },
-        });
-        if (duplicate && duplicate.accountId !== accountId) {
-          throw new ConflictException('CCCD_NUMBER_EXISTS');
-        }
       }
 
       let phone: { encrypted: string; hash: string } | undefined;
@@ -156,48 +144,49 @@ export class ProvidersService {
         const sensitiveChanged =
           existing.licenseInfo !== nextLicenseInfo ||
           existing.providerType !== nextProviderType ||
-          (dto.cccdFrontUrl !== undefined &&
-            existing.cccdFrontUrl !== dto.cccdFrontUrl) ||
-          (dto.cccdBackUrl !== undefined &&
-            existing.cccdBackUrl !== dto.cccdBackUrl) ||
           (dto.businessLicenseUrl !== undefined &&
             existing.businessLicenseUrl !== dto.businessLicenseUrl) ||
-          // Số CCCD đổi — KỂ CẢ khai lần đầu (null → số): số in lên hợp đồng phải được admin
-          // đối chiếu với ảnh CCCD. So hash vì cột cccdNumber là ciphertext (IV ngẫu nhiên).
-          (cccdNumberHash !== undefined &&
-            existing.cccdNumberHash !== cccdNumberHash);
+          (dto.dateOfBirth !== undefined &&
+            existing.dateOfBirth !== dto.dateOfBirth) ||
+          (dto.placeOfOrigin !== undefined &&
+            existing.placeOfOrigin !== dto.placeOfOrigin);
 
-        if (sensitiveChanged && existing.verificationStatus === 'APPROVED') {
+        if (existing.verificationStatus === 'REJECTED') {
+          // Vườn bị từ chối nộp lại hồ sơ → quay lại hàng chờ PENDING và xoá ghi chú từ chối cũ
+          // để admin thấy ở tab "Chờ duyệt" và không dính note cũ khi duyệt lại.
+          existing.verificationStatus = 'PENDING';
+          existing.verificationNote = null;
+        } else if (
+          sensitiveChanged &&
+          existing.verificationStatus === 'APPROVED'
+        ) {
           existing.verificationStatus = 'PENDING';
         }
       }
 
       this.applyProfileFields(profile, dto);
-      if (dto.cccdNumber !== undefined && cccdNumberHash !== undefined) {
-        profile.cccdNumber = this.crypto.encrypt(dto.cccdNumber);
-        profile.cccdNumberHash = cccdNumberHash;
-      }
       await manager.save(profile);
 
       // SĐT KHÔNG thuộc bộ KYC → không đụng verificationStatus (cố ý — đừng thêm luật về PENDING).
+      const accountPatch: Partial<Account> = {};
+      if (dto.fullName !== undefined && dto.fullName.trim()) {
+        accountPatch.fullName = dto.fullName.trim();
+      }
       if (phone) {
-        await manager.update(
-          Account,
-          { id: accountId },
-          { phone: phone.encrypted, phoneHash: phone.hash },
-        );
+        accountPatch.phone = phone.encrypted;
+        accountPatch.phoneHash = phone.hash;
+      }
+      if (Object.keys(accountPatch).length > 0) {
+        await manager.update(Account, { id: accountId }, accountPatch);
       }
     });
   }
 
-  // Dạng trả ra cho chủ hồ sơ + admin: bỏ hash, số CCCD giải mã, SĐT giải mã ở cấp ngoài,
+  // Dạng trả ra cho chủ hồ sơ + admin: SĐT giải mã ở cấp ngoài,
   // account qua toAccountSummary (không spread entity → không lộ passwordHash/phoneHash).
-  // `forAdmin`: số lần vườn "nhận đơn rồi bỏ" là ghi chú nội bộ cho admin — chủ hồ sơ không thấy
-  // (cùng cách với lostDisputeCount của khách).
   private toProfileView(profile: ProviderProfile, forAdmin = false) {
     const {
       account,
-      cccdNumberHash: _hash,
       cancelledOrderCount,
       ...rest
     } = profile;
@@ -207,7 +196,6 @@ export class ProvidersService {
       ...(forAdmin ? { cancelledOrderCount } : {}),
       account: summary,
       phone: summary?.phone ?? null,
-      cccdNumber: rest.cccdNumber ? this.crypto.decrypt(rest.cccdNumber) : null,
     };
   }
 
@@ -218,12 +206,11 @@ export class ProvidersService {
   ): void {
     if (dto.providerType !== undefined) profile.providerType = dto.providerType;
     if (dto.displayName !== undefined) profile.displayName = dto.displayName;
+    if (dto.dateOfBirth !== undefined) profile.dateOfBirth = dto.dateOfBirth || null;
+    if (dto.placeOfOrigin !== undefined) profile.placeOfOrigin = dto.placeOfOrigin || null;
     if (dto.bio !== undefined) profile.bio = dto.bio;
     if (dto.licenseInfo !== undefined) profile.licenseInfo = dto.licenseInfo;
     if (dto.portfolioUrl !== undefined) profile.portfolioUrl = dto.portfolioUrl;
-    if (dto.selfieUrl !== undefined) profile.selfieUrl = dto.selfieUrl;
-    if (dto.cccdFrontUrl !== undefined) profile.cccdFrontUrl = dto.cccdFrontUrl;
-    if (dto.cccdBackUrl !== undefined) profile.cccdBackUrl = dto.cccdBackUrl;
     if (dto.businessLicenseUrl !== undefined)
       profile.businessLicenseUrl = dto.businessLicenseUrl;
     if (dto.address !== undefined) profile.address = dto.address;

@@ -76,10 +76,9 @@ async function seedContractDemo() {
           defaultPickupAddress: '123 Đường Hoa Lan, Phường Bến Nghé, Quận 1, TP.HCM',
           gpsLat: '10.776889',
           gpsLng: '106.700806',
+          dateOfBirth: '15/05/1992',
+          placeOfOrigin: 'Quận 1, TP. Hồ Chí Minh',
           verificationStatus: 'APPROVED',
-          cccdFrontUrl: 'https://res.cloudinary.com/demo/image/upload/sample.jpg',
-          cccdBackUrl: 'https://res.cloudinary.com/demo/image/upload/sample.jpg',
-          selfieWithIdUrl: 'https://res.cloudinary.com/demo/image/upload/sample.jpg',
         }),
       );
     }
@@ -110,10 +109,9 @@ async function seedContractDemo() {
           address: '456 Xa Lộ Hà Nội, TP. Thủ Đức, TP.HCM',
           gpsLat: '10.849889',
           gpsLng: '106.771806',
+          dateOfBirth: '20/10/1985',
+          placeOfOrigin: 'TP. Bảo Lộc, Tỉnh Lâm Đồng',
           verificationStatus: 'APPROVED',
-          cccdFrontUrl: 'https://res.cloudinary.com/demo/image/upload/sample.jpg',
-          cccdBackUrl: 'https://res.cloudinary.com/demo/image/upload/sample.jpg',
-          selfieUrl: 'https://res.cloudinary.com/demo/image/upload/sample.jpg',
         }),
       );
     }

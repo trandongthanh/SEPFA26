@@ -196,14 +196,14 @@ describe('Phí lấy cây — xem trước + 1 lần cho cả đơn (e2e)', () =
     await quote(provider.auth, homeQuery(provider.packageId)).expect(403);
   });
 
-  // Khách đủ điều kiện đặt đơn: hồ sơ APPROVED + ảnh CCCD 2 mặt + selfie + SĐT (mã hoá như code thật).
+  // Khách đủ điều kiện đặt đơn: hồ sơ APPROVED + đủ thông tin cơ bản + SĐT (mã hoá như code thật).
   async function verifyCustomer(customer: OrderActor) {
     await sql(
       `UPDATE customer_profiles
           SET verification_status = 'APPROVED',
-              cccd_front_url = 'https://example.com/f.jpg',
-              cccd_back_url = 'https://example.com/b.jpg',
-              selfie_with_id_url = 'https://example.com/s.jpg'
+              address = '25 Lê Lợi, Q1, TP.HCM',
+              date_of_birth = '15/05/1992',
+              place_of_origin = 'Quận 1, TP.HCM'
         WHERE id = $1`,
       [customer.profileId],
     );
