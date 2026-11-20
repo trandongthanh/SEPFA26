@@ -99,16 +99,16 @@ export class OrderSeed {
   async provider(): Promise<OrderProvider> {
     const account = await this.account('PROVIDER');
     const n = String(this.seq).padStart(4, '0');
-    // SĐT ở accounts, số CCCD ở provider_profiles — đều là ciphertext như code thật lưu.
+    // SĐT ở accounts (mã hoá); địa chỉ, ngày sinh, quê quán ở provider_profiles — KHÔNG lưu số CCCD/ảnh.
     await this.ctx.dataSource.query(
       'UPDATE accounts SET phone = $2 WHERE id = $1',
       [account.accountId, this.crypto.encrypt(`090912${n}`)],
     );
     const [{ id }] = (await this.ctx.dataSource.query(
       `INSERT INTO provider_profiles
-         (account_id, provider_type, display_name, verification_status, cccd_number)
-       VALUES ($1, 'NURSERY', 'Vườn Lan', 'APPROVED', $2) RETURNING id`,
-      [account.accountId, this.crypto.encrypt(`00123456${n}`)],
+         (account_id, provider_type, display_name, verification_status, address, date_of_birth, place_of_origin)
+       VALUES ($1, 'NURSERY', 'Vườn Lan', 'APPROVED', '12 Nguyễn Văn Bảo', '20/10/1985', 'TP. Bảo Lộc, Lâm Đồng') RETURNING id`,
+      [account.accountId],
     )) as { id: string }[];
     const [{ id: packageId }] = (await this.ctx.dataSource.query(
       `INSERT INTO service_packages

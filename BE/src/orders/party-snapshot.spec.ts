@@ -10,10 +10,6 @@ import {
   readPartySnapshot,
 } from './party-snapshot';
 
-const CUSTOMER_CCCD = '001111111111';
-const PROVIDER_CCCD = '002222222222';
-const EKYC_CCCD = '003333333333';
-
 describe('party-snapshot', () => {
   const crypto = new CryptoService({
     get: () => '0'.repeat(64),
@@ -28,12 +24,10 @@ describe('party-snapshot', () => {
   const customer = (patch: Partial<CustomerProfile> = {}) =>
     Object.assign(new CustomerProfile(), {
       account: account('Khách A', '0911222333'),
+      dateOfBirth: '15/05/1992',
+      placeOfOrigin: 'Quận 1, TP.HCM',
       address: '25 Lê Lợi',
       defaultPickupAddress: null,
-      cccdNumber: crypto.encrypt(CUSTOMER_CCCD),
-      cccdFrontUrl: 'https://x/c-front.jpg',
-      cccdBackUrl: 'https://x/c-back.jpg',
-      selfieWithIdUrl: 'https://x/c-selfie.jpg',
       ...patch,
     });
 
@@ -41,60 +35,72 @@ describe('party-snapshot', () => {
     Object.assign(new ProviderProfile(), {
       account: account('Chủ vườn B', '0909123456'),
       displayName: 'Vườn Lan B',
+      dateOfBirth: '20/10/1985',
+      placeOfOrigin: 'TP. Bảo Lộc, Lâm Đồng',
       address: '12 Nguyễn Văn Bảo',
-      cccdNumber: crypto.encrypt(PROVIDER_CCCD),
-      cccdFrontUrl: 'https://x/p-front.jpg',
-      cccdBackUrl: 'https://x/p-back.jpg',
       ...patch,
     });
 
   describe('buildPartySnapshot', () => {
-    it('v2: SĐT + CCCD 2 bên lưu dạng MÃ HOÁ — JSON snapshot không chứa bản rõ', () => {
+    it('v3: SĐT 2 bên lưu dạng MÃ HOÁ, không chứa số CCCD hay ảnh giấy tờ', () => {
       const snap = buildPartySnapshot(
         { customer: customer(), provider: provider() },
         crypto,
       );
-      expect(snap.version).toBe(2);
+      expect(snap.version).toBe(3);
       const json = JSON.stringify(snap);
-      for (const plain of [
-        CUSTOMER_CCCD,
-        PROVIDER_CCCD,
+      for (const forbidden of [
         '0911222333',
         '0909123456',
+        'identityNumber',
+        'identityDocuments',
       ]) {
-        expect(json).not.toContain(plain);
+        expect(json).not.toContain(forbidden);
       }
-      expect(crypto.decrypt(snap.provider.identityNumberEnc!)).toBe(
-        PROVIDER_CCCD,
-      );
-      expect(snap.customer.identityDocuments).toHaveLength(3);
-      expect(snap.provider.identityDocuments).toHaveLength(2);
+      expect(snap.customer.dateOfBirth).toBe('15/05/1992');
+      expect(snap.customer.placeOfOrigin).toBe('Quận 1, TP.HCM');
+      expect(snap.provider.dateOfBirth).toBe('20/10/1985');
+      expect(snap.provider.placeOfOrigin).toBe('TP. Bảo Lộc, Lâm Đồng');
     });
 
-    it('khách chưa khai CCCD trong hồ sơ → lấy bản eKYC', () => {
+    it('khách chưa khai trên hồ sơ → fallback bản đọc từ eKYC (không bao gồm số CCCD)', () => {
       const snap = buildPartySnapshot(
         {
-          customer: customer({ cccdNumber: null }),
+          customer: customer({
+            dateOfBirth: null,
+            placeOfOrigin: null,
+            address: null,
+          }),
           provider: provider(),
-          customerEkycIdNumberEnc: crypto.encrypt(EKYC_CCCD),
+          customerEkyc: {
+            fullNameExtracted: 'KHÁCH EKYC',
+            dateOfBirth: '01/01/1990',
+            placeOfOrigin: 'Hà Nội',
+            placeOfResidence: '10 Hoàng Diệu',
+          },
         },
         crypto,
       );
-      expect(crypto.decrypt(snap.customer.identityNumberEnc!)).toBe(EKYC_CCCD);
+      expect(snap.customer.dateOfBirth).toBe('01/01/1990');
+      expect(snap.customer.placeOfOrigin).toBe('Hà Nội');
+      expect(snap.customer.address).toBe('10 Hoàng Diệu');
     });
 
     it('dữ liệu seed cũ là bản rõ → vẫn được mã hoá khi vào snapshot', () => {
       const snap = buildPartySnapshot(
         {
-          customer: customer({ cccdNumber: CUSTOMER_CCCD }),
-          provider: provider(),
+          customer: customer({ account: account('Khách A', '0911222333') }),
+          provider: provider({
+            account: Object.assign(new Account(), {
+              fullName: 'Chủ vườn B',
+              phone: '0909123456',
+            }),
+          }),
         },
         crypto,
       );
-      expect(snap.customer.identityNumberEnc).not.toBe(CUSTOMER_CCCD);
-      expect(crypto.decrypt(snap.customer.identityNumberEnc!)).toBe(
-        CUSTOMER_CCCD,
-      );
+      expect(snap.provider.phoneEnc).not.toBe('0909123456');
+      expect(crypto.decrypt(snap.provider.phoneEnc!)).toBe('0909123456');
     });
 
     it('thiếu dữ liệu → null (mã hoá) / "Chưa cung cấp" (chữ)', () => {
@@ -104,16 +110,16 @@ describe('party-snapshot', () => {
       );
       expect(snap.customer).toEqual({
         fullName: 'Chưa cung cấp',
+        dateOfBirth: null,
+        placeOfOrigin: null,
         address: 'Chưa cung cấp',
         phoneEnc: null,
-        identityNumberEnc: null,
-        identityDocuments: [],
       });
     });
   });
 
   describe('readPartySnapshot', () => {
-    it('v2 → giải mã, trả field phone/identityNumber (không còn *Enc)', () => {
+    it('v3 → giải mã SĐT, trả 5 trường hợp lệ (không còn *Enc, không còn CCCD/ảnh)', () => {
       const snap = buildPartySnapshot(
         { customer: customer(), provider: provider() },
         crypto,
@@ -121,31 +127,65 @@ describe('party-snapshot', () => {
       const parties = readPartySnapshot(snap, crypto)!;
       expect(parties.customer).toEqual({
         fullName: 'Khách A',
+        dateOfBirth: '15/05/1992',
+        placeOfOrigin: 'Quận 1, TP.HCM',
         address: '25 Lê Lợi',
         phone: '0911222333',
-        identityNumber: CUSTOMER_CCCD,
-        identityDocuments: [
-          'https://x/c-front.jpg',
-          'https://x/c-back.jpg',
-          'https://x/c-selfie.jpg',
-        ],
       });
-      expect(parties.provider).toMatchObject({
+      expect(parties.provider).toEqual({
         fullName: 'Chủ vườn B',
+        dateOfBirth: '20/10/1985',
+        placeOfOrigin: 'TP. Bảo Lộc, Lâm Đồng',
+        address: '12 Nguyễn Văn Bảo',
         phone: '0909123456',
-        identityNumber: PROVIDER_CCCD,
       });
       expect(JSON.stringify(parties)).not.toContain('Enc');
     });
 
-    it('v2 thiếu SĐT/CCCD → "Chưa cung cấp"', () => {
+    it('v2 cũ có identityNumberEnc/identityDocuments → loại bỏ số CCCD & ảnh, vẫn giải mã SĐT', () => {
+      const legacyV2 = {
+        version: 2,
+        customer: {
+          fullName: 'Khách Cũ',
+          address: '123 ABC',
+          phoneEnc: crypto.encrypt('0911222333'),
+          identityNumberEnc: crypto.encrypt('001111111111'),
+          identityDocuments: ['https://x/c-front.jpg'],
+        },
+        provider: {
+          fullName: 'Vườn Cũ',
+          address: '456 DEF',
+          phoneEnc: crypto.encrypt('0909123456'),
+          identityNumberEnc: crypto.encrypt('002222222222'),
+          identityDocuments: ['https://x/p-front.jpg'],
+        },
+      };
+      const parties = readPartySnapshot(legacyV2, crypto)!;
+      expect(parties.customer).toEqual({
+        fullName: 'Khách Cũ',
+        dateOfBirth: 'Chưa cung cấp',
+        placeOfOrigin: 'Chưa cung cấp',
+        address: '123 ABC',
+        phone: '0911222333',
+      });
+      const json = JSON.stringify(parties);
+      expect(json).not.toContain('001111111111');
+      expect(json).not.toContain('c-front.jpg');
+      expect(json).not.toContain('identityNumber');
+      expect(json).not.toContain('identityDocuments');
+    });
+
+    it('v3 thiếu SĐT/ngày sinh/quê quán → "Chưa cung cấp"', () => {
       const snap = buildPartySnapshot(
         { customer: null, provider: null },
         crypto,
       );
-      expect(readPartySnapshot(snap, crypto)!.provider).toMatchObject({
+      expect(readPartySnapshot(snap, crypto)!.provider).toEqual({
+        fullName: 'Chưa cung cấp',
+        dateOfBirth: 'Chưa cung cấp',
+        placeOfOrigin: 'Chưa cung cấp',
+        address: 'Chưa cung cấp',
         phone: 'Chưa cung cấp',
-        identityNumber: 'Chưa cung cấp',
       });
     });
 
@@ -159,12 +199,14 @@ describe('party-snapshot', () => {
   });
 
   describe('assertProviderIdentityComplete', () => {
-    it('đủ SĐT + số CCCD → qua', () => {
+    it('đủ SĐT + Địa chỉ + Ngày sinh + Quê quán → qua', () => {
       expect(() => assertProviderIdentityComplete(provider())).not.toThrow();
     });
 
     it.each([
-      ['thiếu số CCCD', { cccdNumber: null }],
+      ['thiếu Ngày sinh', { dateOfBirth: null }],
+      ['thiếu Quê quán', { placeOfOrigin: null }],
+      ['thiếu Địa chỉ', { address: null }],
       ['thiếu SĐT', { account: account('Chủ vườn B', null) }],
     ])('%s → 403 PROVIDER_IDENTITY_INCOMPLETE', (_case, patch) => {
       expect(() =>

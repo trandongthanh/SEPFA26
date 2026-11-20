@@ -18,8 +18,10 @@ import type { UpsertProfileDto } from './dto/upsert-profile.dto';
 const ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_ACCOUNT_ID = '22222222-2222-4222-8222-222222222222';
 const PROFILE_ID = '33333333-3333-4333-8333-333333333333';
-const CCCD = '001234567890';
 const PHONE = '0909123456';
+const DOB = '15/08/1988';
+const ORIGIN = 'TP. Bảo Lộc, Lâm Đồng';
+const ADDRESS = '12 Nguyễn Văn Bảo, Gò Vấp, TP.HCM';
 
 // Lỗi Postgres unique_violation giả (giống lỗi driver pg ném ra).
 const pgUnique = (column: string) =>
@@ -28,7 +30,7 @@ const pgUnique = (column: string) =>
     detail: `Key (${column})=(x) already exists.`,
   });
 
-describe('ProvidersService — SĐT + số CCCD của provider', () => {
+describe('ProvidersService — thông tin định danh hợp lệ (không lưu CCCD/ảnh)', () => {
   const crypto = new CryptoService({
     get: () => '0'.repeat(64),
   } as unknown as ConfigService);
@@ -58,12 +60,10 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
       licenseInfo: null,
       verificationStatus: 'PENDING',
       verificationNote: null,
-      cccdFrontUrl: 'https://img/front.jpg',
-      cccdBackUrl: 'https://img/back.jpg',
-      selfieUrl: 'https://img/selfie.jpg',
+      address: ADDRESS,
+      dateOfBirth: null,
+      placeOfOrigin: null,
       businessLicenseUrl: null,
-      cccdNumber: null,
-      cccdNumberHash: null,
       ...patch,
     });
 
@@ -156,27 +156,26 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
   });
 
   describe('PUT /providers/me/profile', () => {
-    it('tạo hồ sơ kèm SĐT + CCCD: DB lưu ciphertext + hash, response trả bản giải mã, không lộ hash', async () => {
+    it('tạo hồ sơ kèm SĐT + Ngày sinh + Quê quán + Địa chỉ: DB mã hoá SĐT, response giải mã', async () => {
       const res = await upsert({
         providerType: 'NURSERY',
         displayName: 'Vườn Lan A',
         phone: '+84 909 123 456',
-        cccdNumber: CCCD,
+        dateOfBirth: DOB,
+        placeOfOrigin: ORIGIN,
+        address: ADDRESS,
       });
 
-      expect(stored!.cccdNumber).not.toBe(CCCD);
-      expect(crypto.decrypt(stored!.cccdNumber!)).toBe(CCCD);
-      expect(stored!.cccdNumberHash).toBe(sha256Hex(CCCD));
       expect(stored!.verificationStatus).toBe('PENDING');
-      // SĐT chuẩn hoá trước khi mã hoá/băm → khớp hash của "0909123456".
+      expect(stored!.dateOfBirth).toBe(DOB);
+      expect(stored!.placeOfOrigin).toBe(ORIGIN);
       expect(account.phoneHash).toBe(sha256Hex(PHONE));
       expect(crypto.decrypt(account.phone!)).toBe(PHONE);
 
-      expect(res.cccdNumber).toBe(CCCD);
       expect(res.phone).toBe(PHONE);
       expect(res.account?.phone).toBe(PHONE);
-      expect(res).not.toHaveProperty('cccdNumberHash');
-      expect(JSON.stringify(res)).not.toContain(sha256Hex(CCCD));
+      expect(res.dateOfBirth).toBe(DOB);
+      expect(res.placeOfOrigin).toBe(ORIGIN);
       expect(JSON.stringify(res)).not.toContain('bcrypt-hash');
     });
 
@@ -186,21 +185,6 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
       );
       expect(manager.save).not.toHaveBeenCalled();
       expect(manager.update).not.toHaveBeenCalled();
-    });
-
-    it('409 CCCD_NUMBER_EXISTS khi CCCD đã thuộc vườn khác — không ghi gì', async () => {
-      stored = makeProfile();
-      otherProfiles = [
-        makeProfile({
-          id: 'other',
-          accountId: OTHER_ACCOUNT_ID,
-          cccdNumberHash: sha256Hex(CCCD),
-        }),
-      ];
-      await expect(upsert({ cccdNumber: CCCD })).rejects.toThrow(
-        new ConflictException('CCCD_NUMBER_EXISTS'),
-      );
-      expect(manager.save).not.toHaveBeenCalled();
     });
 
     it('409 PHONE_EXISTS khi SĐT đã thuộc account khác (kể cả viết kiểu +84)', async () => {
@@ -225,14 +209,6 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
       );
     });
 
-    it('23505 cccd_number_hash ném từ save (khe đua) → 409 CCCD_NUMBER_EXISTS', async () => {
-      stored = makeProfile();
-      manager.save.mockRejectedValueOnce(pgUnique('cccd_number_hash'));
-      await expect(upsert({ cccdNumber: CCCD })).rejects.toThrow(
-        new ConflictException('CCCD_NUMBER_EXISTS'),
-      );
-    });
-
     it('23505 account_id (2 PUT tạo song song) → chạy lại 1 lần như cập nhật', async () => {
       manager.save.mockRejectedValueOnce(pgUnique('account_id'));
       const res = await upsert({
@@ -244,39 +220,42 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
     });
 
     describe('luật sau duyệt (APPROVED)', () => {
-      it('đổi số CCCD → về PENDING (duyệt lại)', async () => {
+      it('đổi Ngày sinh hoặc Quê quán hoặc GPKD → về PENDING (duyệt lại)', async () => {
         stored = makeProfile({
           verificationStatus: 'APPROVED',
-          cccdNumber: crypto.encrypt('009999999999'),
-          cccdNumberHash: sha256Hex('009999999999'),
+          dateOfBirth: DOB,
+          placeOfOrigin: ORIGIN,
         });
-        const res = await upsert({ cccdNumber: CCCD });
-        expect(res.verificationStatus).toBe('PENDING');
-      });
+        const dobChanged = await upsert({ dateOfBirth: '01/01/1990' });
+        expect(dobChanged.verificationStatus).toBe('PENDING');
 
-      it('khai CCCD LẦN ĐẦU (null → số) → cũng về PENDING', async () => {
-        stored = makeProfile({ verificationStatus: 'APPROVED' });
-        const res = await upsert({ cccdNumber: CCCD });
-        expect(res.verificationStatus).toBe('PENDING');
-      });
-
-      it('gửi lại đúng số CCCD đang có → giữ APPROVED, không 409 với chính mình', async () => {
         stored = makeProfile({
           verificationStatus: 'APPROVED',
-          cccdNumber: crypto.encrypt(CCCD),
-          cccdNumberHash: sha256Hex(CCCD),
+          dateOfBirth: DOB,
+          placeOfOrigin: ORIGIN,
         });
-        const res = await upsert({ cccdNumber: CCCD });
+        const originChanged = await upsert({ placeOfOrigin: 'Hà Nội' });
+        expect(originChanged.verificationStatus).toBe('PENDING');
+      });
+
+      it('gửi lại đúng Ngày sinh & Quê quán đang có → giữ APPROVED', async () => {
+        stored = makeProfile({
+          verificationStatus: 'APPROVED',
+          dateOfBirth: DOB,
+          placeOfOrigin: ORIGIN,
+        });
+        const res = await upsert({ dateOfBirth: DOB, placeOfOrigin: ORIGIN });
         expect(res.verificationStatus).toBe('APPROVED');
       });
 
-      // Khoá luật đã chốt: SĐT KHÔNG thuộc bộ KYC — đừng thêm luật "đổi SĐT → PENDING".
-      it('đổi SĐT → VẪN APPROVED', async () => {
+      // Khoá luật đã chốt: SĐT & Địa chỉ KHÔNG thuộc bộ làm rớt về PENDING.
+      it('đổi SĐT hoặc Địa chỉ → VẪN APPROVED', async () => {
         stored = makeProfile({ verificationStatus: 'APPROVED' });
         Object.assign(account, encryptedPhone('0911222333'));
-        const res = await upsert({ phone: PHONE });
+        const res = await upsert({ phone: PHONE, address: '99 Hai Bà Trưng' });
         expect(res.verificationStatus).toBe('APPROVED');
         expect(res.phone).toBe(PHONE);
+        expect(res.address).toBe('99 Hai Bà Trưng');
       });
     });
   });
@@ -292,14 +271,16 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
   describe('admin', () => {
     const complete = () =>
       makeProfile({
-        cccdNumber: crypto.encrypt(CCCD),
-        cccdNumberHash: sha256Hex(CCCD),
+        address: ADDRESS,
+        dateOfBirth: DOB,
+        placeOfOrigin: ORIGIN,
         account: Object.assign(account, encryptedPhone(PHONE)),
       });
 
     it.each([
-      ['thiếu số CCCD', { cccdNumber: null }],
-      ['thiếu selfie', { selfieUrl: null }],
+      ['thiếu Ngày sinh', { dateOfBirth: null }],
+      ['thiếu Quê quán', { placeOfOrigin: null }],
+      ['thiếu Địa chỉ', { address: null }],
     ])(
       'verify APPROVED %s → 400 PROVIDER_PROFILE_NOT_SUBMITTED',
       async (_case, patch) => {
@@ -325,7 +306,7 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
       );
     });
 
-    it('verify APPROVED đủ bộ → APPROVED + account ACTIVE, trả view (không hash/passwordHash)', async () => {
+    it('verify APPROVED đủ bộ → APPROVED + account ACTIVE, trả view (không passwordHash)', async () => {
       profileRepo.findOne.mockResolvedValueOnce(complete());
       const res = await service.verifyProvider(PROFILE_ID, {
         decision: 'APPROVED',
@@ -334,32 +315,29 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
       expect(accountRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'ACTIVE' }),
       );
-      expect(res.cccdNumber).toBe(CCCD);
       expect(res.phone).toBe(PHONE);
-      expect(res).not.toHaveProperty('cccdNumberHash');
+      expect(res.dateOfBirth).toBe(DOB);
+      expect(res.placeOfOrigin).toBe(ORIGIN);
       expect(JSON.stringify(res)).not.toContain('bcrypt-hash');
     });
 
-    it('REJECTED không cần đủ giấy tờ', async () => {
+    it('REJECTED không cần đủ thông tin', async () => {
       profileRepo.findOne.mockResolvedValueOnce(
-        makeProfile({ account, selfieUrl: null }),
+        makeProfile({ account, dateOfBirth: null }),
       );
       const res = await service.verifyProvider(PROFILE_ID, {
         decision: 'REJECTED',
-        note: 'Thiếu selfie',
+        note: 'Thiếu thông tin ngày sinh',
       });
       expect(res.verificationStatus).toBe('REJECTED');
     });
 
-    it('danh sách: canVerify chỉ true khi PENDING + đủ bộ; không lộ hash', async () => {
+    it('danh sách: canVerify chỉ true khi PENDING + đủ bộ', async () => {
       const ok = complete();
       const missing = makeProfile({ id: 'p2', account });
-      missing.cccdNumber = null;
       profileRepo.find.mockResolvedValueOnce([ok, missing]);
       const list = await service.listAllForAdmin();
       expect(list.map((p) => p.canVerify)).toEqual([true, false]);
-      expect(list[0].cccdNumber).toBe(CCCD);
-      for (const p of list) expect(p).not.toHaveProperty('cccdNumberHash');
     });
   });
 
@@ -377,8 +355,6 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
       maxDeclaredValue: 5000000,
     };
 
-    // DB giả: có Vườn A đã duyệt. Tìm theo accountId chỉ ra hồ sơ khớp đúng account đó;
-    // query KHÔNG lọc theo người gọi (như fallback cũ) sẽ trả về Vườn A.
     const dbWith = (callerProfile: ProviderProfile | null) => {
       const vuonA = makeProfile({
         id: VUON_A_PROFILE_ID,
@@ -393,7 +369,7 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
           if (where?.accountId === OTHER_ACCOUNT_ID) {
             return Promise.resolve(vuonA);
           }
-          return Promise.resolve(vuonA); // query không gắn người gọi → "trúng" vườn khác
+          return Promise.resolve(vuonA);
         },
       );
     };
@@ -403,7 +379,6 @@ describe('ProvidersService — SĐT + số CCCD của provider', () => {
       const pkg = await service.createPackage(ACCOUNT_ID, packageDto);
       expect(pkg.providerId).toBe(PROFILE_ID);
       expect(pkg).toMatchObject({ approvalStatus: 'PENDING', isActive: false });
-      // Chỉ 1 lần tìm hồ sơ, và đúng theo accountId trong token.
       expect(profileRepo.findOne).toHaveBeenCalledTimes(1);
       expect(profileRepo.findOne).toHaveBeenCalledWith({
         where: { accountId: ACCOUNT_ID },

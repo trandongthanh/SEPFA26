@@ -70,8 +70,5 @@ export class RegisterWithEkycDto {
   cccdFront?: unknown;
 
   @Allow()
-  cccdBack?: unknown;
-
-  @Allow()
   selfie?: unknown;
 }

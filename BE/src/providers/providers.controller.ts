@@ -52,7 +52,7 @@ export class ProvidersController {
   @ApiBearerAuth()
   @ApiOperation({
     summary:
-      'Provider tạo/cập nhật hồ sơ của mình (upsert, kèm SĐT + số CCCD) — trả cùng dạng GET /providers/me',
+      'Provider tạo/cập nhật hồ sơ của mình (Họ tên, SĐT, Ngày sinh, Quê quán, Địa chỉ) — trả cùng dạng GET /providers/me',
   })
   @ApiResponse({
     status: 400,
@@ -60,7 +60,7 @@ export class ProvidersController {
   })
   @ApiResponse({
     status: 409,
-    description: 'PHONE_EXISTS | CCCD_NUMBER_EXISTS',
+    description: 'PHONE_EXISTS',
   })
   upsertProfile(
     @CurrentUser() user: CurrentUserData,

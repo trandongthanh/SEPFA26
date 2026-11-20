@@ -10,10 +10,10 @@ export const COMPENSATION_PERCENT = '120%';
 
 export interface ContractParty {
   fullName: string;
+  dateOfBirth: string;
+  placeOfOrigin: string;
   address: string;
   phone: string;
-  identityNumber: string;
-  identityDocuments: string[];
 }
 
 export interface ContractPlant {
@@ -353,18 +353,20 @@ export class ContractTemplateService {
     <div style="flex:1;min-width:280px;background:#f8f6ff;border-radius:8px;padding:16px;border-left:4px solid #6025D2;">
       <h3 style="margin:0 0 8px;color:#6025D2;font-size:15px;">BÊN A — KHÁCH HÀNG</h3>
       <p style="${P}"><strong>Họ và tên:</strong> ${esc(data.parties.customer.fullName)}</p>
-      <p style="${P}"><strong>Địa chỉ:</strong> ${esc(data.parties.customer.address)}</p>
+      <p style="${P}"><strong>Ngày tháng năm sinh:</strong> ${esc(data.parties.customer.dateOfBirth)}</p>
+      <p style="${P}"><strong>Quê quán:</strong> ${esc(data.parties.customer.placeOfOrigin)}</p>
+      <p style="${P}"><strong>Địa chỉ thường trú:</strong> ${esc(data.parties.customer.address)}</p>
       <p style="${P}"><strong>Số điện thoại:</strong> ${esc(data.parties.customer.phone)}</p>
-      <p style="${P}"><strong>Số CCCD/CMND:</strong> ${esc(data.parties.customer.identityNumber)}</p>
     </div>
 
     <!-- Bên B -->
     <div style="flex:1;min-width:280px;background:#f0faf0;border-radius:8px;padding:16px;border-left:4px solid #27ae60;">
       <h3 style="margin:0 0 8px;color:#27ae60;font-size:15px;">BÊN B — NHÀ VƯỜN</h3>
       <p style="${P}"><strong>Họ và tên:</strong> ${esc(data.parties.provider.fullName)}</p>
-      <p style="${P}"><strong>Địa chỉ:</strong> ${esc(data.parties.provider.address)}</p>
+      <p style="${P}"><strong>Ngày tháng năm sinh:</strong> ${esc(data.parties.provider.dateOfBirth)}</p>
+      <p style="${P}"><strong>Quê quán:</strong> ${esc(data.parties.provider.placeOfOrigin)}</p>
+      <p style="${P}"><strong>Địa chỉ thường trú:</strong> ${esc(data.parties.provider.address)}</p>
       <p style="${P}"><strong>Số điện thoại:</strong> ${esc(data.parties.provider.phone)}</p>
-      <p style="${P}"><strong>Số CCCD/CMND:</strong> ${esc(data.parties.provider.identityNumber)}</p>
     </div>
   </div>
 

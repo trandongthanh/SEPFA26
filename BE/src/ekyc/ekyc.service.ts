@@ -1,25 +1,24 @@
 import {
   BadRequestException,
   ConflictException,
+  GoneException,
   Injectable,
   InternalServerErrorException,
   Logger,
-  NotFoundException,
-  ServiceUnavailableException,
+  OnModuleDestroy,
+  OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { createHash } from 'crypto';
 import { Repository } from 'typeorm';
-import { v2 as cloudinary, type UploadApiResponse } from 'cloudinary';
-import { CryptoService } from '../crypto/crypto.service';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { Account } from '../accounts/entities/account.entity';
 import { EkycRecord } from './entities/ekyc-record.entity';
 
-// ===== Self-hosted AI Service Endpoints =====
-// Thay thế FPT.AI bằng Python/FastAPI microservice chạy local.
-// Sử dụng: EasyOCR (Vietnamese OCR), DeepFace (Face Matching), OpenCV (Anti-Fraud).
+// ===== Self-hosted AI Service Endpoints (Zero-Retention In-Memory eKYC) =====
+// Ảnh chỉ được xử lý tức thời trong RAM để đối chiếu & bóc tách thông tin cơ bản
+// (họ tên, ngày sinh, quê quán, địa chỉ thường trú).
+// KHÔNG thu giữ, KHÔNG lưu trữ số CCCD, ảnh CCCD hay ảnh chân dung lên DB/Cloud.
 
 // Ngưỡng Face Match — tương đương FPT.AI mặc định 80%.
 const FACE_MATCH_THRESHOLD = 80;
@@ -30,14 +29,10 @@ const FRAUD_SCORE_THRESHOLD = 50;
 // Ngưỡng Liveness — selfie liveness score >= 50 = real.
 const LIVENESS_SCORE_THRESHOLD = 50;
 
-// Cloudinary folder chuyên dụng cho eKYC — tách hẳn khỏi ảnh thông thường.
-const EKYC_CLOUDINARY_FOLDER = 'lancare-hub/ekyc-documents';
-
 // ===== AI Service Response Interfaces =====
 interface AiOcrResponse {
   success: boolean;
   data: {
-    id_number: string | null;
     full_name: string | null;
     date_of_birth: string | null;
     gender: string | null;
@@ -87,11 +82,14 @@ interface AiAntiFraudResponse {
   processing_time_ms: number;
 }
 
+// Chu kỳ ping giữ ấm AI Service trên Hugging Face Spaces (10 phút).
+const AI_KEEP_ALIVE_INTERVAL_MS = 10 * 60 * 1000;
+
 @Injectable()
-export class EkycService {
+export class EkycService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(EkycService.name);
   private readonly aiServiceUrl: string;
-  private readonly cloudinaryConfigured: boolean;
+  private keepAliveTimer: NodeJS.Timeout | null = null;
 
   constructor(
     @InjectRepository(EkycRecord)
@@ -101,33 +99,51 @@ export class EkycService {
     @InjectRepository(Account)
     private readonly accountRepo: Repository<Account>,
     private readonly config: ConfigService,
-    private readonly crypto: CryptoService,
   ) {
-    this.aiServiceUrl = this.config.get<string>('AI_SERVICE_URL', 'http://localhost:8000');
+    this.aiServiceUrl = this.config
+      .get<string>('AI_SERVICE_URL', 'http://localhost:8000')
+      .replace(/\/+$/, '');
+  }
 
-    // Cấu hình Cloudinary (idempotent — nếu UploadsModule đã config thì ghi đè cùng giá trị).
-    const cloudinaryUrl = this.config.get<string>('CLOUDINARY_URL');
-    if (cloudinaryUrl) {
-      const parsed = new URL(cloudinaryUrl);
-      cloudinary.config({
-        cloud_name: parsed.hostname,
-        api_key: decodeURIComponent(parsed.username),
-        api_secret: decodeURIComponent(parsed.password),
-        secure: true,
+  onModuleInit(): void {
+    if (this.config.get<string>('NODE_ENV') === 'test') return;
+
+    // Đánh thức AI Service ngay khi Backend khởi động và tự động ping mỗi 10 phút
+    void this.pingAiService();
+    this.keepAliveTimer = setInterval(() => {
+      void this.pingAiService();
+    }, AI_KEEP_ALIVE_INTERVAL_MS);
+    this.keepAliveTimer.unref();
+  }
+
+  onModuleDestroy(): void {
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
+  }
+
+  private async pingAiService(): Promise<void> {
+    if (!this.aiServiceUrl) return;
+    try {
+      const res = await fetch(`${this.aiServiceUrl}/health`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(60_000),
       });
-      this.cloudinaryConfigured = true;
-    } else {
-      this.cloudinaryConfigured = false;
+      if (res.ok) {
+        this.logger.debug(`AI Service keep-alive OK (${this.aiServiceUrl})`);
+      }
+    } catch (err) {
+      this.logger.warn(`AI Service keep-alive failed: ${(err as Error).message}`);
     }
   }
 
   // ================================================================
-  //  1. OCR — Bóc tách thông tin CCCD (EasyOCR via AI Service)
+  //  1. OCR — Bóc tách thông tin cho phép trong RAM (Không lưu ảnh / số CCCD)
   // ================================================================
 
   async ocrIdCard(accountId: string, files: Express.Multer.File[]) {
     this.ensureAiService();
-    this.ensureCloudinary();
 
     const existing = await this.ekycRepo.findOne({ where: { accountId } });
     if (existing?.status === 'VERIFIED') {
@@ -135,46 +151,14 @@ export class EkycService {
     }
 
     const frontFile = files[0];
-    const backFile = files[1] ?? null;
 
-    // 1. Upload ảnh lên Cloudinary (type: 'authenticated' — không ai xem được nếu không có signed URL)
-    const frontUpload = await this.uploadToCloudinary(
-      frontFile.buffer,
-      `${accountId}/front_${Date.now()}`,
-    );
-    const backUpload = backFile
-      ? await this.uploadToCloudinary(backFile.buffer, `${accountId}/back_${Date.now()}`)
-      : null;
-
-    // 2. Gọi AI Service OCR (EasyOCR - Vietnamese)
+    // 1. Gọi AI Service OCR (EasyOCR - Vietnamese) trực tiếp từ buffer trong RAM
     const { data: ocrResult, error: ocrError } = await this.callAiOcr(frontFile.buffer);
-    if (!ocrResult) {
+    if (!ocrResult || !ocrResult.full_name) {
       throw new BadRequestException(ocrError || 'EKYC_OCR_FAILED');
     }
 
-    // 2.5. Check trùng số CCCD với các tài khoản khác trong hệ thống
-    let cccdHash: string | null = null;
-    if (ocrResult.id_number) {
-      cccdHash = createHash('sha256').update(ocrResult.id_number).digest('hex');
-
-      // Kiểm tra trong CustomerProfile
-      const dupProfile = await this.customerProfileRepo.findOne({
-        where: { cccdNumberHash: cccdHash },
-      });
-      if (dupProfile && dupProfile.accountId !== accountId) {
-        throw new ConflictException('Số CCCD này đã được sử dụng bởi một tài khoản khác trong hệ thống.');
-      }
-
-      // Kiểm tra trong EkycRecord đã VERIFIED
-      const dupEkyc = await this.ekycRepo.findOne({
-        where: { idDocNumberHash: cccdHash, status: 'VERIFIED' },
-      });
-      if (dupEkyc && dupEkyc.accountId !== accountId) {
-        throw new ConflictException('Số CCCD này đã được xác thực cho một tài khoản khác.');
-      }
-    }
-
-    // 3. Chạy Anti-Fraud Detection trên ảnh CCCD (phát hiện thẻ giả mạo)
+    // 2. Chạy Anti-Fraud Detection trên ảnh trong RAM (phát hiện thẻ giả mạo / chụp màn hình)
     const fraudResult = await this.callAiAntiFraud(frontFile.buffer, null);
     const fraudScore = fraudResult?.data?.document_fraud?.fraud_score ?? null;
     const fraudPassed = fraudResult?.data?.document_fraud?.passed ?? true;
@@ -185,19 +169,16 @@ export class EkycService {
       );
     }
 
-    // 4. Lưu vào DB (lưu Cloudinary public_id, không lưu URL trực tiếp)
+    // 3. Lưu kết quả trích xuất hợp lệ vào DB (KHÔNG lưu số CCCD, KHÔNG upload/lưu ảnh)
     const saveData: Partial<EkycRecord> = {
       status: 'PROCESSING',
       idDocType: ocrResult.id_doc_type || 'CCCD',
-      idDocNumberEnc: ocrResult.id_number ? this.crypto.encrypt(ocrResult.id_number) : null,
-      idDocNumberHash: cccdHash,
       fullNameExtracted: ocrResult.full_name,
       dateOfBirth: ocrResult.date_of_birth,
       gender: ocrResult.gender,
       nationality: ocrResult.nationality || 'Việt Nam',
       placeOfOrigin: ocrResult.place_of_origin,
-      frontImageUrl: frontUpload.public_id,
-      backImageUrl: backUpload?.public_id ?? null,
+      placeOfResidence: ocrResult.place_of_residence,
       fraudScore: fraudScore?.toFixed(2) ?? null,
       antifraudDetails: fraudResult?.data ? (fraudResult.data as unknown as Record<string, unknown>) : null,
     };
@@ -212,11 +193,11 @@ export class EkycService {
       success: true,
       extracted: {
         fullName: ocrResult.full_name,
-        idNumber: ocrResult.id_number ? this.maskIdNumber(ocrResult.id_number) : null,
         dateOfBirth: ocrResult.date_of_birth,
         gender: ocrResult.gender,
         nationality: ocrResult.nationality,
         placeOfOrigin: ocrResult.place_of_origin,
+        placeOfResidence: ocrResult.place_of_residence,
         idDocType: ocrResult.id_doc_type,
         confidence: ocrResult.confidence,
       },
@@ -226,18 +207,17 @@ export class EkycService {
         verdict: fraudResult?.data?.document_fraud?.verdict ?? 'UNKNOWN',
       },
       message: fraudPassed
-        ? 'OCR thành công. Vui lòng tiếp tục bước Face Matching.'
-        : 'OCR thành công nhưng phát hiện dấu hiệu nghi ngờ thẻ giả mạo. Vui lòng sử dụng ảnh CCCD gốc.',
+        ? 'Trích xuất thông tin thành công (ảnh không lưu trên hệ thống). Vui lòng tiếp tục bước đối chiếu khuôn mặt.'
+        : 'Đọc thông tin thành công nhưng phát hiện dấu hiệu nghi ngờ ảnh chưa đạt chuẩn. Vui lòng sử dụng thẻ gốc.',
     };
   }
 
   // ================================================================
-  //  2. Face Matching — So khớp khuôn mặt (DeepFace via AI Service)
+  //  2. Face Matching — Đối chiếu khuôn mặt trong RAM (Không lưu ảnh)
   // ================================================================
 
   async faceMatch(accountId: string, files: Express.Multer.File[]) {
     this.ensureAiService();
-    this.ensureCloudinary();
 
     const record = await this.ekycRepo.findOne({ where: { accountId } });
     if (!record) {
@@ -250,19 +230,12 @@ export class EkycService {
     const idCardFile = files[0];
     const selfieFile = files[1];
 
-    // 1. Upload selfie lên Cloudinary (authenticated)
-    const selfieUpload = await this.uploadToCloudinary(
-      selfieFile.buffer,
-      `${accountId}/selfie_${Date.now()}`,
-    );
-    await this.ekycRepo.update(record.id, { selfieImageUrl: selfieUpload.public_id });
-
-    // 2. Chạy Anti-Fraud: Liveness Detection trên selfie (phát hiện ảnh giả mạo / deepfake)
+    // 1. Chạy Anti-Fraud: Liveness Detection trên selfie trong RAM (phát hiện ảnh giả mạo / deepfake)
     const fraudResult = await this.callAiAntiFraud(null, selfieFile.buffer);
     const livenessScore = fraudResult?.data?.selfie_liveness?.liveness_score ?? null;
     const isLive = fraudResult?.data?.selfie_liveness?.is_live ?? true;
 
-    // Lưu kết quả liveness
+    // Lưu kết quả liveness (chỉ lưu điểm kiểm tra, không lưu ảnh)
     await this.ekycRepo.update(record.id, {
       livenessScore: livenessScore?.toFixed(2) ?? null,
       antifraudDetails: {
@@ -274,7 +247,7 @@ export class EkycService {
     if (!isLive) {
       await this.ekycRepo.update(record.id, {
         status: 'REJECTED',
-        rejectionReason: `Phát hiện ảnh selfie giả mạo (liveness_score=${livenessScore?.toFixed(1)}%). Vui lòng chụp ảnh khuôn mặt thật.`,
+        rejectionReason: `Phát hiện ảnh chân dung không phải người thật (liveness_score=${livenessScore?.toFixed(1)}%). Vui lòng chụp trực tiếp khuôn mặt.`,
         faceMatch: false,
       });
 
@@ -284,11 +257,11 @@ export class EkycService {
         success: false,
         status: 'REJECTED',
         liveness: { score: livenessScore, isLive: false, verdict: 'SPOOF' },
-        message: 'Phát hiện ảnh selfie giả mạo. Vui lòng chụp ảnh khuôn mặt thật (không chụp từ màn hình hoặc ảnh in).',
+        message: 'Phát hiện ảnh chân dung giả mạo. Vui lòng chụp trực tiếp khuôn mặt thật (không chụp từ màn hình hoặc ảnh in).',
       };
     }
 
-    // 3. Gọi AI Service Face Match (DeepFace + ArcFace)
+    // 2. Gọi AI Service Face Match (DeepFace + ArcFace) hoàn toàn trong RAM
     const { result: matchResult, error: matchError } = await this.callAiFaceMatch(
       idCardFile.buffer,
       selfieFile.buffer,
@@ -310,7 +283,7 @@ export class EkycService {
       faceSimilarity: similarity.toFixed(2),
     });
 
-    // 4. Kiểm tra tổng hợp: Face Match + Document Fraud + Liveness
+    // 3. Kiểm tra tổng hợp: Face Match + Document Fraud + Liveness
     const docFraudPassed = !record.fraudScore || Number(record.fraudScore) < FRAUD_SCORE_THRESHOLD;
 
     if (isMatch && similarity >= FACE_MATCH_THRESHOLD && docFraudPassed) {
@@ -319,12 +292,12 @@ export class EkycService {
         verifiedAt: new Date(),
       });
 
-      // Reload record với data mới nhất để sync
+      // Reload record với data mới nhất để sync thông tin hợp lệ sang CustomerProfile & Account
       const updatedRecord = await this.ekycRepo.findOneOrFail({ where: { id: record.id } });
       await this.syncToCustomerProfile(accountId, updatedRecord);
 
       this.logger.log(
-        `eKYC VERIFIED for account ${accountId} (similarity=${similarity.toFixed(1)}%, ` +
+        `eKYC VERIFIED (zero-retention) for account ${accountId} (similarity=${similarity.toFixed(1)}%, ` +
         `fraudScore=${record.fraudScore ?? 'N/A'}, livenessScore=${livenessScore?.toFixed(1) ?? 'N/A'})`,
       );
 
@@ -333,7 +306,7 @@ export class EkycService {
         status: 'VERIFIED',
         similarity: Number(similarity.toFixed(2)),
         liveness: { score: livenessScore, isLive: true, verdict: 'REAL' },
-        message: 'Xác thực eKYC thành công!',
+        message: 'Xác thực eKYC thành công! Dữ liệu hình ảnh đã được hủy ngay sau khi đối chiếu.',
       };
     }
 
@@ -343,7 +316,7 @@ export class EkycService {
       reasons.push(`Khuôn mặt không khớp (similarity=${similarity.toFixed(1)}%, yêu cầu ≥ ${FACE_MATCH_THRESHOLD}%)`);
     }
     if (!docFraudPassed) {
-      reasons.push(`Phát hiện dấu hiệu thẻ giả mạo (fraud_score=${record.fraudScore})`);
+      reasons.push(`Phát hiện dấu hiệu thẻ không hợp lệ (fraud_score=${record.fraudScore})`);
     }
 
     const reason = reasons.join('. ') + '.';
@@ -379,8 +352,9 @@ export class EkycService {
       dateOfBirth: record.dateOfBirth,
       gender: record.gender,
       nationality: record.nationality,
+      placeOfOrigin: record.placeOfOrigin,
+      placeOfResidence: record.placeOfResidence,
       idDocType: record.idDocType,
-      hasIdDocNumber: !!record.idDocNumberEnc,
       faceMatch: record.faceMatch,
       faceSimilarity: record.faceSimilarity ? Number(record.faceSimilarity) : null,
       rejectionReason: record.rejectionReason,
@@ -414,64 +388,17 @@ export class EkycService {
       antifraudDetails: null,
     });
 
-    return { success: true, message: 'Đã reset. Vui lòng gửi lại ảnh CCCD.' };
+    return { success: true, message: 'Đã reset. Vui lòng thực hiện đối chiếu lại.' };
   }
 
   // ================================================================
-  //  5. Xem ảnh bảo mật (Signed URL có thời hạn 10 phút)
+  //  5. Ảnh eKYC (Không lưu trữ theo quy định bảo vệ dữ liệu cá nhân)
   // ================================================================
 
-  /**
-   * Trả về signed URL tạm thời (sống 10 phút) để xem ảnh eKYC.
-   * @param field  'front' | 'back' | 'selfie'
-   */
-  async getSignedImageUrl(accountId: string, field: string) {
-    const record = await this.ekycRepo.findOne({ where: { accountId } });
-    if (!record) {
-      throw new NotFoundException('EKYC_NOT_FOUND');
-    }
-
-    let publicId: string | null = null;
-    switch (field) {
-      case 'front':
-        publicId = record.frontImageUrl;
-        break;
-      case 'back':
-        publicId = record.backImageUrl;
-        break;
-      case 'selfie':
-        publicId = record.selfieImageUrl;
-        break;
-      default:
-        throw new BadRequestException('INVALID_FIELD');
-    }
-
-    if (!publicId) {
-      throw new NotFoundException('EKYC_IMAGE_NOT_FOUND');
-    }
-
-    // Tương thích ngược: Nếu dữ liệu cũ được lưu dạng chuỗi giả lập "ekyc/..." trước khi tích hợp Cloudinary
-    if (publicId.startsWith('ekyc/')) {
-      return {
-        url: null,
-        expiresInSeconds: 0,
-        message: 'Bản ghi eKYC này được xác thực từ phiên bản cũ (trước khi tích hợp Cloudinary), chưa có file ảnh lưu trên Cloud.',
-      };
-    }
-
-    // Tạo signed URL với chữ ký — chỉ có thể tạo bởi server sở hữu API secret.
-    const signedUrl = cloudinary.url(publicId, {
-      sign_url: true,
-      type: 'authenticated',
-      secure: true,
-      format: 'jpg',
-    });
-
-    return {
-      url: signedUrl,
-      expiresInSeconds: 600,
-      message: 'URL có chữ ký bảo mật. Chỉ dùng để hiển thị, không lưu cache.',
-    };
+  async getSignedImageUrl(_accountId: string, _field: string): Promise<never> {
+    throw new GoneException(
+      'EKYC_IMAGES_NOT_STORED: Hệ thống không thu giữ hoặc lưu trữ hình ảnh giấy tờ tùy thân và ảnh chân dung người dùng.',
+    );
   }
 
   // ================================================================
@@ -486,48 +413,10 @@ export class EkycService {
     }
   }
 
-  private ensureCloudinary() {
-    if (!this.cloudinaryConfigured) {
-      throw new ServiceUnavailableException(
-        'CLOUDINARY_NOT_CONFIGURED — Vui lòng cấu hình CLOUDINARY_URL trong .env',
-      );
-    }
-  }
-
-  // ---- Cloudinary ----
-
-  /**
-   * Upload ảnh lên Cloudinary với type: 'authenticated' (chặn truy cập công khai).
-   */
-  private uploadToCloudinary(buffer: Buffer, filename: string): Promise<UploadApiResponse> {
-    return new Promise<UploadApiResponse>((resolve, reject) => {
-      const stream = cloudinary.uploader.upload_stream(
-        {
-          folder: EKYC_CLOUDINARY_FOLDER,
-          public_id: filename,
-          type: 'authenticated',
-          resource_type: 'image',
-          overwrite: true,
-          allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
-        },
-        (error, result) => {
-          if (error || !result) {
-            this.logger.error(`Cloudinary upload error: ${error?.message ?? 'unknown'}`);
-            reject(error ?? new Error('CLOUDINARY_UPLOAD_FAILED'));
-            return;
-          }
-          resolve(result);
-        },
-      );
-      stream.end(buffer);
-    });
-  }
-
   // ---- AI Service Calls ----
 
   /**
    * Gọi AI Service OCR (EasyOCR — Vietnamese + English).
-   * Thay thế FPT.AI Vision IDR OCR.
    */
   private async callAiOcr(
     imageBuffer: Buffer,
@@ -540,7 +429,7 @@ export class EkycService {
       const res = await fetch(`${this.aiServiceUrl}/api/ocr`, {
         method: 'POST',
         body: formData,
-        signal: AbortSignal.timeout(60_000), // OCR cần thời gian xử lý hơn API cloud
+        signal: AbortSignal.timeout(60_000),
       });
 
       if (!res.ok) {
@@ -552,7 +441,7 @@ export class EkycService {
       const json = (await res.json()) as AiOcrResponse;
 
       if (!json.success || !json.data) {
-        return { data: null, error: 'AI Service OCR không nhận diện được ảnh CCCD. Vui lòng chụp lại rõ hơn.' };
+        return { data: null, error: 'AI Service OCR không nhận diện được ảnh. Vui lòng chụp lại rõ hơn.' };
       }
 
       this.logger.log(`AI OCR completed in ${json.processing_time_ms}ms (confidence=${(json.data.confidence * 100).toFixed(1)}%)`);
@@ -577,7 +466,6 @@ export class EkycService {
 
   /**
    * Gọi AI Service Face Match (DeepFace + ArcFace model).
-   * Thay thế FPT.AI Face Match v4.
    */
   private async callAiFaceMatch(
     idCardBuffer: Buffer,
@@ -636,10 +524,6 @@ export class EkycService {
 
   /**
    * Gọi AI Service Anti-Fraud (ELA + Moiré + LBP Liveness).
-   * Tính năng MỚI — không có trong FPT.AI cũ.
-   * 
-   * @param documentBuffer  Ảnh CCCD (để kiểm tra document fraud) — hoặc null nếu chỉ check selfie
-   * @param selfieBuffer    Ảnh selfie (để kiểm tra liveness) — hoặc null nếu chỉ check document
    */
   private async callAiAntiFraud(
     documentBuffer: Buffer | null,
@@ -666,7 +550,7 @@ export class EkycService {
 
       if (!res.ok) {
         this.logger.warn(`AI Service Anti-Fraud error: ${res.status}`);
-        return null; // Non-blocking — don't fail eKYC if anti-fraud fails
+        return null; // Non-blocking
       }
 
       const json = (await res.json()) as AiAntiFraudResponse;
@@ -678,87 +562,57 @@ export class EkycService {
 
       return json;
     } catch (err) {
-      // Anti-fraud is supplementary — log warning but don't block the flow
       this.logger.warn(`AI Service Anti-Fraud exception (non-blocking): ${(err as Error).message}`);
       return null;
     }
   }
 
-  // ---- Utilities ----
-
-  maskIdNumber(idNumber: string): string {
-    if (idNumber.length <= 6) return '***' + idNumber.slice(-3);
-    return idNumber.slice(0, 3) + '***' + idNumber.slice(-3);
-  }
-
   /**
-   * Quy trình eKYC tự động trọn gói cho đăng ký tài khoản mới:
-   * 1. Quét OCR CCCD mặt trước -> Lấy thông tin
-   * 2. Check trùng số CCCD trong database
-   * 3. Anti-Fraud trên CCCD (phát hiện thẻ giả / chụp lại màn hình)
-   * 4. Anti-Fraud Liveness trên Selfie (phát hiện người thật)
-   * 5. Face Matching sinh trắc học CCCD vs Selfie
-   * 6. Upload ảnh lên Cloudinary
+   * Quy trình eKYC tự động trọn gói trong RAM (Zero-Retention) cho đăng ký tài khoản mới:
+   * 1. Quét OCR -> Chỉ lấy họ tên, ngày sinh, quê quán, địa chỉ thường trú (KHÔNG lấy số CCCD)
+   * 2. Anti-Fraud trên ảnh giấy tờ trong RAM
+   * 3. Anti-Fraud Liveness trên ảnh khuôn mặt trong RAM
+   * 4. Face Matching sinh trắc học trong RAM -> Kết thúc request là giải phóng bộ nhớ, KHÔNG lưu ảnh
    */
   async verifyAndProcessRegistrationEkyc(
     frontFile: Express.Multer.File,
     selfieFile: Express.Multer.File,
-    backFile?: Express.Multer.File,
   ) {
     this.ensureAiService();
-    this.ensureCloudinary();
 
     if (!frontFile || !selfieFile) {
-      throw new BadRequestException('Vui lòng cung cấp cả ảnh mặt trước CCCD và ảnh selfie chân dung.');
+      throw new BadRequestException('Vui lòng cung cấp đủ ảnh đối chiếu thông tin và ảnh chân dung trực tiếp.');
     }
 
-    // 1. Quét OCR
+    // 1. Quét OCR trong RAM
     const { data: ocrResult, error: ocrError } = await this.callAiOcr(frontFile.buffer);
-    if (!ocrResult || !ocrResult.id_number) {
+    if (!ocrResult || !ocrResult.full_name) {
       throw new BadRequestException(
-        ocrError || 'Không thể đọc được số CCCD từ ảnh mặt trước. Vui lòng chụp rõ nét, đủ ánh sáng và không bị lóa.',
+        ocrError || 'Không thể đọc được họ tên trên thẻ. Vui lòng chụp rõ nét, đủ ánh sáng và không bị lóa.',
       );
     }
 
-    // 2. Check trùng CCCD
-    const rawCccdNumber = ocrResult.id_number;
-    const cccdNumberHash = createHash('sha256').update(rawCccdNumber).digest('hex');
-
-    const duplicateProfile = await this.customerProfileRepo.findOne({
-      where: { cccdNumberHash },
-    });
-    if (duplicateProfile) {
-      throw new ConflictException('Số CCCD này đã được sử dụng bởi một tài khoản khác trong hệ thống.');
-    }
-
-    const duplicateEkyc = await this.ekycRepo.findOne({
-      where: { idDocNumberHash: cccdNumberHash, status: 'VERIFIED' },
-    });
-    if (duplicateEkyc) {
-      throw new ConflictException('Số CCCD này đã được xác thực cho một tài khoản khác.');
-    }
-
-    // 3. Chạy Anti-Fraud trên CCCD
+    // 2. Chạy Anti-Fraud trên ảnh giấy tờ trong RAM
     const docFraud = await this.callAiAntiFraud(frontFile.buffer, null);
     const fraudScore = docFraud?.data?.document_fraud?.fraud_score ?? null;
     const fraudPassed = docFraud?.data?.document_fraud?.passed ?? true;
     if (!fraudPassed || (fraudScore !== null && fraudScore >= FRAUD_SCORE_THRESHOLD)) {
       throw new BadRequestException(
-        `Phát hiện dấu hiệu thẻ CCCD không hợp lệ hoặc chụp lại từ màn hình (điểm rủi ro: ${fraudScore}). Vui lòng chụp thẻ thật gốc.`,
+        `Phát hiện dấu hiệu ảnh không hợp lệ hoặc chụp lại từ màn hình (điểm rủi ro: ${fraudScore}). Vui lòng chụp thẻ gốc trực tiếp.`,
       );
     }
 
-    // 4. Chạy Anti-Fraud Liveness trên Selfie
+    // 3. Chạy Anti-Fraud Liveness trên Selfie trong RAM
     const selfieFraud = await this.callAiAntiFraud(null, selfieFile.buffer);
     const livenessScore = selfieFraud?.data?.selfie_liveness?.liveness_score ?? null;
     const isLive = selfieFraud?.data?.selfie_liveness?.is_live ?? true;
     if (!isLive || (livenessScore !== null && livenessScore < LIVENESS_SCORE_THRESHOLD)) {
       throw new BadRequestException(
-        `Ảnh selfie không vượt qua kiểm tra người thật (liveness=${livenessScore?.toFixed(1) ?? 'N/A'}). Vui lòng chụp ảnh người thật trực tiếp từ camera.`,
+        `Ảnh chân dung không vượt qua kiểm tra người thật (liveness=${livenessScore?.toFixed(1) ?? 'N/A'}). Vui lòng chụp ảnh người thật trực tiếp từ camera.`,
       );
     }
 
-    // 5. So khớp khuôn mặt CCCD vs Selfie
+    // 4. So khớp khuôn mặt trong RAM (KHÔNG upload Cloudinary, KHÔNG lưu URL ảnh)
     const matchRes = await this.callAiFaceMatch(frontFile.buffer, selfieFile.buffer);
     if (!matchRes.result) {
       throw new BadRequestException(matchRes.error || 'So khớp khuôn mặt eKYC thất bại.');
@@ -766,30 +620,18 @@ export class EkycService {
     const { isMatch, similarity } = matchRes.result;
     if (!isMatch || similarity < FACE_MATCH_THRESHOLD) {
       throw new BadRequestException(
-        `Khuôn mặt selfie không trùng khớp với ảnh trên thẻ CCCD (độ tương đồng: ${similarity.toFixed(1)}%, yêu cầu ≥ ${FACE_MATCH_THRESHOLD}%).`,
+        `Khuôn mặt chưa trùng khớp (độ tương đồng: ${similarity.toFixed(1)}%, yêu cầu ≥ ${FACE_MATCH_THRESHOLD}%).`,
       );
     }
 
-    // 6. Upload ảnh lên Cloudinary
-    const tempPrefix = `reg_${Date.now()}`;
-    const frontUpload = await this.uploadToCloudinary(frontFile.buffer, `${tempPrefix}/front`);
-    const selfieUpload = await this.uploadToCloudinary(selfieFile.buffer, `${tempPrefix}/selfie`);
-    const backUpload = backFile
-      ? await this.uploadToCloudinary(backFile.buffer, `${tempPrefix}/back`)
-      : null;
-
     return {
-      rawCccdNumber,
-      cccdNumberHash,
       fullName: ocrResult.full_name,
       dateOfBirth: ocrResult.date_of_birth,
       gender: ocrResult.gender,
       nationality: ocrResult.nationality || 'Việt Nam',
       placeOfOrigin: ocrResult.place_of_origin,
+      placeOfResidence: ocrResult.place_of_residence,
       idDocType: ocrResult.id_doc_type || 'CCCD',
-      frontUploadId: frontUpload.public_id,
-      backUploadId: backUpload?.public_id ?? null,
-      selfieUploadId: selfieUpload.public_id,
       similarity,
       fraudScore,
       livenessScore,
@@ -801,32 +643,41 @@ export class EkycService {
   }
 
   /**
-   * Đồng bộ thông tin KYC đã verify sang CustomerProfile + Account.
-   * Lưu Cloudinary public_id (không phải URL thô) vào cccdFrontUrl/cccdBackUrl/selfieWithIdUrl.
+   * Đồng bộ các trường thông tin được phép (họ tên, ngày sinh, quê quán, địa chỉ thường trú)
+   * sang CustomerProfile + Account. Tuyệt đối KHÔNG lưu ảnh hay số CCCD.
    */
   private async syncToCustomerProfile(accountId: string, record: EkycRecord) {
-    const profile = await this.customerProfileRepo.findOne({ where: { accountId } });
-    if (profile) {
+    let profile = await this.customerProfileRepo.findOne({ where: { accountId } });
+    const note =
+      'eKYC tự động xác thực tức thời qua AI (không lưu trữ hình ảnh và số CCCD)';
+
+    if (!profile) {
+      profile = await this.customerProfileRepo.save(
+        this.customerProfileRepo.create({
+          accountId,
+          verificationStatus: 'APPROVED',
+          verificationNote: note,
+          dateOfBirth: record.dateOfBirth,
+          placeOfOrigin: record.placeOfOrigin,
+          address: record.placeOfResidence,
+        }),
+      );
+    } else {
       const updateData: Partial<CustomerProfile> = {
         verificationStatus: 'APPROVED',
-        verificationNote: 'eKYC tự động xác thực qua Self-hosted AI Service (EasyOCR + DeepFace + Anti-Fraud)',
+        verificationNote: note,
       };
-
-      if (record.idDocNumberEnc) {
-        const rawIdNumber = this.crypto.decrypt(record.idDocNumberEnc);
-        updateData.cccdNumber = record.idDocNumberEnc;
-        updateData.cccdNumberHash = record.idDocNumberHash || createHash('sha256').update(rawIdNumber).digest('hex');
-      }
-
-      if (record.frontImageUrl) updateData.cccdFrontUrl = record.frontImageUrl;
-      if (record.backImageUrl) updateData.cccdBackUrl = record.backImageUrl;
-      if (record.selfieImageUrl) updateData.selfieWithIdUrl = record.selfieImageUrl;
+      if (record.dateOfBirth) updateData.dateOfBirth = record.dateOfBirth;
+      if (record.placeOfOrigin) updateData.placeOfOrigin = record.placeOfOrigin;
+      if (record.placeOfResidence) updateData.address = record.placeOfResidence;
 
       await this.customerProfileRepo.update(profile.id, updateData);
     }
 
+    const accountPatch: Partial<Account> = { status: 'ACTIVE' };
     if (record.fullNameExtracted) {
-      await this.accountRepo.update(accountId, { fullName: record.fullNameExtracted });
+      accountPatch.fullName = record.fullNameExtracted;
     }
+    await this.accountRepo.update(accountId, accountPatch);
   }
 }

@@ -27,18 +27,9 @@ export class EkycRecord extends BaseEntity {
   @Column({ name: 'status', type: 'varchar', length: 20, default: 'PENDING' })
   status!: string;
 
-  // ===== Thông tin OCR bóc tách từ CCCD (Self-hosted AI Service) =====
+  // ===== Thông tin OCR bóc tách từ CCCD trong RAM (KHÔNG lưu số CCCD & ảnh) =====
   @Column({ name: 'id_doc_type', type: 'varchar', length: 50, nullable: true })
   idDocType!: string | null;
-
-  // Số CCCD — mã hóa AES-256-GCM, không bao giờ trả ra API dạng thô.
-  @Column({ name: 'id_doc_number_enc', type: 'varchar', length: 500, nullable: true })
-  idDocNumberEnc!: string | null;
-
-  // Hash SHA-256 của số CCCD — dùng để check trùng lặp giữa các tài khoản mà không cần giải mã.
-  @Index()
-  @Column({ name: 'id_doc_number_hash', type: 'varchar', length: 64, nullable: true })
-  idDocNumberHash!: string | null;
 
   @Column({ name: 'full_name_extracted', type: 'varchar', length: 255, nullable: true })
   fullNameExtracted!: string | null;
@@ -55,6 +46,9 @@ export class EkycRecord extends BaseEntity {
   @Column({ name: 'place_of_origin', type: 'varchar', length: 255, nullable: true })
   placeOfOrigin!: string | null;
 
+  @Column({ name: 'place_of_residence', type: 'varchar', length: 255, nullable: true })
+  placeOfResidence!: string | null;
+
   // ===== Kết quả Face Matching =====
   @Column({ name: 'face_match', type: 'boolean', nullable: true })
   faceMatch!: boolean | null;
@@ -65,16 +59,6 @@ export class EkycRecord extends BaseEntity {
   // ===== Lý do từ chối (nếu có) =====
   @Column({ name: 'rejection_reason', type: 'text', nullable: true })
   rejectionReason!: string | null;
-
-  // URL ảnh CCCD mặt trước, mặt sau, selfie — lưu trên Cloudinary/S3 của hệ thống.
-  @Column({ name: 'front_image_url', type: 'varchar', length: 500, nullable: true })
-  frontImageUrl!: string | null;
-
-  @Column({ name: 'back_image_url', type: 'varchar', length: 500, nullable: true })
-  backImageUrl!: string | null;
-
-  @Column({ name: 'selfie_image_url', type: 'varchar', length: 500, nullable: true })
-  selfieImageUrl!: string | null;
 
   @Column({ name: 'verified_at', type: 'timestamptz', nullable: true })
   verifiedAt!: Date | null;

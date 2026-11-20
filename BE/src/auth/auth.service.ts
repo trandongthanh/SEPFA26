@@ -109,13 +109,11 @@ export class AuthService {
   }
 
   /**
-   * POST /auth/register-with-ekyc — Đăng ký tài khoản kèm eKYC tự động:
+   * POST /auth/register-with-ekyc — Đăng ký tài khoản kèm eKYC tức thời trong RAM (Zero-Retention):
    * - Check trùng Email
-   * - AI OCR bóc tách CCCD
-   * - Check trùng số CCCD với các tài khoản khác
-   * - AI Anti-Fraud kiểm tra thẻ giả
-   * - AI Anti-Fraud Liveness kiểm tra người thật
-   * - AI Face Matching sinh trắc học CCCD vs Selfie
+   * - AI OCR bóc tách họ tên, ngày sinh, quê quán, địa chỉ thường trú (KHÔNG thu giữ số CCCD)
+   * - AI Anti-Fraud & Liveness kiểm tra trong RAM
+   * - AI Face Matching trong RAM — KHÔNG lưu trữ ảnh lên DB hay Cloud
    * - Tự động kích hoạt tài khoản: Account.status = 'ACTIVE'
    * - Tự động phê duyệt hồ sơ: CustomerProfile.verificationStatus = 'APPROVED'
    * - Tự động tạo EkycRecord với status: 'VERIFIED'
@@ -126,7 +124,6 @@ export class AuthService {
     files: {
       cccdFront: Express.Multer.File;
       selfie: Express.Multer.File;
-      cccdBack?: Express.Multer.File;
     },
     userAgent?: string,
   ) {
@@ -134,11 +131,10 @@ export class AuthService {
       throw new ConflictException('EMAIL_EXISTS');
     }
 
-    // Chạy toàn bộ quy trình eKYC: OCR + check trùng CCCD + Fraud check + Face match + Cloudinary
+    // Chạy quy trình eKYC trong RAM: OCR + Anti-Fraud + Liveness + Face Match (không lưu ảnh & số CCCD)
     const ekycData = await this.ekycService.verifyAndProcessRegistrationEkyc(
       files.cccdFront,
       files.selfie,
-      files.cccdBack,
     );
 
     // Băm mật khẩu
@@ -158,7 +154,7 @@ export class AuthService {
       phoneEnc = this.crypto.encrypt(cleanPhone);
     }
 
-    // Ưu tiên tên người dùng nhập, nếu không có thì lấy tên chính xác do AI đọc từ thẻ CCCD
+    // Ưu tiên tên người dùng nhập, nếu không có thì lấy tên chính xác do AI đọc
     const fullName = dto.fullName?.trim() || ekycData.fullName || 'Khách hàng';
 
     // 1. Tạo Account ở trạng thái ACTIVE (đã xác thực eKYC thành công, không cần Admin duyệt tay)
@@ -174,36 +170,30 @@ export class AuthService {
       }),
     );
 
-    // 2. Tạo CustomerProfile nếu là CUSTOMER với trạng thái APPROVED
+    // 2. Tạo CustomerProfile nếu là CUSTOMER với trạng thái APPROVED (chỉ lưu ngày sinh, quê quán, địa chỉ thường trú)
     if (account.role === 'CUSTOMER') {
       const profile = this.customerProfiles.create({
         accountId: account.id,
         verificationStatus: 'APPROVED',
-        verificationNote: 'eKYC tự động xác thực thành công khi đăng ký',
-        cccdNumber: this.crypto.encrypt(ekycData.rawCccdNumber),
-        cccdNumberHash: ekycData.cccdNumberHash,
-        cccdFrontUrl: ekycData.frontUploadId,
-        cccdBackUrl: ekycData.backUploadId,
-        selfieWithIdUrl: ekycData.selfieUploadId,
+        verificationNote: 'eKYC tự động xác thực tức thời khi đăng ký (không lưu ảnh & số CCCD)',
+        address: ekycData.placeOfResidence ?? null,
+        dateOfBirth: ekycData.dateOfBirth,
+        placeOfOrigin: ekycData.placeOfOrigin,
       });
       await this.customerProfiles.save(profile);
     }
 
-    // 3. Tạo bản ghi EkycRecord đã VERIFIED
+    // 3. Tạo bản ghi EkycRecord đã VERIFIED (chỉ lưu thông tin hợp lệ, không lưu ảnh hay số CCCD)
     const ekycRecord = this.ekycRecords.create({
       accountId: account.id,
       status: 'VERIFIED',
       idDocType: ekycData.idDocType,
-      idDocNumberEnc: this.crypto.encrypt(ekycData.rawCccdNumber),
-      idDocNumberHash: ekycData.cccdNumberHash,
       fullNameExtracted: ekycData.fullName,
       dateOfBirth: ekycData.dateOfBirth,
       gender: ekycData.gender,
       nationality: ekycData.nationality,
       placeOfOrigin: ekycData.placeOfOrigin,
-      frontImageUrl: ekycData.frontUploadId,
-      backImageUrl: ekycData.backUploadId,
-      selfieImageUrl: ekycData.selfieUploadId,
+      placeOfResidence: ekycData.placeOfResidence,
       faceMatch: true,
       faceSimilarity: ekycData.similarity.toFixed(2),
       fraudScore: ekycData.fraudScore?.toFixed(2) ?? null,
@@ -218,7 +208,7 @@ export class AuthService {
 
     return {
       success: true,
-      message: 'Đăng ký và xác thực eKYC thành công! Tài khoản đã được tự động kích hoạt.',
+      message: 'Đăng ký và xác thực eKYC thành công! Tài khoản đã được tự động kích hoạt (không lưu ảnh & số CCCD).',
       account: {
         id: account.id,
         email: account.email,
@@ -229,7 +219,9 @@ export class AuthService {
       ekyc: {
         status: 'VERIFIED',
         fullName: ekycData.fullName,
-        idNumber: this.ekycService.maskIdNumber(ekycData.rawCccdNumber),
+        dateOfBirth: ekycData.dateOfBirth,
+        placeOfOrigin: ekycData.placeOfOrigin,
+        placeOfResidence: ekycData.placeOfResidence,
         similarity: Number(ekycData.similarity.toFixed(2)),
       },
       tokens,

@@ -23,7 +23,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import type { CurrentUserData } from '../auth/types/current-user.type';
 import { EkycService } from './ekyc.service';
 
-// 20 MB — camera điện thoại thật chụp ảnh nặng 8-12 MB.
+// 20 MB — camera điện thoại thật chụp ảnh nặng 8-12 MB (chỉ giữ trong RAM trong lúc gọi AI, sau đó giải phóng).
 const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
 
 // Cho phép mọi ảnh và cả application/octet-stream (một số điện thoại gửi kiểu này).
@@ -38,18 +38,17 @@ export class EkycController {
   constructor(private readonly ekycService: EkycService) {}
 
   /**
-   * Bước 1: Upload ảnh CCCD mặt trước (bắt buộc) + mặt sau (tuỳ chọn).
-   * Ảnh được upload lên Cloudinary (authenticated — không công khai).
-   * Backend gọi Self-hosted AI Service (EasyOCR + Anti-Fraud) → trả dữ liệu bóc tách.
+   * Bước 1: Quét OCR ảnh mặt trước trong RAM (Zero-Retention).
+   * KHÔNG upload lên Cloud, KHÔNG lưu trữ ảnh, KHÔNG lưu số CCCD.
+   * Chỉ trích xuất họ tên, ngày sinh, quê quán, địa chỉ thường trú.
    */
   @Post('ocr')
   @Roles('CUSTOMER')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Bước 1: OCR ảnh CCCD — Bóc tách thông tin & Chống giả mạo (Self-hosted AI)',
+    summary: 'Bước 1: OCR tức thời trong RAM — Trích xuất họ tên, ngày sinh, quê quán, địa chỉ (Không lưu ảnh & số CCCD)',
     description:
-      'Chọn 1 hoặc 2 file ảnh (tối đa 20MB/ảnh). File 1 = mặt trước CCCD (bắt buộc), File 2 = mặt sau (tuỳ chọn). ' +
-      'Ảnh được lưu bảo mật trên Cloudinary (type: authenticated). AI tự động bóc tách thông tin và kiểm tra gian lận thẻ.',
+      'Gửi ảnh mặt trước thẻ để AI bóc tách tạm thời trong RAM (không lưu ảnh lên Cloud/DB, không thu giữ số CCCD).',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -60,7 +59,7 @@ export class EkycController {
         files: {
           type: 'array',
           items: { type: 'string', format: 'binary' },
-          description: 'File 1 = mặt trước CCCD (bắt buộc), File 2 = mặt sau (tuỳ chọn)',
+          description: 'Ảnh mặt trước thẻ (chỉ xử lý trong RAM, tự động hủy sau khi quét)',
         },
       },
     },
@@ -77,23 +76,23 @@ export class EkycController {
     @UploadedFiles() files: Express.Multer.File[],
   ) {
     if (!files?.length) {
-      throw new BadRequestException('Vui lòng upload ít nhất 1 ảnh CCCD mặt trước.');
+      throw new BadRequestException('Vui lòng tải lên ảnh mặt trước thẻ để bóc tách thông tin.');
     }
     return this.ekycService.ocrIdCard(user.accountId, files);
   }
 
   /**
-   * Bước 2: Upload ảnh CCCD mặt trước + ảnh selfie.
-   * Backend gọi Self-hosted AI Service Face Match (DeepFace ArcFace) + Liveness → nếu khớp (>= 80%) → VERIFIED.
+   * Bước 2: Đối chiếu khuôn mặt & kiểm tra Liveness trong RAM (Zero-Retention).
+   * KHÔNG lưu trữ bất kỳ ảnh nào.
    */
   @Post('face-match')
   @Roles('CUSTOMER')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Bước 2: So khớp khuôn mặt CCCD vs Selfie & Anti-Deepfake (Self-hosted AI)',
+    summary: 'Bước 2: So khớp khuôn mặt & Liveness tức thời trong RAM (Không lưu ảnh)',
     description:
-      'Chọn đúng 2 file ảnh (tối đa 20MB/ảnh). File 1 = ảnh CCCD mặt trước, File 2 = ảnh selfie khuôn mặt thật. ' +
-      'Mô hình DeepFace ArcFace so khớp sinh trắc học và kiểm tra liveness người thật. Kết quả: VERIFIED (khớp ≥ 80%) hoặc REJECTED.',
+      'Chọn đúng 2 file ảnh trong RAM: File 1 = ảnh mặt trước thẻ, File 2 = ảnh chân dung trực tiếp. ' +
+      'Mô hình AI đối chiếu tức thời và hủy ảnh ngay lập tức (không lưu trữ).',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -104,7 +103,7 @@ export class EkycController {
         files: {
           type: 'array',
           items: { type: 'string', format: 'binary' },
-          description: '2 file ảnh: File 1 = CCCD mặt trước, File 2 = selfie',
+          description: '2 file ảnh xử lý tạm thời trong RAM: File 1 = ảnh thẻ, File 2 = chân dung',
         },
       },
     },
@@ -121,7 +120,7 @@ export class EkycController {
     @UploadedFiles() files: Express.Multer.File[],
   ) {
     if (!files || files.length < 2) {
-      throw new BadRequestException('Vui lòng chọn đủ 2 ảnh: File 1 là CCCD mặt trước, File 2 là ảnh selfie.');
+      throw new BadRequestException('Vui lòng chọn đủ 2 ảnh để đối chiếu khuôn mặt tức thời.');
     }
     return this.ekycService.faceMatch(user.accountId, files);
   }
@@ -149,21 +148,18 @@ export class EkycController {
   }
 
   /**
-   * Xem ảnh eKYC bảo mật (Signed URL tạm thời).
-   * - Customer: Xem ảnh của chính mình.
-   * - Admin: Có thể xem ảnh của bất kỳ Customer nào bằng cách truyền query param `accountId`.
+   * Endpoint ngừng phục vụ vì hệ thống không lưu trữ ảnh giấy tờ tùy thân/chân dung.
    */
   @Get('documents/:field')
   @Roles('CUSTOMER', 'ADMIN')
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'Lấy link ảnh eKYC bảo mật (signed URL)',
-    description: 'Trả về URL có chữ ký để xem ảnh CCCD/selfie. URL chỉ dùng để hiển thị, sống 10 phút. Admin có thể truyền ?targetAccountId=... để xem hồ sơ khách.',
+    summary: 'Ngừng hỗ trợ (Hệ thống không lưu trữ ảnh CCCD & ảnh chân dung)',
+    description: 'Vì tuân thủ quy định bảo vệ dữ liệu cá nhân, hệ thống không lưu trữ ảnh CCCD và ảnh chân dung.',
   })
   @ApiParam({
     name: 'field',
     enum: ['front', 'back', 'selfie'],
-    description: 'Loại ảnh: front = mặt trước CCCD, back = mặt sau, selfie = ảnh chân dung',
   })
   async getDocumentImage(
     @CurrentUser() user: CurrentUserData,

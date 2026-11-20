@@ -65,11 +65,10 @@ export class AuthController {
   @Post('register-with-ekyc')
   @HttpCode(201)
   @ApiOperation({
-    summary: 'Đăng ký tài khoản tự động lồng eKYC (Check trùng Email + CCCD, tự động ACTIVE/APPROVED)',
+    summary: 'Đăng ký tài khoản tự động lồng eKYC trong RAM (Không lưu ảnh & số CCCD)',
     description:
-      'Đăng ký tài khoản kèm xác thực eKYC trọn gói. Nhận thông tin đăng ký + ảnh mặt trước CCCD + ảnh selfie. ' +
-      'AI tự động bóc tách thông tin, check trùng email, check trùng số CCCD, kiểm tra thẻ giả và so khớp khuôn mặt. ' +
-      'Thành công sẽ tự động kích hoạt tài khoản (status: ACTIVE, hồ sơ: APPROVED), không cần Admin duyệt tay!',
+      'Đăng ký tài khoản kèm xác thực eKYC tức thời trong RAM. AI chỉ trích xuất họ tên, ngày sinh, quê quán, địa chỉ thường trú; ' +
+      'KHÔNG thu giữ số CCCD và KHÔNG lưu trữ hình ảnh lên DB/Cloud.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -82,9 +81,8 @@ export class AuthController {
         fullName: { type: 'string', example: 'Nguyễn Văn Lan (tuỳ chọn - AI tự đọc)' },
         role: { type: 'string', enum: ['CUSTOMER', 'PROVIDER'], default: 'CUSTOMER' },
         phone: { type: 'string', example: '0901234567' },
-        cccdFront: { type: 'string', format: 'binary', description: 'Ảnh mặt trước CCCD (bắt buộc)' },
-        selfie: { type: 'string', format: 'binary', description: 'Ảnh selfie khuôn mặt thật (bắt buộc)' },
-        cccdBack: { type: 'string', format: 'binary', description: 'Ảnh mặt sau CCCD (tuỳ chọn)' },
+        cccdFront: { type: 'string', format: 'binary', description: 'Ảnh mặt trước thẻ đối chiếu tức thời trong RAM (không lưu trữ)' },
+        selfie: { type: 'string', format: 'binary', description: 'Ảnh chân dung đối chiếu tức thời trong RAM (không lưu trữ)' },
       },
     },
   })
@@ -93,11 +91,10 @@ export class AuthController {
       [
         { name: 'cccdFront', maxCount: 1 },
         { name: 'selfie', maxCount: 1 },
-        { name: 'cccdBack', maxCount: 1 },
       ],
       {
         storage: memoryStorage(),
-        limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB (hỗ trợ camera điện thoại phân giải cao)
+        limits: { fileSize: 20 * 1024 * 1024 },
       },
     ),
   )
@@ -113,22 +110,20 @@ export class AuthController {
     files: {
       cccdFront?: Express.Multer.File[];
       selfie?: Express.Multer.File[];
-      cccdBack?: Express.Multer.File[];
     },
     @Headers('user-agent') userAgent?: string,
   ) {
     if (!files?.cccdFront?.[0]) {
-      throw new BadRequestException('Vui lòng tải lên ảnh mặt trước CCCD (field: cccdFront).');
+      throw new BadRequestException('Vui lòng tải lên ảnh mặt trước thẻ để đối chiếu tức thời (field: cccdFront).');
     }
     if (!files?.selfie?.[0]) {
-      throw new BadRequestException('Vui lòng tải lên ảnh selfie khuôn mặt (field: selfie).');
+      throw new BadRequestException('Vui lòng tải lên ảnh chân dung để đối chiếu tức thời (field: selfie).');
     }
     return this.auth.registerWithEkyc(
       dto,
       {
         cccdFront: files.cccdFront[0],
         selfie: files.selfie[0],
-        cccdBack: files.cccdBack?.[0],
       },
       userAgent,
     );

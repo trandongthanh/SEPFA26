@@ -54,29 +54,19 @@ export class CustomerProfile extends BaseEntity {
   })
   gpsLng!: string | null;
 
-  // Số căn cước công dân — mã hóa AES, chỉ admin/chủ tài khoản thấy bản gốc.
-  @Column({ type: 'varchar', length: 500, name: 'cccd_number', nullable: true })
-  cccdNumber!: string | null;
+  // Ngày tháng năm sinh và Quê quán (trích xuất từ eKYC tức thời hoặc do khách khai) —
+  // KHÔNG thu giữ/lưu trữ số CCCD hay hình ảnh giấy tờ/chân dung.
+  @Column({ type: 'varchar', length: 20, name: 'date_of_birth', nullable: true })
+  dateOfBirth!: string | null;
 
-  // Hash SHA-256 của số CCCD gốc → ràng buộc unique, không thể trùng giữa các customer.
-  @Index({ unique: true })
-  @Column({ type: 'varchar', length: 64, name: 'cccd_number_hash', nullable: true })
-  cccdNumberHash!: string | null;
+  @Column({ type: 'varchar', length: 255, name: 'place_of_origin', nullable: true })
+  placeOfOrigin!: string | null;
 
   @Column({ type: 'varchar', length: 20, name: 'verification_status', default: 'PENDING' })
   verificationStatus!: 'PENDING' | 'APPROVED' | 'REJECTED';
 
   @Column({ type: 'text', name: 'verification_note', nullable: true })
   verificationNote!: string | null;
-
-  @Column({ type: 'varchar', length: 500, name: 'cccd_front_url', nullable: true })
-  cccdFrontUrl!: string | null;
-
-  @Column({ type: 'varchar', length: 500, name: 'cccd_back_url', nullable: true })
-  cccdBackUrl!: string | null;
-
-  @Column({ type: 'varchar', length: 500, name: 'selfie_with_id_url', nullable: true })
-  selfieWithIdUrl!: string | null;
 
   // Tài khoản nhận tiền hoàn / tiền đền — lệnh chi cho khách chụp lại 3 cột này lúc tạo.
   // Admin đối chiếu tên chủ tài khoản với họ tên eKYC trước khi chuyển.
