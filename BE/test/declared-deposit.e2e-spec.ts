@@ -4,6 +4,7 @@ import { DisputesService } from '../src/orders/disputes.service';
 import { createAuthTestApp, type AuthTestApp } from './auth-test-app';
 import {
   OrderSeed,
+  PROVIDER_BANK,
   type DraftOrder,
   type OrderActor,
   type OrderProvider,
@@ -342,7 +343,7 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
         status: 'PENDING',
         customer_id: null,
         provider_id: c.provider.profileId,
-        bank_account: null,
+        bank_account: PROVIDER_BANK.bank_account,
         held: true,
       },
     ]);

@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
+import { applyBankPatch } from '../common/bank-info';
 import { assertGpsPair } from '../common/gps';
 import {
   mapIdentityUniqueViolation,
@@ -98,12 +99,8 @@ export class CustomersService {
         if (dto.gpsLat !== undefined) profile.gpsLat = String(dto.gpsLat);
         if (dto.gpsLng !== undefined) profile.gpsLng = String(dto.gpsLng);
 
-        // Tài khoản nhận tiền hoàn: gửi chuỗi rỗng (sau trim) = xoá trường đó.
-        if (dto.bankName !== undefined) profile.bankName = dto.bankName || null;
-        if (dto.bankAccount !== undefined)
-          profile.bankAccount = dto.bankAccount || null;
-        if (dto.bankHolder !== undefined)
-          profile.bankHolder = dto.bankHolder || null;
+        // Tài khoản nhận tiền hoàn: cho sửa (gửi đủ bộ 3), cấm xoá — chốt 21/11.
+        applyBankPatch(profile, dto);
 
         const accountPatch: Partial<Account> = {};
         if (dto.fullName !== undefined && dto.fullName.trim()) {

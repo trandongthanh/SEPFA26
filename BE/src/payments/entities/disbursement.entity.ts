@@ -94,6 +94,9 @@ export class Disbursement extends BaseEntity {
   @Column({ type: 'varchar', length: 100, name: 'bank_holder', nullable: true })
   bankHolder!: string | null;
 
+  @Column({ type: 'varchar', length: 6, name: 'bank_bin', nullable: true })
+  bankBin!: string | null;
+
   @Column({ type: 'varchar', length: 20, default: 'PENDING' })
   status!: 'PENDING' | 'PAID';
 

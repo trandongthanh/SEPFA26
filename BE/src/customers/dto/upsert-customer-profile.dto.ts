@@ -72,7 +72,9 @@ export class UpsertCustomerProfileDto {
   @Max(180)
   gpsLng?: number;
 
-  // Tài khoản nhận tiền hoàn / tiền đền. Bắt buộc có đủ 3 trường trước khi mở tranh chấp.
+  // Tài khoản nhận tiền hoàn / tiền đền. Bắt buộc có trước khi đặt đơn và trước khi mở tranh chấp.
+  // Gửi thì gửi đủ bankName + bankAccount + bankHolder (thiếu → 400 BANK_INFO_INCOMPLETE);
+  // không xoá được (rỗng/null → 400 BANK_INFO_CANNOT_BE_CLEARED). Xem common/bank-info.ts.
   @ApiPropertyOptional({ example: 'MBBank' })
   @IsOptional()
   @Transform(toTrimmed)
@@ -93,4 +95,12 @@ export class UpsertCustomerProfileDto {
   @IsString()
   @MaxLength(100)
   bankHolder?: string;
+
+  // Mã BIN 6 số (không bắt buộc), chỉ gửi kèm bộ 3 trường trên; bộ 3 gửi không kèm BIN thì BIN về null.
+  @ApiPropertyOptional({ example: '970422' })
+  @IsOptional()
+  @Transform(toTrimmed)
+  @IsString()
+  @Matches(/^(\d{6})?$/, { message: 'bankBin phải gồm 6 chữ số' })
+  bankBin?: string;
 }

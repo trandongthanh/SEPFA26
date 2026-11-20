@@ -12,6 +12,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, In, Not, Repository } from 'typeorm';
 import { CareReport } from '../care-reports/entities/care-report.entity';
+import { hasBankInfo } from '../common/bank-info';
 import { CryptoService } from '../crypto/crypto.service';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
@@ -248,9 +249,12 @@ export class OrdersService {
       customer.verificationStatus !== 'APPROVED' ||
       !customer.account?.phone
     ) {
-      throw new ForbiddenException(
-        'Vui lòng hoàn tất xác thực tài khoản và cập nhật số điện thoại trước khi đặt đơn.',
-      );
+      throw new ForbiddenException('PROFILE_NOT_APPROVED');
+    }
+    // Mọi khoản hoàn cho khách đều bắt nguồn từ một đơn → bắt khai tài khoản nhận tiền ngay lúc đặt,
+    // để lệnh chi tạo ra sau này luôn có sẵn tài khoản (chốt 21/11; cùng mã với lúc mở tranh chấp).
+    if (!hasBankInfo(customer)) {
+      throw new ConflictException('REFUND_BANK_ACCOUNT_REQUIRED');
     }
 
     // 2. Giờ hẹn lấy cây phải ở tương lai (mốc duy nhất của luật hủy).
@@ -992,6 +996,11 @@ export class OrdersService {
     // ACCEPT tạo hợp đồng ngay → Bên B phải có SĐT + số CCCD (REJECT thì không cần).
     if (dto.response === 'ACCEPT') {
       assertProviderIdentityComplete(provider);
+      // Nhận đơn → sẽ có tiền công / tiền bảo đảm phải chi về vườn. Vườn duyệt từ trước luật 21/11
+      // có thể chưa khai ngân hàng → chặn ở đây (REJECT thì không cần).
+      if (!hasBankInfo(provider)) {
+        throw new ConflictException('PROVIDER_BANK_INFO_REQUIRED');
+      }
     }
     const order = await this.orderRepo.findOne({
       where: { id: orderId, providerId: provider.id },

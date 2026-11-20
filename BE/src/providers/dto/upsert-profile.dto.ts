@@ -1,4 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsEnum,
   IsNumber,
@@ -11,6 +12,7 @@ import {
   MinLength,
 } from 'class-validator';
 import { VN_PHONE_REGEX } from '../../common/identity';
+import { toTrimmed } from '../../common/transforms';
 
 // Trùng giá trị provider_type trong entity.
 const PROVIDER_TYPES = ['NURSERY', 'EXPERT'] as const;
@@ -144,21 +146,35 @@ export class UpsertProfileDto {
   @MaxLength(2000)
   certificates?: string;
 
+  // Tài khoản nhận tiền công + tiền bảo đảm. Bắt buộc có trước khi admin duyệt và trước khi nhận đơn.
+  // Gửi thì gửi đủ bankName + bankAccount + bankHolder (thiếu → 400 BANK_INFO_INCOMPLETE);
+  // không xoá được (rỗng/null → 400 BANK_INFO_CANNOT_BE_CLEARED). Xem common/bank-info.ts.
   @ApiPropertyOptional({ example: 'Vietcombank' })
   @IsOptional()
+  @Transform(toTrimmed)
   @IsString()
   @MaxLength(100)
   bankName?: string;
 
   @ApiPropertyOptional({ example: '1234567890' })
   @IsOptional()
+  @Transform(toTrimmed)
   @IsString()
   @MaxLength(50)
   bankAccount?: string;
 
   @ApiPropertyOptional({ example: 'NGUYEN VAN A' })
   @IsOptional()
+  @Transform(toTrimmed)
   @IsString()
   @MaxLength(100)
   bankHolder?: string;
+
+  // Mã BIN 6 số (không bắt buộc), chỉ gửi kèm bộ 3 trường trên; bộ 3 gửi không kèm BIN thì BIN về null.
+  @ApiPropertyOptional({ example: '970436' })
+  @IsOptional()
+  @Transform(toTrimmed)
+  @IsString()
+  @Matches(/^(\d{6})?$/, { message: 'bankBin phải gồm 6 chữ số' })
+  bankBin?: string;
 }

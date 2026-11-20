@@ -8,6 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Not, Repository } from 'typeorm';
 import { CareReport } from '../care-reports/entities/care-report.entity';
+import { hasBankInfo } from '../common/bank-info';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import {
   loadCustomerSettlement,
@@ -104,7 +105,7 @@ export class DisputesService {
     if (!customer || !order) {
       throw new NotFoundException('ORDER_NOT_FOUND');
     }
-    if (!customer.bankName || !customer.bankAccount || !customer.bankHolder) {
+    if (!hasBankInfo(customer)) {
       throw new ConflictException('REFUND_BANK_ACCOUNT_REQUIRED');
     }
     const caredIds = await this.caredPlantIds(order.id);
