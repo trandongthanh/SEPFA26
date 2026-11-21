@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -13,6 +14,8 @@ import { validate } from 'class-validator';
 import { randomUUID, timingSafeEqual } from 'crypto';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { formatVnd } from '../notifications/notification.constants';
+import { NotificationsService } from '../notifications/notifications.service';
 import { expireAddon } from '../orders/addon-expiry';
 import { extractAddonCode, overdueReason } from '../orders/addon-rules';
 import { isPastDue } from '../orders/cancel-rules';
@@ -60,6 +63,7 @@ export class PaymentsService {
     private readonly config: ConfigService,
     private readonly dataSource: DataSource,
     private readonly orderState: OrderStateService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -438,6 +442,32 @@ export class PaymentsService {
       await this.recordPendingTransaction(sepayTxnId, dto, rawBody, order.id);
       return { success: true, ignored: 'ORDER_NOT_AWAITING_PAYMENT' };
     }
+    await this.notifications?.notifyOrderPartiesSafe(order, {
+      customer: {
+        type: 'ORDER_PAID',
+        title: `Thanh toán đơn ${orderCode} thành công`,
+        body: `Hệ thống đã nhận đủ ${formatVnd(transferAmount)}đ cho đơn ${orderCode}.`,
+        refEntity: 'ORDER',
+        refId: order.id,
+        metadata: {
+          orderId: order.id,
+          orderCode,
+          amount: transferAmount.toString(),
+        },
+      },
+      provider: {
+        type: 'ORDER_PAID',
+        title: `Đơn ${orderCode} đã được thanh toán`,
+        body: `Khách hàng đã thanh toán thành công đơn ${orderCode}. Bạn có thể chuẩn bị nhận cây theo lịch hẹn.`,
+        refEntity: 'ORDER',
+        refId: order.id,
+        metadata: {
+          orderId: order.id,
+          orderCode,
+          amount: transferAmount.toString(),
+        },
+      },
+    });
     return { success: true, orderCode, status: 'PAID' };
   }
 
@@ -467,6 +497,12 @@ export class PaymentsService {
     const orderId = found.serviceOrderId;
     await this.webhookLogRepo.update(log.id, { matchedOrderId: orderId });
 
+    let addonOrderInfo: {
+      id: string;
+      orderCode: string;
+      customerId: string;
+      providerId: string;
+    } | null = null;
     const ignored = await this.dataSource.transaction(async (manager) => {
       // Khoá đơn trước (sổ ký quỹ theo đơn: 2 khoản tiền cùng vào không ghi chồng số dư), rồi khoá đề xuất.
       const order = await manager.findOne(ServiceOrder, {
@@ -529,6 +565,12 @@ export class PaymentsService {
       proposal.paidAt = now;
       await manager.save(proposal);
       await manager.update(PaymentWebhookLog, log.id, { processed: true });
+      addonOrderInfo = {
+        id: order.id,
+        orderCode: order.orderCode,
+        customerId: order.customerId,
+        providerId: order.providerId,
+      };
       return null;
     });
 
@@ -538,6 +580,44 @@ export class PaymentsService {
       );
       await this.recordPendingTransaction(sepayTxnId, dto, rawBody, orderId);
       return { success: true, ignored };
+    }
+    if (addonOrderInfo) {
+      const targetOrder = addonOrderInfo as {
+        id: string;
+        orderCode: string;
+        customerId: string;
+        providerId: string;
+      };
+      await this.notifications?.notifyOrderPartiesSafe(targetOrder, {
+        customer: {
+          type: 'ADDON_PAID',
+          title: `Thanh toán dịch vụ phát sinh thành công`,
+          body: `Hệ thống đã nhận ${formatVnd(transferAmount)}đ cho dịch vụ phát sinh "${found.title}" của đơn ${targetOrder.orderCode}.`,
+          refEntity: 'ADDON',
+          refId: found.id,
+          metadata: {
+            addonId: found.id,
+            addonCode,
+            orderId: targetOrder.id,
+            orderCode: targetOrder.orderCode,
+            amount: transferAmount.toString(),
+          },
+        },
+        provider: {
+          type: 'ADDON_PAID',
+          title: `Khách đã thanh toán dịch vụ phát sinh`,
+          body: `Khách hàng đã thanh toán "${found.title}" cho đơn ${targetOrder.orderCode}. Bạn có thể tiến hành thực hiện.`,
+          refEntity: 'ADDON',
+          refId: found.id,
+          metadata: {
+            addonId: found.id,
+            addonCode,
+            orderId: targetOrder.id,
+            orderCode: targetOrder.orderCode,
+            amount: transferAmount.toString(),
+          },
+        },
+      });
     }
     return { success: true, addonCode, status: 'PAID' };
   }
@@ -570,6 +650,12 @@ export class PaymentsService {
     const orderId = found.serviceOrderId;
     await this.webhookLogRepo.update(log.id, { matchedOrderId: orderId });
 
+    let depositOrderInfo: {
+      id: string;
+      orderCode: string;
+      customerId: string;
+      providerId: string;
+    } | null = null;
     const ignored = await this.dataSource.transaction(async (manager) => {
       // Khoá đơn trước rồi khoá khoản bảo đảm — cùng thứ tự với nhánh vườn huỷ / bộ quét 2 giờ,
       // nên tiền về và lệnh huỷ chạy cùng lúc chỉ một bên thắng.
@@ -641,6 +727,12 @@ export class PaymentsService {
       );
       await this.orderState.apply(manager, order, 'IN_CARE');
       await manager.update(PaymentWebhookLog, log.id, { processed: true });
+      depositOrderInfo = {
+        id: order.id,
+        orderCode: order.orderCode,
+        customerId: order.customerId,
+        providerId: order.providerId,
+      };
       return null;
     });
 
@@ -650,6 +742,41 @@ export class PaymentsService {
       );
       await this.recordPendingTransaction(sepayTxnId, dto, rawBody, orderId);
       return { success: true, ignored };
+    }
+    if (depositOrderInfo) {
+      const targetOrder = depositOrderInfo as {
+        id: string;
+        orderCode: string;
+        customerId: string;
+        providerId: string;
+      };
+      await this.notifications?.notifyOrderPartiesSafe(targetOrder, {
+        customer: {
+          type: 'SECURITY_DEPOSIT_PAID',
+          title: `Đơn ${targetOrder.orderCode} chính thức bắt đầu chăm sóc`,
+          body: `Nhà vườn đã hoàn tất tiền bảo đảm cho đơn ${targetOrder.orderCode}. Kỳ chăm sóc cây đã bắt đầu.`,
+          refEntity: 'ORDER',
+          refId: targetOrder.id,
+          metadata: {
+            orderId: targetOrder.id,
+            orderCode: targetOrder.orderCode,
+            depositCode,
+          },
+        },
+        provider: {
+          type: 'SECURITY_DEPOSIT_PAID',
+          title: `Đã nhận tiền bảo đảm đơn ${targetOrder.orderCode}`,
+          body: `Hệ thống đã ghi nhận ${formatVnd(transferAmount)}đ tiền bảo đảm. Đơn ${targetOrder.orderCode} chuyển sang trạng thái Đang chăm sóc.`,
+          refEntity: 'ORDER',
+          refId: targetOrder.id,
+          metadata: {
+            orderId: targetOrder.id,
+            orderCode: targetOrder.orderCode,
+            depositCode,
+            amount: transferAmount.toString(),
+          },
+        },
+      });
     }
     return { success: true, depositCode, status: 'PAID' };
   }

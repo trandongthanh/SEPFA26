@@ -7,12 +7,14 @@ import {
   Logger,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { Account } from '../accounts/entities/account.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import { EkycRecord } from './entities/ekyc-record.entity';
 
 // ===== Self-hosted AI Service Endpoints (Zero-Retention In-Memory eKYC) =====
@@ -99,6 +101,7 @@ export class EkycService implements OnModuleInit, OnModuleDestroy {
     @InjectRepository(Account)
     private readonly accountRepo: Repository<Account>,
     private readonly config: ConfigService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {
     this.aiServiceUrl = this.config
       .get<string>('AI_SERVICE_URL', 'http://localhost:8000')
@@ -253,6 +256,20 @@ export class EkycService implements OnModuleInit, OnModuleDestroy {
 
       this.logger.warn(`Selfie spoof detected for account ${accountId}: liveness_score=${livenessScore}`);
 
+      const customerProfile = await this.customerProfileRepo.findOne({
+        where: { accountId },
+        select: { id: true },
+      });
+      await this.notifications?.sendSafe({
+        accountId,
+        type: 'CUSTOMER_VERIFIED',
+        title: 'Xác thực eKYC không đạt',
+        body: 'Ảnh chân dung không vượt qua kiểm tra người thật. Vui lòng thử lại với khuôn mặt trực tiếp.',
+        refEntity: 'CUSTOMER_PROFILE',
+        refId: customerProfile?.id ?? null,
+        metadata: { status: 'REJECTED', reason: 'LIVENESS_SPOOF' },
+      });
+
       return {
         success: false,
         status: 'REJECTED',
@@ -301,6 +318,20 @@ export class EkycService implements OnModuleInit, OnModuleDestroy {
         `fraudScore=${record.fraudScore ?? 'N/A'}, livenessScore=${livenessScore?.toFixed(1) ?? 'N/A'})`,
       );
 
+      const customerProfile = await this.customerProfileRepo.findOne({
+        where: { accountId },
+        select: { id: true },
+      });
+      await this.notifications?.sendSafe({
+        accountId,
+        type: 'CUSTOMER_VERIFIED',
+        title: 'Xác thực eKYC thành công',
+        body: 'Xác thực danh tính eKYC của bạn đã hoàn tất và tài khoản đã được kích hoạt.',
+        refEntity: 'CUSTOMER_PROFILE',
+        refId: customerProfile?.id ?? null,
+        metadata: { status: 'VERIFIED', similarity: Number(similarity.toFixed(2)) },
+      });
+
       return {
         success: true,
         status: 'VERIFIED',
@@ -326,6 +357,20 @@ export class EkycService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.logger.log(`eKYC REJECTED for account ${accountId}: ${reason}`);
+
+    const customerProfile = await this.customerProfileRepo.findOne({
+      where: { accountId },
+      select: { id: true },
+    });
+    await this.notifications?.sendSafe({
+      accountId,
+      type: 'CUSTOMER_VERIFIED',
+      title: 'Xác thực eKYC không đạt',
+      body: reason,
+      refEntity: 'CUSTOMER_PROFILE',
+      refId: customerProfile?.id ?? null,
+      metadata: { status: 'REJECTED', reason },
+    });
 
     return {
       success: false,

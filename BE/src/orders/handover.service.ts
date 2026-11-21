@@ -5,11 +5,14 @@ import {
   Injectable,
   InternalServerErrorException,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { formatVnd } from '../notifications/notification.constants';
+import { NotificationsService } from '../notifications/notifications.service';
 import { refundCancelledOrder } from '../payments/cancel-order-refund';
 import { loadCustomerSettlement } from '../payments/customer-settlement';
 import { SecurityDeposit } from '../payments/entities/security-deposit.entity';
@@ -77,6 +80,7 @@ export class HandoverService {
     private readonly dataSource: DataSource,
     private readonly orderState: OrderStateService,
     private readonly orderCancel: OrderCancelService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -91,7 +95,7 @@ export class HandoverService {
     }
     assertTransition(order.status, 'HANDOVER_IN_PROGRESS');
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const locked = await this.orderState.transition(
         manager,
         order.id,
@@ -107,6 +111,20 @@ export class HandoverService {
       );
       return { handoverId: handover.id, status: locked.status };
     });
+
+    await this.notifications?.notifyOrderCustomerSafe(order, {
+      type: 'HANDOVER_STARTED',
+      title: 'Nhà vườn bắt đầu nhận cây',
+      body: `Nhà vườn đã mở phiên bàn giao nhận cây cho đơn ${order.orderCode}.`,
+      refEntity: 'ORDER',
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        handoverId: result.handoverId,
+      },
+    });
+    return result;
   }
 
   /**
@@ -138,7 +156,7 @@ export class HandoverService {
     }
     const handover = await this.getActiveHandover(order.id);
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const assessment = await manager.save(
         manager.create(PlantAssessment, {
           plantId: plant.id,
@@ -164,6 +182,7 @@ export class HandoverService {
       await manager.save(plant);
       return { assessmentId: assessment.id, decision: dto.decision };
     });
+    return result;
   }
 
   /**
@@ -199,7 +218,7 @@ export class HandoverService {
     const finalTotal = (basePrice * BigInt(keptPlants.length)).toString();
     const handover = await this.getActiveHandover(order.id);
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const locked = await this.orderState.transition(
         manager,
         order.id,
@@ -246,6 +265,21 @@ export class HandoverService {
         })),
       };
     });
+
+    await this.notifications?.notifyOrderCustomerSafe(order, {
+      type: 'HANDOVER_AWAITING_CONFIRM',
+      title: 'Biên bản nhận cây đã sẵn sàng',
+      body: `Nhà vườn đã chốt biên bản nhận cây cho đơn ${order.orderCode}. Vui lòng kiểm tra và xác nhận trong vòng 2 giờ.`,
+      refEntity: 'ORDER',
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        customerConfirmDueAt: result.customerConfirmDueAt.toISOString(),
+        finalTotal: result.finalTotal,
+      },
+    });
+    return result;
   }
 
   /**
@@ -267,7 +301,7 @@ export class HandoverService {
       throw new ConflictException('INVALID_STATE_TRANSITION');
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       // Khoá dòng đơn + kiểm lại: bấm đúp / khách bấm "không giao cây" cùng lúc chỉ một bên thắng.
       const locked = await this.orderState.lock(manager, order.id);
       if (!locked || locked.status !== 'HANDOVER_AWAITING_CONFIRM') {
@@ -362,6 +396,21 @@ export class HandoverService {
         depositDueAt: deposit.dueAt,
       };
     });
+
+    await this.notifications?.notifyOrderProviderSafe(order, {
+      type: 'HANDOVER_CONFIRMED',
+      title: 'Khách hàng đã đồng ý biên bản nhận cây',
+      body: `Khách hàng đã ký biên bản nhận cây đơn ${order.orderCode}. Vui lòng nộp tiền bảo đảm ${formatVnd(result.securityDepositAmount)}đ trong vòng 2 giờ.`,
+      refEntity: 'ORDER',
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        securityDepositAmount: result.securityDepositAmount,
+        depositDueAt: result.depositDueAt.toISOString(),
+      },
+    });
+    return result;
   }
 
   /**
@@ -381,7 +430,7 @@ export class HandoverService {
     }
     assertTransition(order.status, 'CANCELLED');
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const now = new Date();
       const locked = await this.orderState.lock(manager, order.id);
       if (!locked || locked.status !== 'HANDOVER_AWAITING_CONFIRM') {
@@ -434,6 +483,21 @@ export class HandoverService {
         declaredDepositReturned: declaredReturn.toString(),
       };
     });
+
+    await this.notifications?.notifyOrderProviderSafe(order, {
+      type: 'ORDER_CANCELLED',
+      title: `Đơn ${order.orderCode} đã bị huỷ`,
+      body: `Khách hàng từ chối giao cây sau khi xem biên bản bàn giao đơn ${order.orderCode}. Lý do: ${dto.reason}.`,
+      refEntity: 'ORDER',
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        cancelCode: 'CUSTOMER_DECLINED',
+        reason: dto.reason,
+      },
+    });
+    return result;
   }
 
   /**
@@ -453,7 +517,7 @@ export class HandoverService {
     dto: CancelHandoverDto,
   ) {
     const order = await this.getOrderAsProvider(accountId, orderId);
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       // Khoá ĐƠN trước rồi mới đọc phiên — cùng thứ tự với khách đồng ý / không giao cây và bộ quét.
       const locked = await this.orderState.lock(manager, order.id);
       const handover = locked
@@ -526,6 +590,21 @@ export class HandoverService {
         cancelCode: 'PROVIDER_CANNOT_SERVE',
       };
     });
+
+    await this.notifications?.notifyOrderCustomerSafe(order, {
+      type: 'ORDER_CANCELLED',
+      title: `Đơn ${order.orderCode} đã bị huỷ`,
+      body: `Đơn ${order.orderCode} đã bị huỷ trong quá trình bàn giao nhận cây. Lý do: ${dto.reason}.`,
+      refEntity: 'ORDER',
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        cancelCode: result.cancelCode,
+        reason: dto.reason,
+      },
+    });
+    return result;
   }
 
   /**
@@ -599,7 +678,7 @@ export class HandoverService {
       throw new ConflictException('CARE_NOT_DUE');
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const locked = await this.orderState.transition(
         manager,
         order.id,
@@ -618,6 +697,20 @@ export class HandoverService {
       );
       return { handoverId: handover.id, status: locked.status };
     });
+
+    await this.notifications?.notifyOrderCustomerSafe(order, {
+      type: 'RETURN_STARTED',
+      title: 'Nhà vườn bắt đầu trả cây',
+      body: `Nhà vườn đã mở phiên bàn giao trả cây cho đơn ${order.orderCode}.`,
+      refEntity: 'ORDER',
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        handoverId: result.handoverId,
+      },
+    });
+    return result;
   }
 
   /**
@@ -647,7 +740,7 @@ export class HandoverService {
     }
     const handover = await this.getActiveHandover(order.id, 'OUT');
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const assessment = await manager.save(
         manager.create(PlantAssessment, {
           plantId: plant.id,
@@ -670,6 +763,7 @@ export class HandoverService {
       );
       return { assessmentId: assessment.id };
     });
+    return result;
   }
 
   /**
@@ -699,7 +793,7 @@ export class HandoverService {
       throw new BadRequestException('UNASSESSED_PLANTS');
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const locked = await this.orderState.transition(
         manager,
         order.id,
@@ -715,6 +809,20 @@ export class HandoverService {
       });
       return { status: locked.status, customerConfirmDueAt };
     });
+
+    await this.notifications?.notifyOrderCustomerSafe(order, {
+      type: 'RETURN_AWAITING_CONFIRM',
+      title: 'Biên bản trả cây chờ xác nhận',
+      body: `Nhà vườn đã chốt biên bản trả cây cho đơn ${order.orderCode}. Vui lòng kiểm tra và xác nhận trong vòng 48 giờ.`,
+      refEntity: 'ORDER',
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        customerConfirmDueAt: result.customerConfirmDueAt.toISOString(),
+      },
+    });
+    return result;
   }
 
   /**
@@ -728,7 +836,7 @@ export class HandoverService {
     }
     const handover = await this.getActiveHandover(order.id, 'OUT');
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const locked = await this.orderState.transition(
         manager,
         order.id,
@@ -741,6 +849,20 @@ export class HandoverService {
       });
       return { status: locked.status };
     });
+
+    await this.notifications?.notifyOrderCustomerSafe(order, {
+      type: 'RETURN_CANCELLED',
+      title: 'Phiên trả cây tạm huỷ để hẹn lại',
+      body: `Nhà vườn đã huỷ phiên trả cây đơn ${order.orderCode} để hẹn lại. Lý do: ${dto.reason}.`,
+      refEntity: 'ORDER',
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        reason: dto.reason,
+      },
+    });
+    return result;
   }
 
   /**
@@ -764,7 +886,7 @@ export class HandoverService {
       throw new InternalServerErrorException('HANDOVER_NOT_FOUND');
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const locked = await this.orderState.transition(
         manager,
         order.id,
@@ -782,6 +904,20 @@ export class HandoverService {
       const settlement = await loadCustomerSettlement(manager, locked.id);
       return { status: locked.status, completedAt, settlement };
     });
+
+    await this.notifications?.notifyOrderProviderSafe(order, {
+      type: 'ORDER_COMPLETED',
+      title: `Đơn ${order.orderCode} đã hoàn tất`,
+      body: `Khách hàng đã xác nhận nhận lại cây cho đơn ${order.orderCode}. Hệ thống đã tạo lệnh giải ngân theo lịch đối soát.`,
+      refEntity: 'ORDER',
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        completedAt: result.completedAt.toISOString(),
+      },
+    });
+    return result;
   }
 
   /**

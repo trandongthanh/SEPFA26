@@ -5,6 +5,7 @@ import {
   Injectable,
   InternalServerErrorException,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -15,6 +16,8 @@ import { CareReport } from '../care-reports/entities/care-report.entity';
 import { CryptoService } from '../crypto/crypto.service';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
+import { formatVnd } from '../notifications/notification.constants';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   loadCustomerSettlement,
   loadProviderSettlement,
@@ -102,6 +105,7 @@ export class OrdersService {
     private readonly orderState: OrderStateService,
     private readonly config: ConfigService,
     private readonly orderCancel: OrderCancelService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   // Luật tiền bảo đảm khai giá đọc từ env (mặc định 10%, ngưỡng 2 × giá gói; 0% = tắt).
@@ -418,7 +422,7 @@ export class OrdersService {
 
     // D5: khoá dòng đơn + kiểm lại trạng thái trong transaction — bấm "gửi đơn"
     // 2 lần cùng lúc chỉ 1 request đi tiếp (không lật trạng thái, không 500 vì unique).
-    return this.dataSource.transaction(async (manager) => {
+    const saved = await this.dataSource.transaction(async (manager) => {
       const locked = await this.orderState.lock(manager, order.id);
       if (!locked || locked.status !== 'DRAFT') {
         throw new ConflictException('INVALID_STATE_TRANSITION');
@@ -428,7 +432,7 @@ export class OrdersService {
         new Date(),
         locked.scheduledPickupAt,
       );
-      const saved = await this.orderState.apply(
+      const next = await this.orderState.apply(
         manager,
         locked,
         'PENDING_PROVIDER',
@@ -439,8 +443,22 @@ export class OrdersService {
           providerResponse: null,
         }),
       );
-      return saved;
+      return next;
     });
+
+    await this.notifications?.notifyOrderProviderSafe(saved, {
+      type: 'ORDER_SUBMITTED',
+      title: 'Có đơn đặt chăm sóc mới',
+      body: `Khách hàng vừa gửi đơn ${saved.orderCode}. Vui lòng phản hồi trước hạn.`,
+      refEntity: 'ORDER',
+      refId: saved.id,
+      metadata: {
+        orderId: saved.id,
+        orderCode: saved.orderCode,
+        status: saved.status,
+      },
+    });
+    return saved;
   }
 
   /**
@@ -1018,7 +1036,7 @@ export class OrdersService {
     const target = dto.response === 'REJECT' ? 'REJECTED' : 'AGREEMENT_PENDING';
     assertTransition(order.status, target);
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const locked = await this.orderState.lock(manager, order.id);
       if (!locked || locked.status !== 'PENDING_PROVIDER') {
         throw new ConflictException('INVALID_STATE_TRANSITION');
@@ -1104,6 +1122,34 @@ export class OrdersService {
         ).toString(),
       };
     });
+
+    if (dto.response === 'REJECT') {
+      await this.notifications?.sendSafe({
+        accountId: customer.accountId,
+        type: 'ORDER_REJECTED',
+        title: 'Đơn đặt chăm sóc bị từ chối',
+        body: `Nhà vườn đã từ chối đơn ${order.orderCode}.`,
+        refEntity: 'ORDER',
+        refId: order.id,
+        metadata: { orderId: order.id, orderCode: order.orderCode },
+      });
+    } else {
+      await this.notifications?.sendSafe({
+        accountId: customer.accountId,
+        type: 'ORDER_ACCEPTED',
+        title: 'Nhà vườn đã chấp nhận đơn',
+        body: `Đơn ${order.orderCode} đã được nhà vườn chấp nhận và tạo hợp đồng. Vui lòng xem xét và ký hợp đồng.`,
+        refEntity: 'ORDER',
+        refId: order.id,
+        metadata: {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          agreementId: 'agreementId' in result ? result.agreementId : undefined,
+        },
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -1130,7 +1176,7 @@ export class OrdersService {
 
     // Toàn bộ trong 1 transaction + khóa dòng hợp đồng: 2 bên bấm ký cùng lúc
     // vẫn tuần tự hóa — không thể cùng thấy "0 chữ ký" rồi kẹt không ai chốt.
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const agreement = await manager.findOne(ServiceAgreement, {
         where: { serviceOrderId: order.id },
         lock: { mode: 'pessimistic_write' },
@@ -1248,6 +1294,67 @@ export class OrdersService {
         declaredDeposit: declaredDeposit.toString(),
       };
     });
+
+    if (!('alreadySigned' in result)) {
+      if ('waitingFor' in result) {
+        const partnerBuild =
+          signerRole === 'CUSTOMER'
+            ? {
+                provider: {
+                  type: 'AGREEMENT_SIGNED_BY_PARTNER' as const,
+                  title: 'Khách hàng đã ký hợp đồng',
+                  body: `Khách hàng đã ký hợp đồng cho đơn ${order.orderCode}. Vui lòng ký xác nhận để hoàn tất.`,
+                  refEntity: 'ORDER' as const,
+                  refId: order.id,
+                  metadata: {
+                    orderId: order.id,
+                    orderCode: order.orderCode,
+                    signedBy: signerRole,
+                  },
+                },
+              }
+            : {
+                customer: {
+                  type: 'AGREEMENT_SIGNED_BY_PARTNER' as const,
+                  title: 'Nhà vườn đã ký hợp đồng',
+                  body: `Nhà vườn đã ký hợp đồng cho đơn ${order.orderCode}. Vui lòng ký xác nhận để tiếp tục.`,
+                  refEntity: 'ORDER' as const,
+                  refId: order.id,
+                  metadata: {
+                    orderId: order.id,
+                    orderCode: order.orderCode,
+                    signedBy: signerRole,
+                  },
+                },
+              };
+        await this.notifications?.notifyOrderPartiesSafe(order, partnerBuild);
+      } else if ('status' in result && result.status === 'AWAITING_PAYMENT') {
+        await this.notifications?.notifyOrderPartiesSafe(order, {
+          customer: {
+            type: 'AGREEMENT_COMPLETED',
+            title: 'Hợp đồng đã hoàn tất chữ ký',
+            body: `Hợp đồng đơn ${order.orderCode} đã đủ hai chữ ký. Vui lòng thanh toán ${formatVnd(result.amountDue)}đ đúng hạn.`,
+            refEntity: 'ORDER',
+            refId: order.id,
+            metadata: {
+              orderId: order.id,
+              orderCode: order.orderCode,
+              amountDue: result.amountDue,
+            },
+          },
+          provider: {
+            type: 'AGREEMENT_COMPLETED',
+            title: 'Hợp đồng đã hoàn tất chữ ký',
+            body: `Hợp đồng đơn ${order.orderCode} đã đủ hai chữ ký và đang chờ khách hàng thanh toán.`,
+            refEntity: 'ORDER',
+            refId: order.id,
+            metadata: { orderId: order.id, orderCode: order.orderCode },
+          },
+        });
+      }
+    }
+
+    return result;
   }
 
   // ---- helpers ----

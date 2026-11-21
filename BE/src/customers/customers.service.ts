@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
@@ -15,6 +16,7 @@ import {
 import { Account } from '../accounts/entities/account.entity';
 import { toAccountSummary } from '../accounts/account.mapper';
 import { CryptoService } from '../crypto/crypto.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CustomerProfile } from './entities/customer-profile.entity';
 import { UpsertCustomerProfileDto } from './dto/upsert-customer-profile.dto';
 import { VerifyCustomerDto } from './dto/verify-customer.dto';
@@ -28,6 +30,7 @@ export class CustomersService {
     private readonly accountRepo: Repository<Account>,
     private readonly crypto: CryptoService,
     private readonly dataSource: DataSource,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -67,6 +70,7 @@ export class CustomersService {
   async updateMyProfile(accountId: string, dto: UpsertCustomerProfileDto) {
     assertGpsPair(dto.gpsLat, dto.gpsLng);
 
+    let movedToPending: { profileId: string; fullName: string } | null = null;
     try {
       // SĐT/Họ tên (bảng accounts) + hồ sơ ghi cùng 1 transaction: lỗi 1 bên thì không bên nào đổi.
       await this.dataSource.transaction(async (manager) => {
@@ -137,6 +141,7 @@ export class CustomersService {
             profile.placeOfOrigin?.trim(),
         );
 
+        let transitioningToPending = false;
         if (
           isIdentityComplete &&
           (profile.verificationStatus === 'NOT_SUBMITTED' ||
@@ -144,16 +149,35 @@ export class CustomersService {
         ) {
           profile.verificationStatus = 'PENDING';
           profile.verificationNote = null;
+          transitioningToPending = true;
         }
 
         if (Object.keys(accountPatch).length > 0) {
           await manager.update(Account, { id: accountId }, accountPatch);
         }
 
-        await manager.save(profile);
+        const savedProfile = await manager.save(profile);
+        if (transitioningToPending) {
+          movedToPending = {
+            profileId: savedProfile.id,
+            fullName: effectiveFullName,
+          };
+        }
       });
     } catch (err) {
       throw mapIdentityUniqueViolation(err);
+    }
+
+    if (movedToPending) {
+      const target = movedToPending as { profileId: string; fullName: string };
+      await this.notifications?.notifyAdminsSafe({
+        type: 'PROFILE_SUBMITTED_FOR_REVIEW',
+        title: 'Có hồ sơ khách hàng chờ duyệt',
+        body: `Khách hàng ${target.fullName} vừa hoàn tất thông tin định danh chờ duyệt.`,
+        refEntity: 'CUSTOMER_PROFILE',
+        refId: target.profileId,
+        metadata: { customerProfileId: target.profileId, accountId },
+      });
     }
 
     return this.getMyProfile(accountId);
@@ -202,7 +226,27 @@ export class CustomersService {
       await this.accountRepo.save(profile.account);
     }
 
-    return this.toAdminView(await this.profileRepo.save(profile));
+    const saved = await this.profileRepo.save(profile);
+    await this.notifications?.sendSafe({
+      accountId: profile.accountId,
+      type: 'CUSTOMER_VERIFIED',
+      title:
+        dto.decision === 'APPROVED'
+          ? 'Hồ sơ khách hàng đã được duyệt'
+          : 'Hồ sơ khách hàng bị từ chối',
+      body:
+        dto.decision === 'APPROVED'
+          ? 'Hồ sơ khách hàng của bạn đã được quản trị viên phê duyệt.'
+          : `Hồ sơ khách hàng bị từ chối${dto.note ? `: ${dto.note}` : '.'}`,
+      refEntity: 'CUSTOMER_PROFILE',
+      refId: profile.id,
+      metadata: {
+        customerProfileId: profile.id,
+        decision: dto.decision,
+        note: dto.note ?? null,
+      },
+    });
+    return this.toAdminView(saved);
   }
 
   // Bản cho chủ hồ sơ: giải mã SĐT, bỏ lostDisputeCount nội bộ.

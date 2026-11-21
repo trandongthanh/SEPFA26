@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, Not, QueryFailedError, Repository } from 'typeorm';
@@ -11,6 +12,7 @@ import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { ServiceOrder } from '../orders/entities/service-order.entity';
 import { Plant } from '../orders/entities/plant.entity';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CareReport } from './entities/care-report.entity';
 import { CareReportPlant } from './entities/care-report-plant.entity';
 import { CreateCareReportDto } from './dto/create-care-report.dto';
@@ -36,6 +38,7 @@ export class CareReportsService {
     @InjectRepository(CustomerProfile)
     private readonly customerRepo: Repository<CustomerProfile>,
     private readonly dataSource: DataSource,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -61,7 +64,8 @@ export class CareReportsService {
     }
 
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      let orderInfo: { customerId: string; orderCode: string } | null = null;
+      const result = await this.dataSource.transaction(async (manager) => {
         const order = await manager.getRepository(ServiceOrder).findOne({
           where: { id: dto.serviceOrderId, providerId: provider.id },
           lock: { mode: 'pessimistic_write' },
@@ -69,6 +73,10 @@ export class CareReportsService {
         if (!order) {
           throw new NotFoundException('SERVICE_ORDER_NOT_FOUND');
         }
+        orderInfo = {
+          customerId: order.customerId,
+          orderCode: order.orderCode,
+        };
         if (
           order.status !== 'IN_CARE' ||
           !order.careStartedAt ||
@@ -161,6 +169,27 @@ export class CareReportsService {
           submittedAt: saved.submittedAt,
         };
       });
+
+      if (orderInfo) {
+        const targetOrder = orderInfo as {
+          customerId: string;
+          orderCode: string;
+        };
+        await this.notifications?.notifyOrderCustomerSafe(targetOrder, {
+          type: 'CARE_REPORT_SUBMITTED',
+          title: `Có báo cáo chăm sóc kỳ ${result.periodIndex}`,
+          body: `Nhà vườn vừa nộp báo cáo chăm sóc kỳ ${result.periodIndex} cho đơn ${targetOrder.orderCode}.`,
+          refEntity: 'CARE_REPORT',
+          refId: result.id,
+          metadata: {
+            careReportId: result.id,
+            serviceOrderId: result.serviceOrderId,
+            orderCode: targetOrder.orderCode,
+            periodIndex: result.periodIndex,
+          },
+        });
+      }
+      return result;
     } catch (error) {
       // Lưới an toàn: unique (đơn, kỳ) — đã khóa đơn nên hiếm khi tới đây.
       if (
