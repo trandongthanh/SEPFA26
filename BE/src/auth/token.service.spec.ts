@@ -73,4 +73,15 @@ describe('TokenService', () => {
     const access2 = tokens.signAccess(input);
     expect(access1).not.toBe(access2);
   });
+
+  it('ký rồi xác minh email verification token, không dùng được như refresh token', () => {
+    const emailToken = tokens.signEmailVerification('lan@example.com');
+    const payload = tokens.verifyEmailVerification(emailToken);
+    expect(payload.email).toBe('lan@example.com');
+    expect(payload.type).toBe('email_verify');
+    expect(() => tokens.verifyRefresh(emailToken)).toThrow();
+    expect(() =>
+      tokens.verifyEmailVerification(tokens.signAccess(input)),
+    ).toThrow('INVALID_EMAIL_VERIFICATION_TOKEN');
+  });
 });

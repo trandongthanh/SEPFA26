@@ -2,8 +2,12 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
+  Get,
   Headers,
   HttpCode,
+  Param,
+  ParseUUIDPipe,
   Post,
   UploadedFiles,
   UseInterceptors,
@@ -34,11 +38,23 @@ import { LogoutDto } from './dto/logout.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import {
+  ResetPasswordWithOtpDto,
+  SendEmailOtpDto,
+  SendRegisterOtpDto,
+  VerifyOtpDto,
+} from './dto/otp.dto';
+import {
+  ActiveSessionDto,
   AuthTokensResponseDto,
   ForgotPasswordResponseDto,
   GoogleAuthResponseDto,
   LogoutResponseDto,
   RegisterResponseDto,
+  RevokeSessionResponseDto,
+  SendOtpResponseDto,
+  VerifyEmailResponseDto,
+  VerifyRegisterOtpResponseDto,
+  VerifyResetOtpResponseDto,
 } from './dto/auth-response.dto';
 
 // Rate limit riêng cho route public dễ bị dò/spam (cửa sổ 1 phút, xem common/throttle.ts):
@@ -63,6 +79,7 @@ export class AuthController {
 
   @Public()
   @Post('register-with-ekyc')
+  @throttle({ ip: 10, account: 3 })
   @HttpCode(201)
   @ApiOperation({
     summary: 'Đăng ký tài khoản tự động lồng eKYC trong RAM (Không lưu ảnh & số CCCD)',
@@ -81,6 +98,8 @@ export class AuthController {
         fullName: { type: 'string', example: 'Nguyễn Văn Lan (tuỳ chọn - AI tự đọc)' },
         role: { type: 'string', enum: ['CUSTOMER', 'PROVIDER'], default: 'CUSTOMER' },
         phone: { type: 'string', example: '0901234567' },
+        otp: { type: 'string', example: '123456', description: 'Mã OTP 6 số xác thực email (tuỳ chọn)' },
+        verificationToken: { type: 'string', description: 'Token từ /auth/register/verify-otp (tuỳ chọn)' },
         cccdFront: { type: 'string', format: 'binary', description: 'Ảnh mặt trước thẻ đối chiếu tức thời trong RAM (không lưu trữ)' },
         selfie: { type: 'string', format: 'binary', description: 'Ảnh chân dung đối chiếu tức thời trong RAM (không lưu trữ)' },
       },
@@ -130,6 +149,40 @@ export class AuthController {
   }
 
   @Public()
+  @Post('register/send-otp')
+  @throttle({ ip: 10, account: 3 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Gửi mã OTP 6 chữ số tới Gmail/email để xác thực trước khi đăng ký',
+  })
+  @ApiResponse({ status: 200, type: SendOtpResponseDto })
+  @ApiResponse({ status: 409, description: 'EMAIL_EXISTS' })
+  @ApiResponse({ status: 429, description: 'OTP_COOLDOWN' })
+  sendRegisterOtp(
+    @Body() dto: SendRegisterOtpDto,
+  ): Promise<SendOtpResponseDto> {
+    return this.auth.sendRegisterOtp(dto);
+  }
+
+  @Public()
+  @Post('register/verify-otp')
+  @throttle({ ip: 15, account: 5 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Xác thực mã OTP đăng ký và nhận verificationToken (luồng 2 bước)',
+  })
+  @ApiResponse({ status: 200, type: VerifyRegisterOtpResponseDto })
+  @ApiResponse({
+    status: 400,
+    description: 'OTP_INVALID | OTP_EXPIRED | OTP_MAX_ATTEMPTS',
+  })
+  verifyRegisterOtp(
+    @Body() dto: VerifyOtpDto,
+  ): Promise<VerifyRegisterOtpResponseDto> {
+    return this.auth.verifyRegisterOtp(dto);
+  }
+
+  @Public()
   @Post('register')
   // Chống spam tạo account.
   @throttle({ ip: 30, account: 5 })
@@ -141,6 +194,36 @@ export class AuthController {
   @ApiResponse({ status: 409, description: 'EMAIL_EXISTS' })
   register(@Body() dto: RegisterDto): Promise<RegisterResponseDto> {
     return this.auth.register(dto);
+  }
+
+  @Public()
+  @Post('verify-email/send-otp')
+  @throttle({ ip: 10, account: 3 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Gửi mã OTP xác thực địa chỉ email cho tài khoản đã đăng ký',
+  })
+  @ApiResponse({ status: 200, type: SendOtpResponseDto })
+  sendEmailVerificationOtp(
+    @Body() dto: SendEmailOtpDto,
+  ): Promise<SendOtpResponseDto> {
+    return this.auth.sendEmailVerificationOtp(dto);
+  }
+
+  @Public()
+  @Post('verify-email')
+  @throttle({ ip: 15, account: 5 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Xác thực OTP để đánh dấu tài khoản đã xác minh email',
+  })
+  @ApiResponse({ status: 200, type: VerifyEmailResponseDto })
+  @ApiResponse({
+    status: 400,
+    description: 'OTP_INVALID | OTP_EXPIRED | OTP_MAX_ATTEMPTS',
+  })
+  verifyEmail(@Body() dto: VerifyOtpDto): Promise<VerifyEmailResponseDto> {
+    return this.auth.verifyEmail(dto);
   }
 
   @Public()
@@ -226,13 +309,45 @@ export class AuthController {
   }
 
   @Public()
+  @Post('forgot-password/otp')
+  @throttle({ ip: 10, account: 3 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Quên mật khẩu bằng OTP — gửi mã 6 chữ số qua email (hạn 10 phút). LUÔN 200',
+  })
+  @ApiResponse({ status: 200, type: SendOtpResponseDto })
+  forgotPasswordOtp(
+    @Body() dto: ForgotPasswordDto,
+  ): Promise<SendOtpResponseDto> {
+    return this.auth.forgotPasswordOtp(dto);
+  }
+
+  @Public()
+  @Post('forgot-password/verify-otp')
+  @throttle({ ip: 10, account: 5 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Xác thực OTP quên mật khẩu và nhận resetToken để gọi /auth/reset-password (luồng 2 bước)',
+  })
+  @ApiResponse({ status: 200, type: VerifyResetOtpResponseDto })
+  @ApiResponse({
+    status: 400,
+    description: 'OTP_INVALID | OTP_EXPIRED | OTP_MAX_ATTEMPTS',
+  })
+  verifyForgotPasswordOtp(
+    @Body() dto: VerifyOtpDto,
+  ): Promise<VerifyResetOtpResponseDto> {
+    return this.auth.verifyForgotPasswordOtp(dto);
+  }
+
+  @Public()
   @Post('reset-password')
   // Chống dò token.
   @throttle({ ip: 5 })
   @HttpCode(204)
   @ApiOperation({
     summary:
-      'Đặt lại mật khẩu bằng token trong link mail — thành công thì MỌI phiên bị đăng xuất',
+      'Đặt lại mật khẩu bằng token trong link mail hoặc từ /auth/forgot-password/verify-otp — thành công thì MỌI phiên bị đăng xuất',
   })
   @ApiResponse({ status: 204 })
   @ApiResponse({
@@ -241,6 +356,23 @@ export class AuthController {
   })
   resetPassword(@Body() dto: ResetPasswordDto): Promise<void> {
     return this.auth.resetPassword(dto);
+  }
+
+  @Public()
+  @Post('reset-password-otp')
+  @throttle({ ip: 5, account: 5 })
+  @HttpCode(204)
+  @ApiOperation({
+    summary:
+      'Đặt lại mật khẩu trực tiếp bằng email + OTP 6 số (luồng 1 bước) — thành công thì MỌI phiên bị đăng xuất',
+  })
+  @ApiResponse({ status: 204 })
+  @ApiResponse({
+    status: 400,
+    description: 'OTP_INVALID | OTP_EXPIRED | OTP_MAX_ATTEMPTS',
+  })
+  resetPasswordWithOtp(@Body() dto: ResetPasswordWithOtpDto): Promise<void> {
+    return this.auth.resetPasswordWithOtp(dto);
   }
 
   @Post('logout')
@@ -256,5 +388,33 @@ export class AuthController {
     @Body() dto: LogoutDto,
   ): Promise<LogoutResponseDto> {
     return this.auth.logout(user, dto);
+  }
+
+  @Get('sessions')
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Liệt kê các phiên đăng nhập (thiết bị) đang hoạt động của tài khoản',
+  })
+  @ApiResponse({ status: 200, type: [ActiveSessionDto] })
+  listSessions(
+    @CurrentUser() user: CurrentUserData,
+  ): Promise<ActiveSessionDto[]> {
+    return this.auth.listSessions(user);
+  }
+
+  @Delete('sessions/:sessionId')
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Thu hồi (đăng xuất từ xa) một phiên đăng nhập cụ thể theo sessionId',
+  })
+  @ApiResponse({ status: 200, type: RevokeSessionResponseDto })
+  @ApiResponse({ status: 404, description: 'SESSION_NOT_FOUND' })
+  revokeSession(
+    @CurrentUser() user: CurrentUserData,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+  ): Promise<RevokeSessionResponseDto> {
+    return this.auth.revokeSession(user, sessionId);
   }
 }

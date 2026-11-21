@@ -9,6 +9,7 @@ import {
 } from '../src/auth/google-id-token.verifier';
 import {
   MailService,
+  type EmailOtpMail,
   type GooglePasswordMail,
   type PasswordResetMail,
 } from '../src/mail/mail.service';
@@ -58,6 +59,26 @@ export class FakeMailService {
     this.resetMails.push(mail);
     return Promise.resolve(true);
   }
+
+  // Mail OTP (REGISTER / VERIFY_EMAIL / RESET_PASSWORD) — lưu OTP thô để e2e test đọc lại.
+  readonly otpMails: (EmailOtpMail & {
+    purpose: 'REGISTER' | 'VERIFY_EMAIL' | 'RESET_PASSWORD';
+  })[] = [];
+  sendRegistrationOtp(mail: EmailOtpMail): Promise<boolean> {
+    if (this.failing) return Promise.resolve(false);
+    this.otpMails.push({ ...mail, purpose: 'REGISTER' });
+    return Promise.resolve(true);
+  }
+  sendEmailVerificationOtp(mail: EmailOtpMail): Promise<boolean> {
+    if (this.failing) return Promise.resolve(false);
+    this.otpMails.push({ ...mail, purpose: 'VERIFY_EMAIL' });
+    return Promise.resolve(true);
+  }
+  sendPasswordResetOtp(mail: EmailOtpMail): Promise<boolean> {
+    if (this.failing) return Promise.resolve(false);
+    this.otpMails.push({ ...mail, purpose: 'RESET_PASSWORD' });
+    return Promise.resolve(true);
+  }
 }
 
 export interface AuthTestApp {
@@ -102,8 +123,11 @@ export async function createAuthTestApp(): Promise<AuthTestApp> {
     reset: async () => {
       mailbox.sent.length = 0;
       mailbox.resetMails.length = 0;
+      mailbox.otpMails.length = 0;
       mailbox.failing = false;
-      await dataSource.query('TRUNCATE TABLE refresh_tokens, accounts CASCADE');
+      await dataSource.query(
+        'TRUNCATE TABLE email_otps, refresh_tokens, accounts CASCADE',
+      );
     },
   };
 }

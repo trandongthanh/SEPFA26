@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
+import { EmailOtp } from '../auth/entities/email-otp.entity';
 import { PasswordResetToken } from '../auth/entities/password-reset-token.entity';
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
 import { CryptoService } from '../crypto/crypto.service';
@@ -48,6 +49,7 @@ export class AccountsService {
       phone: account.phone ? this.crypto.decrypt(account.phone) : null,
       role: account.role,
       status: account.status,
+      emailVerified: Boolean(account.emailVerifiedAt),
     };
   }
 
@@ -72,9 +74,8 @@ export class AccountsService {
     // kẻ đang giữ refresh token cũng bị đẩy ra. Client phải đăng nhập lại bằng mật khẩu mới.
     // Ghi thẳng vào bảng refresh_tokens (entity của module auth) — cùng điều kiện với
     // AuthService.revokeAllSessions; đổi cách thu hồi phiên thì sửa cả 2 chỗ.
-    // Xoá luôn link "quên mật khẩu" còn hạn: đã đổi mật khẩu thì link cũ không được dùng nữa
-    // (vd kẻ chiếm hộp mail cũ không đặt lại được mật khẩu vừa đổi).
-    // Thứ tự khoá chung của auth: UPDATE accounts (khoá dòng account) TRƯỚC, bảng token SAU —
+    // Xoá luôn link "quên mật khẩu" và OTP đặt lại mật khẩu còn hạn: đã đổi mật khẩu thì mã/link cũ không được dùng nữa.
+    // Thứ tự khoá chung của auth: UPDATE accounts (khoá dòng account) TRƯỚC, bảng token/OTP SAU —
     // giống AuthService.forgotPassword/resetPassword, tránh deadlock khi chạy cùng lúc.
     await this.accounts.manager.transaction(async (manager) => {
       await manager.update(Account, { id }, { passwordHash });
@@ -84,6 +85,10 @@ export class AccountsService {
         { revokedAt: new Date() },
       );
       await manager.delete(PasswordResetToken, { accountId: id });
+      await manager.delete(EmailOtp, {
+        email: account.email,
+        purpose: 'RESET_PASSWORD',
+      });
     });
   }
 }

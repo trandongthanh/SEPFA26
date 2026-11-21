@@ -36,4 +36,8 @@ export class Account extends BaseEntity {
 
   @Column({ type: 'varchar', length: 20, default: 'ACTIVE' })
   status!: AccountStatus;
+
+  // Thời điểm xác thực quyền sở hữu email (qua OTP hoặc Google Sign-In).
+  @Column({ type: 'timestamptz', name: 'email_verified_at', nullable: true })
+  emailVerifiedAt!: Date | null;
 }
