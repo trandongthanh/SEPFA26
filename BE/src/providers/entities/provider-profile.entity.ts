@@ -69,6 +69,11 @@ export class ProviderProfile extends BaseEntity {
   })
   ratingAvg!: string | null;
 
+  // Số lần vườn "nhận đơn rồi bỏ": tự huỷ đơn đã nhận, không tới lấy cây, tới nơi mà không nhận,
+  // không nộp tiền bảo đảm. Ghi chú nội bộ cho admin (chưa phạt tiền); đơn Hết hạn vì im lặng KHÔNG tính.
+  @Column({ type: 'integer', name: 'cancelled_order_count', default: 0 })
+  cancelledOrderCount!: number;
+
   // Địa chỉ chữ CHỈ để hiển thị; tính phí ship luôn dùng GPS do provider tự ghim trên bản đồ.
   @Column({ type: 'varchar', length: 255, nullable: true })
   address!: string | null;
@@ -113,14 +118,17 @@ export class ProviderProfile extends BaseEntity {
   @Column({ type: 'varchar', length: 100, name: 'bank_holder', nullable: true })
   bankHolder!: string | null;
 
-  @Column({ type: 'varchar', length: 500, name: 'cccd_front_url', nullable: true })
-  cccdFrontUrl!: string | null;
+  // Mã BIN 6 số của ngân hàng (không bắt buộc, đi kèm bộ 3 trường trên).
+  @Column({ type: 'varchar', length: 6, name: 'bank_bin', nullable: true })
+  bankBin!: string | null;
 
-  @Column({ type: 'varchar', length: 500, name: 'cccd_back_url', nullable: true })
-  cccdBackUrl!: string | null;
+  // Ngày tháng năm sinh và Quê quán phục vụ xác minh pháp lý & hợp đồng điện tử
+  // (KHÔNG thu giữ/lưu trữ số CCCD, ảnh CCCD và ảnh chân dung).
+  @Column({ type: 'varchar', length: 20, name: 'date_of_birth', nullable: true })
+  dateOfBirth!: string | null;
 
-  @Column({ type: 'varchar', length: 500, name: 'selfie_url', nullable: true })
-  selfieUrl!: string | null;
+  @Column({ type: 'varchar', length: 255, name: 'place_of_origin', nullable: true })
+  placeOfOrigin!: string | null;
 
   @Column({ type: 'varchar', length: 500, name: 'business_license_url', nullable: true })
   businessLicenseUrl!: string | null;

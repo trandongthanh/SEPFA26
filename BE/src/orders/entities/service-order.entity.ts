@@ -12,15 +12,22 @@ import { BaseEntity } from '../../common/entities/base.entity';
 import { CustomerProfile } from '../../customers/entities/customer-profile.entity';
 import { ProviderProfile } from '../../providers/entities/provider-profile.entity';
 import { ServicePackage } from '../../providers/entities/service-package.entity';
+import type { CancelCode, CancelledBy } from '../cancel-rules';
 import { OrderStatus } from '../order-status';
 import { Plant } from './plant.entity';
 
 @Entity({ name: 'service_orders' })
+// Đặt tên cố định để file sql/2026-11-11-order-status-15.sql tạo đúng tên này → synchronize không drop/tạo lại.
 @Check(
-  `"status" IN ('DRAFT','PENDING_PROVIDER','AGREEMENT_PENDING','AWAITING_PAYMENT','PAID','HANDOVER_IN_PROGRESS','HANDOVER_AWAITING_CONFIRM','IN_CARE','REJECTED','CANCELLED')`,
+  'CHK_service_orders_status',
+  `"status" IN ('DRAFT','PENDING_PROVIDER','AGREEMENT_PENDING','AWAITING_PAYMENT','PAID','HANDOVER_IN_PROGRESS','HANDOVER_AWAITING_CONFIRM','IN_CARE','RETURN_IN_PROGRESS','RETURN_AWAITING_CONFIRM','COMPLETED','REJECTED','EXPIRED','CANCELLED','DISPUTED')`,
 )
 @Check(`"plant_count" > 0`)
-@Check(`"cancelled_by" IS NULL OR "cancelled_by" IN ('CUSTOMER','PROVIDER')`)
+// Tên cố định để SQL tay đổi được danh sách về sau. SYSTEM = hệ thống tự huỷ (bộ quét hạn), không ai bấm.
+@Check(
+  'CHK_service_orders_cancelled_by',
+  `"cancelled_by" IS NULL OR "cancelled_by" IN ('CUSTOMER','PROVIDER','SYSTEM')`,
+)
 export class ServiceOrder extends BaseEntity {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -121,8 +128,31 @@ export class ServiceOrder extends BaseEntity {
   @Column({ type: 'text', name: 'customer_note', nullable: true })
   customerNote!: string | null;
 
+  // Ba hạn chờ trước thanh toán = sớm hơn trong (lúc vào trạng thái + 24 giờ) và (giờ hẹn − 3 giờ),
+  // xem cancel-rules.ts. Rỗng = đơn tạo trước khi có luật hạn (bộ quét và các route bỏ qua dòng rỗng).
+  // Hạn vườn trả lời — đặt lúc khách gửi đơn; quá hạn → EXPIRED.
+  @Column({
+    type: 'timestamptz',
+    name: 'provider_respond_due_at',
+    nullable: true,
+  })
+  providerRespondDueAt!: Date | null;
+
+  // Hạn hai bên ký — đặt lúc vườn nhận đơn; quá hạn → CANCELLED (SIGN_TIMEOUT).
+  @Column({ type: 'timestamptz', name: 'agreement_due_at', nullable: true })
+  agreementDueAt!: Date | null;
+
+  // Hạn khách thanh toán — đặt lúc đủ 2 chữ ký; quá hạn → CANCELLED (PAYMENT_TIMEOUT).
+  @Column({ type: 'timestamptz', name: 'payment_due_at', nullable: true })
+  paymentDueAt!: Date | null;
+
+  // Ai BẤM huỷ; hệ thống tự huỷ → SYSTEM. Lỗi của ai đọc ở cancel_code.
   @Column({ type: 'varchar', length: 10, name: 'cancelled_by', nullable: true })
-  cancelledBy!: 'CUSTOMER' | 'PROVIDER' | null;
+  cancelledBy!: CancelledBy | null;
+
+  // Mã lý do huỷ cố định (danh sách ở cancel-rules.ts); cancel_reason bên dưới là chữ tự do người huỷ nhập.
+  @Column({ type: 'varchar', length: 40, name: 'cancel_code', nullable: true })
+  cancelCode!: CancelCode | null;
 
   @Column({ type: 'timestamptz', name: 'cancelled_at', nullable: true })
   cancelledAt!: Date | null;

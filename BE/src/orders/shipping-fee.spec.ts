@@ -63,14 +63,15 @@ describe('quy tắc phí lấy cây theo cấu hình LanCare', () => {
     { minKm: '10', maxKm: null, baseFee: '1000000', perKmFee: '500000', billingUnitKm: '5' },
   ];
 
-  it('nhân phí theo số lượng cây', () => {
-    expect(computeShippingFee(pickTier(pricing, 4)!, 4, 3)).toBe(900000);
+  it('phí tính 1 lần cho cả đơn: 4 km → 300.000đ dù đơn 1 hay 3 cây (hàm không nhận số cây)', () => {
+    expect(computeShippingFee(pickTier(pricing, 4)!, 4)).toBe(300000);
+    expect(computeShippingFee.length).toBe(2);
   });
 
-  it('trên 10 km cộng 500.000đ cho mỗi block 5 km, rồi nhân số cây', () => {
-    expect(computeShippingFee(pickTier(pricing, 10)!, 10, 1)).toBe(1000000);
-    expect(computeShippingFee(pickTier(pricing, 10.1)!, 10.1, 1)).toBe(1500000);
-    expect(computeShippingFee(pickTier(pricing, 16)!, 16, 2)).toBe(4000000);
+  it('trên 10 km cộng 500.000đ cho mỗi block 5 km (không nhân số cây)', () => {
+    expect(computeShippingFee(pickTier(pricing, 10)!, 10)).toBe(1000000);
+    expect(computeShippingFee(pickTier(pricing, 10.1)!, 10.1)).toBe(1500000);
+    expect(computeShippingFee(pickTier(pricing, 16)!, 16)).toBe(2000000);
   });
 });
 

@@ -1,24 +1,49 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Transform } from 'class-transformer';
 import {
   IsNumber,
   IsOptional,
   IsString,
-  IsUrl,
   Matches,
   Max,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
+import { VN_PHONE_REGEX } from '../../common/identity';
+import { toTrimmed } from '../../common/transforms';
 
 // PUT merge (C2): field không gửi giữ nguyên; muốn xoá phải gửi null tường minh.
 export class UpsertCustomerProfileDto {
+  @ApiPropertyOptional({ example: 'Nguyễn Văn Lan' })
+  @IsOptional()
+  @Transform(toTrimmed)
+  @IsString()
+  @MinLength(2)
+  @MaxLength(255)
+  fullName?: string;
+
   @ApiPropertyOptional({ example: '0909123456' })
   @IsOptional()
   @IsString()
-  @Matches(/^(?:\+84|84|0)(?:3|5|7|8|9)\d{8}$/, {
+  @Matches(VN_PHONE_REGEX, {
     message: 'Số điện thoại Việt Nam chưa hợp lệ.',
   })
   phone?: string;
+
+  @ApiPropertyOptional({ example: '15/08/1995' })
+  @IsOptional()
+  @Transform(toTrimmed)
+  @IsString()
+  @MaxLength(20)
+  dateOfBirth?: string;
+
+  @ApiPropertyOptional({ example: 'TP. Thủ Đức, TP. Hồ Chí Minh' })
+  @IsOptional()
+  @Transform(toTrimmed)
+  @IsString()
+  @MaxLength(255)
+  placeOfOrigin?: string;
 
   @ApiPropertyOptional({ example: '25 Lê Lợi, Quận 1, TP.HCM' })
   @IsOptional()
@@ -47,27 +72,35 @@ export class UpsertCustomerProfileDto {
   @Max(180)
   gpsLng?: number;
 
-  @ApiPropertyOptional({ description: 'Số căn cước công dân (12 chữ số)', example: '001234567890' })
+  // Tài khoản nhận tiền hoàn / tiền đền. Bắt buộc có trước khi đặt đơn và trước khi mở tranh chấp.
+  // Gửi thì gửi đủ bankName + bankAccount + bankHolder (thiếu → 400 BANK_INFO_INCOMPLETE);
+  // không xoá được (rỗng/null → 400 BANK_INFO_CANNOT_BE_CLEARED). Xem common/bank-info.ts.
+  @ApiPropertyOptional({ example: 'MBBank' })
   @IsOptional()
+  @Transform(toTrimmed)
   @IsString()
-  @Matches(/^\d{12}$/, { message: 'Số căn cước phải gồm đúng 12 chữ số.' })
-  cccdNumber?: string;
+  @MaxLength(100)
+  bankName?: string;
 
-  @ApiPropertyOptional({ description: 'URL ảnh mặt trước CCCD/Căn cước' })
+  @ApiPropertyOptional({ example: '0123456789' })
   @IsOptional()
-  @IsUrl({}, { message: 'Ảnh CCCD mặt trước chưa hợp lệ.' })
-  @MaxLength(500)
-  cccdFrontUrl?: string;
+  @Transform(toTrimmed)
+  @IsString()
+  @MaxLength(50)
+  bankAccount?: string;
 
-  @ApiPropertyOptional({ description: 'URL ảnh mặt sau CCCD/Căn cước' })
+  @ApiPropertyOptional({ example: 'NGUYEN VAN MINH' })
   @IsOptional()
-  @IsUrl({}, { message: 'Ảnh CCCD mặt sau chưa hợp lệ.' })
-  @MaxLength(500)
-  cccdBackUrl?: string;
+  @Transform(toTrimmed)
+  @IsString()
+  @MaxLength(100)
+  bankHolder?: string;
 
-  @ApiPropertyOptional({ description: 'URL ảnh selfie người dùng cầm CCCD/Căn cước' })
+  // Mã BIN 6 số (không bắt buộc), chỉ gửi kèm bộ 3 trường trên; bộ 3 gửi không kèm BIN thì BIN về null.
+  @ApiPropertyOptional({ example: '970422' })
   @IsOptional()
-  @IsUrl({}, { message: 'Ảnh selfie cùng căn cước chưa hợp lệ.' })
-  @MaxLength(500)
-  selfieWithIdUrl?: string;
+  @Transform(toTrimmed)
+  @IsString()
+  @Matches(/^(\d{6})?$/, { message: 'bankBin phải gồm 6 chữ số' })
+  bankBin?: string;
 }
