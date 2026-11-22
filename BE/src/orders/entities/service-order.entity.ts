@@ -157,6 +157,11 @@ export class ServiceOrder extends BaseEntity {
   @Column({ type: 'timestamptz', name: 'cancelled_at', nullable: true })
   cancelledAt!: Date | null;
 
+  // Lúc tiền đơn về (webhook SePay đổi đơn sang PAID). Chưa từng trả → null, kể cả đơn đã huỷ trước khi trả.
+  // App đọc field này để biết đã thanh toán chưa; settlement.customerTotal chỉ là số phải trả.
+  @Column({ type: 'timestamptz', name: 'paid_at', nullable: true })
+  paidAt!: Date | null;
+
   @Column({
     type: 'varchar',
     length: 500,

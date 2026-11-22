@@ -418,6 +418,12 @@ export class HandoverService {
       locked.cancelledAt = now;
       locked.cancelReason = dto.reason;
       await manager.save(locked);
+      // Hợp đồng huỷ theo đơn — giống nhánh bộ quét huỷ khi khách im lặng quá 2 giờ (closeOrder).
+      await manager.update(
+        ServiceAgreement,
+        { serviceOrderId: order.id },
+        { status: 'CANCELLED' },
+      );
 
       const { customerRefund, declaredReturn } = await refundCancelledOrder(
         manager,

@@ -328,6 +328,8 @@ describe('Huỷ đơn trước khi nhận cây + các hạn tự chạy (e2e)', 
           cancel_reason: 'Đổi kế hoạch',
         });
         expect(row.cancelled_at).not.toBeNull();
+        // Chưa từng trả tiền → paidAt rỗng (settlement vẫn còn số phải trả cũ, app đọc paidAt).
+        expect((await detail(c.id, c.customer.auth)).paidAt).toBeNull();
         expect(await ledgerCount(c.id)).toBe(0);
         expect(await disbursements(c.id)).toEqual([]);
         expect(await cancelCount(c.provider)).toBe(0);
@@ -382,7 +384,9 @@ describe('Huỷ đơn trước khi nhận cây + các hạn tự chạy (e2e)', 
   describe('khách huỷ đơn đã thanh toán', () => {
     it('sớm hơn 3 giờ trước giờ hẹn → hoàn 100% kể cả tiền bảo đảm khai giá; xem trước khớp số thật', async () => {
       const c = await to('PAID', { declared: true });
-      const preview = (await detail(c.id, c.customer.auth)).cancelPreview;
+      const paidView = await detail(c.id, c.customer.auth);
+      expect(paidView.paidAt).not.toBeNull();
+      const preview = paidView.cancelPreview;
       expect(preview).toEqual({
         cancelCode: 'CUSTOMER_CANCELLED_FREE',
         refundAmount: '484000',
@@ -733,9 +737,14 @@ describe('Huỷ đơn trước khi nhận cây + các hạn tự chạy (e2e)', 
 
     it('nhánh cũ: khách không giao cây → mã CUSTOMER_DECLINED, tiền như cũ', async () => {
       const c = await to('HANDOVER_AWAITING_CONFIRM');
-      await post(`${c.id}/handover/decline`, c.customer.auth, {
+      const preview = (await detail(c.id, c.customer.auth)).declinePreview;
+      expect(preview).toMatchObject({ declaredDepositReturned: '0' });
+      const res = await post(`${c.id}/handover/decline`, c.customer.auth, {
         reason: 'Không đồng ý biên bản',
       }).expect(200);
+      expect(res.body.refundAmount).toBe(preview.refundAmount);
+      // Hợp đồng huỷ theo đơn, giống khi bộ quét huỷ.
+      expect(await agreementStatus(c.id)).toBe('CANCELLED');
       expect(await orderRow(c.id)).toMatchObject({
         status: 'CANCELLED',
         cancelled_by: 'CUSTOMER',
@@ -826,6 +835,7 @@ describe('Huỷ đơn trước khi nhận cây + các hạn tự chạy (e2e)', 
         cancelled_by: 'SYSTEM',
         cancel_code: 'PAYMENT_TIMEOUT',
       });
+      expect((await detail(c.id, c.customer.auth)).paidAt).toBeNull();
       expect((await components(c.id)).map((r) => r.status)).toEqual([
         'CANCELLED',
         'CANCELLED',
@@ -883,10 +893,15 @@ describe('Huỷ đơn trước khi nhận cây + các hạn tự chạy (e2e)', 
       expect(Math.abs(window - 2 * HOUR_MS)).toBeLessThan(60_000);
       expect(await deadlines.cancelUnconfirmedHandovers()).toBe(0);
 
+      expect(
+        (await detail(c.id, c.customer.auth)).declinePreview,
+      ).not.toBeNull();
       await sql(
         `UPDATE handovers SET customer_confirm_due_at = now() - interval '1 minute' WHERE id = $1`,
         [handover.id],
       );
+      // Quá hạn mà bộ quét chưa chạy: bấm sẽ 409 nên không hiện số xem trước.
+      expect((await detail(c.id, c.customer.auth)).declinePreview).toBeNull();
       // Route tự kiểm hạn: quá 2 giờ thì khách không đồng ý / không từ chối được nữa.
       const lateConfirm = await post(
         `${c.id}/handover/confirm`,

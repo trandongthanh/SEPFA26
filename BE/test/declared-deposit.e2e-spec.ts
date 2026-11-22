@@ -258,9 +258,29 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
     expect(short.body.ignored).toBe('INSUFFICIENT_AMOUNT');
     expect(await balance(id, 'ORDER')).toBe('0');
     expect(await balance(id, 'DECLARED')).toBe('0');
+    // Chưa trả đủ: settlement vẫn là số phải trả (784.000) nhưng paidAt rỗng.
+    const unpaid = await detail(id, c.customer.auth);
+    expect(unpaid.paidAt).toBeNull();
+    expect(unpaid.settlement.customerTotal).toBe('784000');
 
+    const before = Date.now();
     const paid = await seed.webhook(c.order.orderCode, '784000').expect(200);
     expect(paid.body.status).toBe('PAID');
+    // Tiền về → ghi paidAt; chi tiết đơn và danh sách đơn đều trả field này, settlement không đổi.
+    const view = await detail(id, c.customer.auth);
+    expect(new Date(view.paidAt).getTime()).toBeGreaterThanOrEqual(
+      before - 1000,
+    );
+    expect(view.settlement.customerTotal).toBe('784000');
+    const list = await request(http)
+      .get(`${API}/orders`)
+      .set(c.customer.auth)
+      .expect(200);
+    expect(
+      (list.body.data as { id: string; paidAt: string | null }[]).find(
+        (order) => order.id === id,
+      )?.paidAt,
+    ).toBe(view.paidAt);
     expect(await ledger(id, 'ORDER')).toEqual([
       { entry_type: 'DEPOSIT', amount: '484000', balance_after: '484000' },
     ]);
@@ -435,14 +455,26 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
   it('khách từ chối giao cây → mất phí lấy cây như cũ nhưng 300.000 trả đủ', async () => {
     const c = await toAwaitingConfirm();
     const id = c.order.orderId;
+    // Trước khi bấm: khách thấy trước đúng số sẽ nhận; vườn không có field này.
+    const preview = (await detail(id, c.customer.auth)).declinePreview;
+    expect(preview).toEqual({
+      refundAmount: '424000',
+      declaredDepositReturned: '300000',
+      pickupFeeKept: '60000',
+    });
+    expect(await detail(id, c.provider.auth)).not.toHaveProperty(
+      'declinePreview',
+    );
     const res = await post(`${id}/handover/decline`, c.customer.auth, {
       reason: 'Không đồng ý biên bản',
     }).expect(200);
     expect(res.body).toEqual({
       status: 'CANCELLED',
-      refundAmount: '424000',
-      declaredDepositReturned: '300000',
+      refundAmount: preview.refundAmount,
+      declaredDepositReturned: preview.declaredDepositReturned,
     });
+    // Đơn đã huỷ thì không còn gì để xem trước.
+    expect((await detail(id, c.customer.auth)).declinePreview).toBeNull();
     await expectAllBooksZero(id);
     expect((await declaredComponent(id)).status).toBe('REFUNDED');
     expect(await declaredDisbursements(id)).toMatchObject([
@@ -454,6 +486,8 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
     const c = await toAwaitingConfirm();
     const id = c.order.orderId;
     await post(`${id}/handover/confirm`, c.customer.auth).expect(200);
+    // Khách đã đồng ý biên bản → không còn nút "Không giao cây", không có số xem trước.
+    expect((await detail(id, c.customer.auth)).declinePreview).toBeNull();
     await post(`${id}/handover/cancel`, c.provider.auth, {
       reason: 'Không chuẩn bị kịp tiền bảo đảm',
     }).expect(200);

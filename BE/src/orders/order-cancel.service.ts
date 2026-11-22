@@ -20,6 +20,7 @@ import {
   type CancelledBy,
   type CancelRefund,
   decideCancel,
+  isDeclineOpen,
 } from './cancel-rules';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { Handover } from './entities/handover.entity';
@@ -201,6 +202,44 @@ export class OrderCancelService {
         refundAmount: amounts.customerRefund.toString(),
         declaredDepositReturned: amounts.declaredReturn.toString(),
         // Phần vườn giữ (phí lấy cây) nếu huỷ lúc này; huỷ miễn phí → "0".
+        pickupFeeKept: amounts.providerReceives.toString(),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * "Không giao cây thì nhận lại bao nhiêu" cho màn chi tiết đơn của KHÁCH ở bước xem biên bản nhận cây.
+   * Chỉ có số khi khách bấm thật sẽ thành công (isDeclineOpen); dùng đúng cách chia của route
+   * POST /orders/:id/handover/decline (vườn giữ phí lấy cây) nên hai số luôn khớp.
+   * Đơn mẫu: { refundAmount 424.000, declaredDepositReturned 300.000, pickupFeeKept 60.000 }.
+   * `handover` = phiên NHẬN cây mới nhất (chi tiết đơn đã đọc sẵn). Sổ lệch → null.
+   */
+  async previewDecline(
+    order: ServiceOrder,
+    handover: Handover | null,
+    now: Date,
+  ) {
+    if (
+      !isDeclineOpen({
+        orderStatus: order.status,
+        handoverStatus: handover?.status,
+        customerConfirmDueAt: handover?.customerConfirmDueAt,
+        now,
+      })
+    ) {
+      return null;
+    }
+    try {
+      const amounts = await computeCancelRefund(
+        this.dataSource.manager,
+        order,
+        'KEEP_PICKUP_FEE',
+      );
+      return {
+        refundAmount: amounts.customerRefund.toString(),
+        declaredDepositReturned: amounts.declaredReturn.toString(),
         pickupFeeKept: amounts.providerReceives.toString(),
       };
     } catch {

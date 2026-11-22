@@ -648,6 +648,11 @@ export class OrdersService {
       role === 'CUSTOMER'
         ? await this.orderCancel.previewCancel(order, now)
         : null;
+    // Khách xem trước "không giao cây thì nhận lại bao nhiêu" — chỉ khi đang chờ khách trả lời biên bản nhận cây.
+    const declinePreview =
+      role === 'CUSTOMER'
+        ? await this.orderCancel.previewDecline(order, handover, now)
+        : null;
 
     return {
       ...order,
@@ -661,7 +666,7 @@ export class OrdersService {
         freeCancelUntil: freeCancelUntil(order.scheduledPickupAt),
         noShowFrom: noShowFrom(order.scheduledPickupAt),
       },
-      ...(role === 'CUSTOMER' ? { cancelPreview } : {}),
+      ...(role === 'CUSTOMER' ? { cancelPreview, declinePreview } : {}),
       settlement,
       // Tiền bảo đảm khai giá khách nộp cùng tiền đơn (từng cây ở plants[].declaredDeposit).
       declaredDepositTotal: this.sumDeclaredDeposit(order.plants),
