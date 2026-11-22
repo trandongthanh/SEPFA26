@@ -428,6 +428,7 @@ export class PaymentsService {
       );
 
       lockedOrder.status = 'PAID';
+      lockedOrder.paidAt = new Date();
       await manager.save(lockedOrder);
       await manager.update(PaymentWebhookLog, log.id, { processed: true });
       return true;

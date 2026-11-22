@@ -4,6 +4,7 @@ import {
   distanceToPickupMeters,
   freeCancelUntil,
   haversineMeters,
+  isDeclineOpen,
   isPastDue,
   isPickupTooSoon,
   noShowAutoCancelAt,
@@ -58,6 +59,43 @@ describe('cancel-rules', () => {
     expect(isPastDue(at('15:00'), at('14:59'))).toBe(false);
     expect(isPastDue(at('15:00'), at('15:00'))).toBe(true);
     expect(isPastDue(at('15:00'), at('15:01'))).toBe(true);
+  });
+
+  describe('isDeclineOpen — khách còn bấm được "Không giao cây"', () => {
+    // Vườn chốt biên bản 18:20 → khách có tới 20:20.
+    const open = {
+      orderStatus: 'HANDOVER_AWAITING_CONFIRM' as const,
+      handoverStatus: 'AWAITING_CUSTOMER' as const,
+      customerConfirmDueAt: at('20:20'),
+    };
+
+    it('đơn chờ khách trả lời biên bản, còn hạn → được', () => {
+      expect(isDeclineOpen({ ...open, now: at('20:19') })).toBe(true);
+    });
+
+    it('đúng hoặc quá hạn 2 giờ (bộ quét chưa kịp huỷ) → không', () => {
+      expect(isDeclineOpen({ ...open, now: at('20:20') })).toBe(false);
+      expect(isDeclineOpen({ ...open, now: at('21:00') })).toBe(false);
+    });
+
+    it('khách đã đồng ý biên bản (chờ vườn nộp tiền bảo đảm) → không', () => {
+      expect(
+        isDeclineOpen({
+          ...open,
+          handoverStatus: 'AWAITING_DEPOSIT',
+          now: at('19:00'),
+        }),
+      ).toBe(false);
+    });
+
+    it('đơn không ở bước chờ khách xác nhận / chưa có phiên → không', () => {
+      expect(
+        isDeclineOpen({ ...open, orderStatus: 'PAID', now: at('19:00') }),
+      ).toBe(false);
+      expect(
+        isDeclineOpen({ ...open, handoverStatus: null, now: at('19:00') }),
+      ).toBe(false);
+    });
   });
 
   describe('decideCancel — khách', () => {
