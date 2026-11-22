@@ -37,6 +37,10 @@ import {
 } from '../services/careReportService';
 import { providerService } from '../services/providerService';
 import { calculateRoadDistanceKm } from '../utils/distance';
+import { CustomerCancelSection } from '../components/order/CustomerCancelSection';
+import { DisputeResultCard } from '../components/order/DisputeResultCard';
+import { SettlementCard, isSettlementShown } from '../components/order/SettlementCard';
+import { customerFeeFor, formatVnd, toNumber } from '../components/order/orderMoney';
 import {
   videoCallService,
   VideoCallResponseDto,
@@ -917,6 +921,9 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
           </View>
         )}
 
+        {/* Khách rút / huỷ đơn / không giao cây — tự ẩn ở trạng thái BE không cho huỷ */}
+        <CustomerCancelSection order={order} onChanged={() => fetchDetail()} />
+
         {/* Compact Quick Action Bar */}
         {(isCallable ||
           ['PAID', 'HANDOVER_IN_PROGRESS', 'HANDOVER_AWAITING_CONFIRM', 'IN_CARE', 'RETURN_IN_PROGRESS', 'RETURN_AWAITING_CONFIRM', 'COMPLETED', 'DISPUTED'].includes(order.status)) && (
@@ -1138,6 +1145,9 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
 
         {activeTab === 'overview' && (
           <>
+        {/* Tranh chấp đã xong — giữ đường vào xem lại hồ sơ */}
+        <DisputeResultCard order={order} onOpen={handleOpenDisputeRoom} />
+
         {/* Package Info */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Thông tin gói dịch vụ</Text>
@@ -1185,14 +1195,19 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
           ) : null}
         </View>
 
-        {/* Pricing Summary */}
+        {/* Tạm tính — chỉ khi khối Quyết toán không hiện (BE chưa có hoá đơn / đơn huỷ trước khi trả tiền) */}
+        {!isSettlementShown(order) && (
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Chi tiết giá</Text>
+          <Text style={styles.cardTitle}>Chi tiết giá (tạm tính)</Text>
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Giá gói snapshot:</Text>
-            <Text style={styles.infoValue}>
-              {Number(order.basePriceSnapshot || 0).toLocaleString('vi-VN')} VNĐ
+            <Text style={styles.infoLabel}>
+              Giá gói ({formatVnd(order.basePriceSnapshot)} × {order.plantCount || 0} cây):
             </Text>
+            <Text style={styles.infoValue}>{formatVnd(order.provisionalTotal)}</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Phí dịch vụ 6%:</Text>
+            <Text style={styles.infoValue}>{formatVnd(customerFeeFor(toNumber(order.provisionalTotal)))}</Text>
           </View>
           <View style={styles.infoRow}>
             <View style={{ flex: 1 }}>
@@ -1203,21 +1218,31 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                 </Text>
               ) : null}
             </View>
-            <Text style={styles.infoValue}>
-              {Number(order.pickupFeeSnapshot || 0).toLocaleString('vi-VN')} VNĐ
-            </Text>
+            <Text style={styles.infoValue}>{formatVnd(order.pickupFeeSnapshot)}</Text>
           </View>
+          {toNumber(order.declaredDepositTotal) > 0 && (
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Tiền bảo đảm khai giá:</Text>
+              <Text style={styles.infoValue}>{formatVnd(order.declaredDepositTotal)}</Text>
+            </View>
+          )}
           <View style={styles.divider} />
           <View style={styles.infoRow}>
             <Text style={styles.totalLabel}>Tổng cộng:</Text>
             <Text style={styles.totalValue}>
-              {(
-                Number(order.provisionalTotal || 0) +
-                Number(order.pickupFeeSnapshot || 0)
-              ).toLocaleString('vi-VN')} VNĐ
+              {formatVnd(
+                toNumber(order.provisionalTotal) +
+                  customerFeeFor(toNumber(order.provisionalTotal)) +
+                  toNumber(order.pickupFeeSnapshot) +
+                  toNumber(order.declaredDepositTotal),
+              )}
             </Text>
           </View>
         </View>
+        )}
+
+        {/* Quyết toán đơn — đọc nguyên settlement của BE */}
+        <SettlementCard order={order} />
           </>
         )}
 
@@ -1952,8 +1977,8 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
               const defaultClauses = [
                 'Điều 1 – Phạm vi dịch vụ: Bên B (Nhà vườn) cam kết thực hiện dịch vụ chăm sóc hoa lan theo đúng quy trình gói dịch vụ đã chọn, bao gồm tưới nước, bón phân, điều chỉnh ánh sáng, phòng trừ sâu bệnh và các kỹ thuật chuyên sâu theo từng dòng lan.',
                 'Điều 2 – Tiếp nhận bàn giao: Bên B (Nhà vườn) xác nhận tiếp nhận cây từ Bên A (Khách hàng) theo đúng hình ảnh chụp ban đầu và kết quả khảo sát qua video call, bao gồm số lượng, loài lan và hiện trạng thực tế.',
-                'Điều 3 – Trách nhiệm vận chuyển: Nếu xảy ra tình trạng cây bị thất lạc hoặc hư hỏng dẫn đến hậu quả nghiêm trọng trong quá trình vận chuyển giao nhận, Bên B cam kết bồi thường 120% giá trị định giá của cây.',
-                'Điều 4 – Trách nhiệm chăm sóc: Trong suốt thời gian chăm sóc tại nhà vườn, nếu cây bị suy yếu nặng, chết hoặc thất lạc do lỗi chăm sóc kỹ thuật, Bên B chịu trách nhiệm bồi thường cho Bên A mức bằng 120% giá trị khai báo của cây.',
+                'Điều 3 – Trách nhiệm vận chuyển: Nếu xảy ra tình trạng cây bị thất lạc hoặc hư hỏng dẫn đến hậu quả nghiêm trọng trong quá trình vận chuyển giao nhận, Bên B cam kết bồi thường tối đa 100% giá trị khai báo của cây (cây không khai giá: tối đa 2 lần giá gói).',
+                'Điều 4 – Trách nhiệm chăm sóc: Trong suốt thời gian chăm sóc tại nhà vườn, nếu cây bị suy yếu nặng, chết hoặc thất lạc do lỗi chăm sóc kỹ thuật, Bên B chịu trách nhiệm bồi thường cho Bên A mức tối đa bằng 100% giá trị khai báo của cây (cây không khai giá: tối đa 2 lần giá gói).',
                 'Điều 5 – Cam kết của Bên A: Bên A cam kết thông tin về cây, chủng loại, số lượng, giá trị khai báo và ảnh chụp ban đầu là hoàn toàn trung thực, chính xác.',
                 'Điều 6 – Quyền từ chối nhận cây: Nếu tình trạng thực tế cây khác biệt đáng kể so với ảnh ban đầu hoặc nội dung đã trao đổi qua video call, Bên B có quyền từ chối nhận cây và hủy đơn theo quy trình.',
                 'Điều 7 – Báo cáo định kỳ: Bên B có nghĩa vụ gửi báo cáo tình trạng cây định kỳ đúng tần suất thỏa thuận kèm hình ảnh minh chứng cụ thể qua Hệ thống LanCare Hub.',
@@ -2055,9 +2080,10 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                       </Text>
                       {contractData.plants?.map((plant: any, index: number) => {
                         const declared = plant.declaredValue ? Number(plant.declaredValue) : 0;
-                        const comp = plant.compensationAmount
-                          ? Number(plant.compensationAmount)
-                          : (declared > 0 ? declared * 1.2 : 0);
+                        // Mức đền theo luật đền thật của BE (orders/compensation-cap.ts): 100% giá khai; không khai = 2 × giá gói.
+                        const comp = plant.isValueDeclared && declared > 0
+                          ? declared
+                          : 2 * Number(pricing.basePricePerPlant || 0);
 
                         return (
                           <View key={index} style={styles.contractPlantItem}>
@@ -2074,7 +2100,7 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                                 Giá trị: {declared > 0 ? `${declared.toLocaleString('vi-VN')} VNĐ` : 'Không khai báo'}
                               </Text>
                               <Text style={{ fontSize: 11, fontWeight: '700', color: '#DC2626' }}>
-                                Đền bù (120%): {comp > 0 ? `${comp.toLocaleString('vi-VN')} VNĐ` : 'Theo giá gói'}
+                                Đền tối đa (100%): {comp > 0 ? `${comp.toLocaleString('vi-VN')} VNĐ` : 'Theo giá gói'}
                               </Text>
                             </View>
                           </View>
@@ -2124,11 +2150,11 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
 
                     {/* Compensation policy */}
                     <View style={styles.contractCard}>
-                      <Text style={styles.contractSectionTitle}>V. CHÍNH SÁCH BỒI THƯỜNG THIỆT HẠI (120%)</Text>
+                      <Text style={styles.contractSectionTitle}>V. CHÍNH SÁCH BỒI THƯỜNG THIỆT HẠI (TỐI ĐA 100%)</Text>
                       <View style={styles.clauseHighlight}>
                         <Ionicons name="shield-checkmark" size={20} color="#059669" />
                         <Text style={styles.clauseHighlightText}>
-                          Cam kết bồi thường tối đa 120% giá trị định giá của cây nếu xảy ra rủi ro trong suốt quá trình chăm sóc hoặc vận chuyển theo thỏa thuận.
+                          Cam kết bồi thường tối đa 100% giá trị khai báo của cây (cây không khai giá: tối đa 2 lần giá gói) nếu xảy ra rủi ro trong suốt quá trình chăm sóc hoặc vận chuyển theo thỏa thuận.
                         </Text>
                       </View>
                       <Text style={styles.clauseSummary}>
@@ -2291,7 +2317,7 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                 color={customerAgreedTerms ? '#6027D2' : '#A0AEC0'}
               />
               <Text style={styles.checkboxLabel}>
-                Tôi đã đọc kỹ, hiểu rõ và đồng ý với tất cả điều khoản hợp đồng & chính sách bồi thường 120%.
+                Tôi đã đọc kỹ, hiểu rõ và đồng ý với tất cả điều khoản hợp đồng & chính sách bồi thường tối đa 100%.
               </Text>
             </TouchableOpacity>
 
