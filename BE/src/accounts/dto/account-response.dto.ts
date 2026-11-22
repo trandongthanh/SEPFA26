@@ -23,4 +23,10 @@ export class AccountResponseDto {
 
   @ApiProperty({ enum: ACCOUNT_STATUSES, example: 'PENDING' })
   status!: string;
+
+  @ApiProperty({
+    example: true,
+    description: 'Email đã được xác thực qua OTP hoặc Google hay chưa',
+  })
+  emailVerified!: boolean;
 }

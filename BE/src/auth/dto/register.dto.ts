@@ -4,7 +4,9 @@ import {
   Allow,
   IsEmail,
   IsIn,
+  IsOptional,
   IsString,
+  Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -41,6 +43,26 @@ export class RegisterDto {
   @ApiProperty({ enum: SELF_REGISTER_ROLES, example: 'CUSTOMER' })
   @IsIn(SELF_REGISTER_ROLES)
   role!: SelfRegisterRole;
+
+  @ApiPropertyOptional({
+    example: '123456',
+    description:
+      'Mã OTP 6 chữ số (dùng khi đăng ký 1 bước kèm OTP từ /auth/register/send-otp)',
+  })
+  @IsOptional()
+  @Transform(toTrimmed)
+  @IsString()
+  @Matches(/^\d{6}$/, { message: 'OTP phải gồm đúng 6 chữ số' })
+  otp?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Token xác thực email nhận được từ /auth/register/verify-otp (đăng ký 2 bước)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  verificationToken?: string;
 
   // ===== TƯƠNG THÍCH TẠM — xoá khi FE/Mobile đã bỏ các field này khỏi form đăng ký =====
   // Form cũ vẫn gửi SĐT (+ thông tin vườn). BE NHẬN nhưng BỎ QUA (không lưu, không

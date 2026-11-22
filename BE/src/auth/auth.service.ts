@@ -2,19 +2,31 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomInt, timingSafeEqual } from 'crypto';
 import { EntityManager, IsNull, LessThan, MoreThan, Repository } from 'typeorm';
 import { Account } from '../accounts/entities/account.entity';
 import { AccountsService } from '../accounts/accounts.service';
 import type { SelfRegisterRole } from '../common/constants/roles';
-import { normalizePhone, sha256Hex } from '../common/identity';
+import {
+  mapIdentityUniqueViolation,
+  normalizePhone,
+  sha256Hex,
+} from '../common/identity';
 import { PasswordService } from '../crypto/password.service';
-import { MailService, PASSWORD_RESET_LINK_MINUTES } from '../mail/mail.service';
+import {
+  MailService,
+  PASSWORD_RESET_LINK_MINUTES,
+  REGISTER_OTP_MINUTES,
+  RESET_PASSWORD_OTP_MINUTES,
+} from '../mail/mail.service';
+import { EmailOtp, type EmailOtpPurpose } from './entities/email-otp.entity';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { GoogleIdTokenVerifier } from './google-id-token.verifier';
@@ -26,13 +38,25 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import {
+  ResetPasswordWithOtpDto,
+  SendEmailOtpDto,
+  SendRegisterOtpDto,
+  VerifyOtpDto,
+} from './dto/otp.dto';
 import type { CurrentUserData } from './types/current-user.type';
 import {
+  ActiveSessionDto,
   AuthTokensResponseDto,
   ForgotPasswordResponseDto,
   GoogleAuthResponseDto,
   LogoutResponseDto,
   RegisterResponseDto,
+  RevokeSessionResponseDto,
+  SendOtpResponseDto,
+  VerifyEmailResponseDto,
+  VerifyRegisterOtpResponseDto,
+  VerifyResetOtpResponseDto,
 } from './dto/auth-response.dto';
 
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
@@ -45,6 +69,11 @@ import { RegisterWithEkycDto } from './dto/register-with-ekyc.dto';
 const PG_UNIQUE_VIOLATION = '23505';
 
 const PASSWORD_RESET_TTL_MS = PASSWORD_RESET_LINK_MINUTES * 60 * 1000;
+const OTP_COOLDOWN_SECONDS = 60;
+const OTP_MAX_ATTEMPTS = 5;
+const REGISTER_OTP_TTL_MS = REGISTER_OTP_MINUTES * 60 * 1000;
+const RESET_PASSWORD_OTP_TTL_MS = RESET_PASSWORD_OTP_MINUTES * 60 * 1000;
+const RESET_TOKEN_AFTER_OTP_TTL_MS = 15 * 60 * 1000;
 
 /**
  * Nghiệp vụ xác thực: đăng ký, đăng nhập (email/mật khẩu và Google), làm mới phiên, đăng xuất.
@@ -75,6 +104,8 @@ export class AuthService {
     private readonly ekycRecords: Repository<EkycRecord>,
     @InjectRepository(PasswordResetToken)
     private readonly passwordResetTokens: Repository<PasswordResetToken>,
+    @InjectRepository(EmailOtp)
+    private readonly emailOtps: Repository<EmailOtp>,
     private readonly accountsService: AccountsService,
     private readonly passwords: PasswordService,
     private readonly tokens: TokenService,
@@ -85,21 +116,104 @@ export class AuthService {
   ) {}
 
   /**
+   * POST /auth/register/send-otp — gửi mã OTP 6 chữ số tới email chưa đăng ký.
+   * Email đã tồn tại → 409 EMAIL_EXISTS; gửi lại trong vòng 60s → 429 OTP_COOLDOWN.
+   */
+  async sendRegisterOtp(dto: SendRegisterOtpDto): Promise<SendOtpResponseDto> {
+    if (await this.accounts.exists({ where: { email: dto.email } })) {
+      throw new ConflictException('EMAIL_EXISTS');
+    }
+    const otp = await this.issueEmailOtp(
+      dto.email,
+      'REGISTER',
+      REGISTER_OTP_TTL_MS,
+    );
+    await this.mail.sendRegistrationOtp({
+      to: dto.email,
+      fullName: dto.fullName,
+      otp,
+      expiresMinutes: REGISTER_OTP_MINUTES,
+    });
+    return {
+      success: true,
+      expiresInSeconds: REGISTER_OTP_MINUTES * 60,
+      cooldownSeconds: OTP_COOLDOWN_SECONDS,
+    };
+  }
+
+  /**
+   * POST /auth/register/verify-otp — kiểm tra & tiêu thụ OTP đăng ký, trả verificationToken
+   * (JWT sống 15 phút) để FE/Mobile gửi lên bước POST /auth/register hoặc /auth/register-with-ekyc.
+   */
+  async verifyRegisterOtp(
+    dto: VerifyOtpDto,
+  ): Promise<VerifyRegisterOtpResponseDto> {
+    await this.verifyAndConsumeOtp(dto.email, 'REGISTER', dto.otp);
+    return {
+      verified: true,
+      verificationToken: this.tokens.signEmailVerification(dto.email),
+    };
+  }
+
+  /**
    * POST /auth/register — tạo ACCOUNT base (status PENDING), KHÔNG tạo hồ sơ
-   * customer/provider (thuộc bước kích hoạt). Không trả token: đăng nhập riêng.
+   * customer/provider (thuộc bước kích hoạt). Hỗ trợ:
+   * - verificationToken (2 bước sau /auth/register/verify-otp) → emailVerifiedAt = now
+   * - otp (1 bước kèm OTP trực tiếp) → emailVerifiedAt = now
+   * - không gửi cả hai → emailVerifiedAt = null (tương thích ngược).
    */
   async register(dto: RegisterDto): Promise<RegisterResponseDto> {
     if (await this.accounts.exists({ where: { email: dto.email } })) {
       throw new ConflictException('EMAIL_EXISTS');
     }
+
+    let emailVerifiedAt: Date | null = null;
+    if (dto.verificationToken) {
+      emailVerifiedAt = this.verifyEmailVerificationToken(
+        dto.email,
+        dto.verificationToken,
+      );
+    } else if (dto.otp) {
+      await this.checkOtpRecord(
+        this.emailOtps,
+        dto.email,
+        'REGISTER',
+        dto.otp,
+      );
+      emailVerifiedAt = new Date();
+    }
+
     // Băm (~300ms) trước khi ghi — không giữ connection DB trong lúc băm.
     const passwordHash = await this.passwords.hash(dto.password);
-    const account = await this.createAccount({
-      email: dto.email,
-      passwordHash,
-      fullName: dto.fullName,
-      role: dto.role,
-    });
+
+    const account =
+      !dto.verificationToken && dto.otp
+        ? await this.accounts.manager.transaction(async (manager) => {
+            await this.verifyAndConsumeOtp(
+              dto.email,
+              'REGISTER',
+              dto.otp!,
+              manager,
+            );
+            return this.createAccount(
+              {
+                email: dto.email,
+                passwordHash,
+                fullName: dto.fullName,
+                role: dto.role,
+                emailVerifiedAt,
+              },
+              manager,
+            );
+          })
+        : await this.createAccount({
+            email: dto.email,
+            passwordHash,
+            fullName: dto.fullName,
+            role: dto.role,
+            emailVerifiedAt,
+          });
+
     return {
       accountId: account.id,
       email: account.email,
@@ -110,13 +224,10 @@ export class AuthService {
 
   /**
    * POST /auth/register-with-ekyc — Đăng ký tài khoản kèm eKYC tức thời trong RAM (Zero-Retention):
-   * - Check trùng Email
+   * - Check trùng Email & SĐT và xác thực OTP/verificationToken (nếu có) trước khi gọi AI
    * - AI OCR bóc tách họ tên, ngày sinh, quê quán, địa chỉ thường trú (KHÔNG thu giữ số CCCD)
-   * - AI Anti-Fraud & Liveness kiểm tra trong RAM
-   * - AI Face Matching trong RAM — KHÔNG lưu trữ ảnh lên DB hay Cloud
-   * - Tự động kích hoạt tài khoản: Account.status = 'ACTIVE'
-   * - Tự động phê duyệt hồ sơ: CustomerProfile.verificationStatus = 'APPROVED'
-   * - Tự động tạo EkycRecord với status: 'VERIFIED'
+   * - AI Anti-Fraud & Liveness & Face Match trong RAM — KHÔNG lưu trữ ảnh lên DB hay Cloud
+   * - Ghi Account + CustomerProfile + EkycRecord trong 1 transaction
    * - Cấp tokens và trả kết quả để đăng nhập ngay lập tức.
    */
   async registerWithEkyc(
@@ -131,84 +242,132 @@ export class AuthService {
       throw new ConflictException('EMAIL_EXISTS');
     }
 
+    let emailVerifiedAt: Date | null = null;
+    if (dto.verificationToken) {
+      emailVerifiedAt = this.verifyEmailVerificationToken(
+        dto.email,
+        dto.verificationToken,
+      );
+    } else if (dto.otp) {
+      await this.checkOtpRecord(
+        this.emailOtps,
+        dto.email,
+        'REGISTER',
+        dto.otp,
+      );
+      emailVerifiedAt = new Date();
+    }
+
+    // Kiểm tra trùng SĐT trước khi gọi AI để tránh tốn tài nguyên nếu đã trùng
+    let phoneEnc: string | null = null;
+    let phoneHash: string | null = null;
+    if (dto.phone?.trim()) {
+      const cleanPhone = normalizePhone(dto.phone);
+      phoneHash = sha256Hex(cleanPhone);
+      const dupPhone = await this.accounts.findOne({ where: { phoneHash } });
+      if (dupPhone) {
+        throw new ConflictException(
+          'Số điện thoại này đã được sử dụng bởi một tài khoản khác.',
+        );
+      }
+      phoneEnc = this.crypto.encrypt(cleanPhone);
+    }
+
     // Chạy quy trình eKYC trong RAM: OCR + Anti-Fraud + Liveness + Face Match (không lưu ảnh & số CCCD)
     const ekycData = await this.ekycService.verifyAndProcessRegistrationEkyc(
       files.cccdFront,
       files.selfie,
     );
 
-    // Băm mật khẩu
+    // Băm mật khẩu ngoài transaction
     const passwordHash = await this.passwords.hash(dto.password);
-
-    // Xử lý số điện thoại nếu có
-    let phoneEnc: string | null = null;
-    let phoneHash: string | null = null;
-    if (dto.phone?.trim()) {
-      // Helper chung với customers/providers — cùng 1 số luôn ra cùng 1 hash.
-      const cleanPhone = normalizePhone(dto.phone);
-      phoneHash = sha256Hex(cleanPhone);
-      const dupPhone = await this.accounts.findOne({ where: { phoneHash } });
-      if (dupPhone) {
-        throw new ConflictException('Số điện thoại này đã được sử dụng bởi một tài khoản khác.');
-      }
-      phoneEnc = this.crypto.encrypt(cleanPhone);
-    }
 
     // Ưu tiên tên người dùng nhập, nếu không có thì lấy tên chính xác do AI đọc
     const fullName = dto.fullName?.trim() || ekycData.fullName || 'Khách hàng';
 
-    // 1. Tạo Account ở trạng thái ACTIVE (đã xác thực eKYC thành công, không cần Admin duyệt tay)
-    const account = await this.accounts.save(
-      this.accounts.create({
-        email: dto.email,
-        passwordHash,
-        fullName,
-        role: dto.role,
-        phone: phoneEnc,
-        phoneHash,
-        status: 'ACTIVE',
-      }),
+    const { account, tokens } = await this.accounts.manager.transaction(
+      async (manager) => {
+        if (!dto.verificationToken && dto.otp) {
+          await this.verifyAndConsumeOtp(
+            dto.email,
+            'REGISTER',
+            dto.otp,
+            manager,
+          );
+        }
+
+        let createdAccount: Account;
+        try {
+          createdAccount = await manager.save(
+            manager.create(Account, {
+              email: dto.email,
+              passwordHash,
+              fullName,
+              role: dto.role,
+              phone: phoneEnc,
+              phoneHash,
+              status: 'ACTIVE',
+              emailVerifiedAt,
+            }),
+          );
+        } catch (err) {
+          const mapped = mapIdentityUniqueViolation(err);
+          if (mapped !== err) {
+            throw mapped;
+          }
+          if ((err as { code?: string }).code === PG_UNIQUE_VIOLATION) {
+            throw new ConflictException('EMAIL_EXISTS');
+          }
+          throw err;
+        }
+
+        if (createdAccount.role === 'CUSTOMER') {
+          await manager.save(
+            manager.create(CustomerProfile, {
+              accountId: createdAccount.id,
+              verificationStatus: 'APPROVED',
+              verificationNote:
+                'eKYC tự động xác thực tức thời khi đăng ký (không lưu ảnh & số CCCD)',
+              address: ekycData.placeOfResidence ?? null,
+              dateOfBirth: ekycData.dateOfBirth,
+              placeOfOrigin: ekycData.placeOfOrigin,
+            }),
+          );
+        }
+
+        await manager.save(
+          manager.create(EkycRecord, {
+            accountId: createdAccount.id,
+            status: 'VERIFIED',
+            idDocType: ekycData.idDocType,
+            fullNameExtracted: ekycData.fullName,
+            dateOfBirth: ekycData.dateOfBirth,
+            gender: ekycData.gender,
+            nationality: ekycData.nationality,
+            placeOfOrigin: ekycData.placeOfOrigin,
+            placeOfResidence: ekycData.placeOfResidence,
+            faceMatch: true,
+            faceSimilarity: ekycData.similarity.toFixed(2),
+            fraudScore: ekycData.fraudScore?.toFixed(2) ?? null,
+            livenessScore: ekycData.livenessScore?.toFixed(2) ?? null,
+            antifraudDetails: ekycData.antifraudDetails as any,
+            verifiedAt: new Date(),
+          }),
+        );
+
+        const issuedTokens = await this.issueTokens(
+          createdAccount,
+          userAgent,
+          manager,
+        );
+        return { account: createdAccount, tokens: issuedTokens };
+      },
     );
-
-    // 2. Tạo CustomerProfile nếu là CUSTOMER với trạng thái APPROVED (chỉ lưu ngày sinh, quê quán, địa chỉ thường trú)
-    if (account.role === 'CUSTOMER') {
-      const profile = this.customerProfiles.create({
-        accountId: account.id,
-        verificationStatus: 'APPROVED',
-        verificationNote: 'eKYC tự động xác thực tức thời khi đăng ký (không lưu ảnh & số CCCD)',
-        address: ekycData.placeOfResidence ?? null,
-        dateOfBirth: ekycData.dateOfBirth,
-        placeOfOrigin: ekycData.placeOfOrigin,
-      });
-      await this.customerProfiles.save(profile);
-    }
-
-    // 3. Tạo bản ghi EkycRecord đã VERIFIED (chỉ lưu thông tin hợp lệ, không lưu ảnh hay số CCCD)
-    const ekycRecord = this.ekycRecords.create({
-      accountId: account.id,
-      status: 'VERIFIED',
-      idDocType: ekycData.idDocType,
-      fullNameExtracted: ekycData.fullName,
-      dateOfBirth: ekycData.dateOfBirth,
-      gender: ekycData.gender,
-      nationality: ekycData.nationality,
-      placeOfOrigin: ekycData.placeOfOrigin,
-      placeOfResidence: ekycData.placeOfResidence,
-      faceMatch: true,
-      faceSimilarity: ekycData.similarity.toFixed(2),
-      fraudScore: ekycData.fraudScore?.toFixed(2) ?? null,
-      livenessScore: ekycData.livenessScore?.toFixed(2) ?? null,
-      antifraudDetails: ekycData.antifraudDetails as any,
-      verifiedAt: new Date(),
-    });
-    await this.ekycRecords.save(ekycRecord);
-
-    // 4. Cấp token đăng nhập luôn để FE/Mobile vào app trực tiếp
-    const tokens = await this.issueTokens(account, userAgent);
 
     return {
       success: true,
-      message: 'Đăng ký và xác thực eKYC thành công! Tài khoản đã được tự động kích hoạt (không lưu ảnh & số CCCD).',
+      message:
+        'Đăng ký và xác thực eKYC thành công! Tài khoản đã được tự động kích hoạt (không lưu ảnh & số CCCD).',
       account: {
         id: account.id,
         email: account.email,
@@ -226,6 +385,81 @@ export class AuthService {
       },
       tokens,
     };
+  }
+
+  /**
+   * POST /auth/verify-email/send-otp — gửi OTP xác thực email cho tài khoản đã đăng ký
+   * nhưng chưa xác thực email. Luôn trả { success: true, ... } nếu email không tồn tại / đã
+   * xác thực / bị khoá (chống dò email).
+   */
+  async sendEmailVerificationOtp(
+    dto: SendEmailOtpDto,
+  ): Promise<SendOtpResponseDto> {
+    const baseResponse: SendOtpResponseDto = {
+      success: true,
+      expiresInSeconds: REGISTER_OTP_MINUTES * 60,
+      cooldownSeconds: OTP_COOLDOWN_SECONDS,
+    };
+    const account = await this.accounts.findOne({
+      where: { email: dto.email },
+    });
+    if (
+      !account ||
+      !this.accountsService.isAllowedToAuthenticate(account) ||
+      account.emailVerifiedAt !== null
+    ) {
+      return baseResponse;
+    }
+
+    const otp = await this.issueEmailOtp(
+      account.email,
+      'VERIFY_EMAIL',
+      REGISTER_OTP_TTL_MS,
+    );
+    await this.mail.sendEmailVerificationOtp({
+      to: account.email,
+      fullName: account.fullName,
+      otp,
+      expiresMinutes: REGISTER_OTP_MINUTES,
+    });
+    return baseResponse;
+  }
+
+  /**
+   * POST /auth/verify-email — xác thực OTP để đánh dấu accounts.email_verified_at.
+   */
+  async verifyEmail(dto: VerifyOtpDto): Promise<VerifyEmailResponseDto> {
+    const account = await this.accounts.findOne({
+      where: { email: dto.email },
+    });
+    if (!account || !this.accountsService.isAllowedToAuthenticate(account)) {
+      throw new BadRequestException('OTP_INVALID');
+    }
+
+    await this.accounts.manager.transaction(async (manager) => {
+      const locked = await manager.findOne(Account, {
+        where: { id: account.id },
+        lock: { mode: 'for_no_key_update' },
+      });
+      if (!this.accountsService.isAllowedToAuthenticate(locked)) {
+        throw new BadRequestException('OTP_INVALID');
+      }
+      await this.verifyAndConsumeOtp(
+        dto.email,
+        'VERIFY_EMAIL',
+        dto.otp,
+        manager,
+      );
+      if (!locked!.emailVerifiedAt) {
+        await manager.update(
+          Account,
+          { id: account.id },
+          { emailVerifiedAt: new Date() },
+        );
+      }
+    });
+
+    return { success: true, emailVerified: true };
   }
 
   /**
@@ -292,6 +526,7 @@ export class AuthService {
         passwordHash: await this.passwords.hash(password),
         fullName: profile.fullName,
         role: dto.role,
+        emailVerifiedAt: new Date(),
       });
     } catch (err) {
       // Bấm nút Google 2 lần: request kia vừa tạo xong account → đăng nhập vào account đó.
@@ -505,6 +740,10 @@ export class AuthService {
           { passwordHash },
         );
         await this.revokeAllSessions(record.accountId, manager);
+        await manager.delete(EmailOtp, {
+          email: account!.email,
+          purpose: 'RESET_PASSWORD',
+        });
         return true;
       },
     );
@@ -513,13 +752,353 @@ export class AuthService {
     }
   }
 
+  /**
+   * POST /auth/forgot-password/otp — gửi mã OTP 6 chữ số đặt lại mật khẩu.
+   * LUÔN trả { success: true, ... } kể cả email không tồn tại (chống dò email).
+   */
+  async forgotPasswordOtp(dto: ForgotPasswordDto): Promise<SendOtpResponseDto> {
+    const baseResponse: SendOtpResponseDto = {
+      success: true,
+      expiresInSeconds: RESET_PASSWORD_OTP_MINUTES * 60,
+      cooldownSeconds: OTP_COOLDOWN_SECONDS,
+    };
+    const account = await this.accounts.findOne({
+      where: { email: dto.email },
+    });
+    if (!account || !this.accountsService.isAllowedToAuthenticate(account)) {
+      return baseResponse;
+    }
+
+    const otp = await this.refreshTokens.manager.transaction(
+      async (manager) => {
+        const locked = await manager.findOne(Account, {
+          where: { id: account.id },
+          lock: { mode: 'for_no_key_update' },
+        });
+        if (!this.accountsService.isAllowedToAuthenticate(locked)) {
+          return null;
+        }
+        return this.issueEmailOtp(
+          account.email,
+          'RESET_PASSWORD',
+          RESET_PASSWORD_OTP_TTL_MS,
+          manager,
+        );
+      },
+    );
+    if (!otp) {
+      return baseResponse;
+    }
+
+    await this.mail.sendPasswordResetOtp({
+      to: account.email,
+      fullName: account.fullName,
+      otp,
+      expiresMinutes: RESET_PASSWORD_OTP_MINUTES,
+    });
+    return baseResponse;
+  }
+
+  /**
+   * POST /auth/forgot-password/verify-otp — luồng 2 bước: xác thực OTP quên mật khẩu
+   * và cấp resetToken một lần (15 phút) để gọi tiếp POST /auth/reset-password.
+   */
+  async verifyForgotPasswordOtp(
+    dto: VerifyOtpDto,
+  ): Promise<VerifyResetOtpResponseDto> {
+    const account = await this.accounts.findOne({
+      where: { email: dto.email },
+    });
+    if (!account || !this.accountsService.isAllowedToAuthenticate(account)) {
+      throw new BadRequestException('OTP_INVALID');
+    }
+
+    const resetToken = randomBytes(32).toString('base64url');
+    await this.refreshTokens.manager.transaction(async (manager) => {
+      const locked = await manager.findOne(Account, {
+        where: { id: account.id },
+        lock: { mode: 'for_no_key_update' },
+      });
+      if (!this.accountsService.isAllowedToAuthenticate(locked)) {
+        throw new BadRequestException('OTP_INVALID');
+      }
+      await this.verifyAndConsumeOtp(
+        dto.email,
+        'RESET_PASSWORD',
+        dto.otp,
+        manager,
+      );
+      await manager.delete(PasswordResetToken, { accountId: account.id });
+      await manager.save(
+        manager.create(PasswordResetToken, {
+          accountId: account.id,
+          tokenHash: this.tokens.hashToken(resetToken),
+          expiresAt: new Date(Date.now() + RESET_TOKEN_AFTER_OTP_TTL_MS),
+        }),
+      );
+    });
+
+    return {
+      verified: true,
+      resetToken,
+      expiresInSeconds: RESET_TOKEN_AFTER_OTP_TTL_MS / 1000,
+    };
+  }
+
+  /**
+   * POST /auth/reset-password-otp — luồng 1 bước: gửi email + OTP + newPassword để đặt lại mật khẩu ngay.
+   * Thu hồi mọi phiên đăng nhập và xoá toàn bộ PasswordResetToken đang chờ.
+   */
+  async resetPasswordWithOtp(dto: ResetPasswordWithOtpDto): Promise<void> {
+    const account = await this.accounts.findOne({
+      where: { email: dto.email },
+    });
+    if (!account || !this.accountsService.isAllowedToAuthenticate(account)) {
+      throw new BadRequestException('OTP_INVALID');
+    }
+
+    await this.checkOtpRecord(
+      this.emailOtps,
+      dto.email,
+      'RESET_PASSWORD',
+      dto.otp,
+    );
+
+    const passwordHash = await this.passwords.hash(dto.newPassword);
+
+    await this.refreshTokens.manager.transaction(async (manager) => {
+      const locked = await manager.findOne(Account, {
+        where: { id: account.id },
+        lock: { mode: 'for_no_key_update' },
+      });
+      if (!this.accountsService.isAllowedToAuthenticate(locked)) {
+        throw new BadRequestException('OTP_INVALID');
+      }
+      await this.verifyAndConsumeOtp(
+        dto.email,
+        'RESET_PASSWORD',
+        dto.otp,
+        manager,
+      );
+      await manager.update(Account, { id: account.id }, { passwordHash });
+      await this.revokeAllSessions(account.id, manager);
+      await manager.delete(PasswordResetToken, { accountId: account.id });
+    });
+  }
+
+  /**
+   * GET /auth/sessions — liệt kê các phiên đăng nhập đang còn hiệu lực (không trả tokenHash).
+   */
+  async listSessions(user: CurrentUserData): Promise<ActiveSessionDto[]> {
+    const sessions = await this.refreshTokens.find({
+      where: {
+        accountId: user.accountId,
+        revokedAt: IsNull(),
+        expiresAt: MoreThan(new Date()),
+      },
+      order: { createdAt: 'DESC' },
+      select: {
+        id: true,
+        userAgent: true,
+        createdAt: true,
+        expiresAt: true,
+      },
+    });
+    return sessions.map((s) => ({
+      id: s.id,
+      userAgent: s.userAgent,
+      createdAt: s.createdAt,
+      expiresAt: s.expiresAt,
+    }));
+  }
+
+  /**
+   * DELETE /auth/sessions/:sessionId — thu hồi đúng 1 phiên đăng nhập của chính user hiện tại.
+   */
+  async revokeSession(
+    user: CurrentUserData,
+    sessionId: string,
+  ): Promise<RevokeSessionResponseDto> {
+    const result = await this.refreshTokens.update(
+      {
+        id: sessionId,
+        accountId: user.accountId,
+        revokedAt: IsNull(),
+      },
+      { revokedAt: new Date() },
+    );
+    if (result.affected !== 1) {
+      throw new NotFoundException('SESSION_NOT_FOUND');
+    }
+    return { success: true };
+  }
+
   // ---- helpers ----
+
+  private verifyEmailVerificationToken(email: string, token: string): Date {
+    try {
+      const payload = this.tokens.verifyEmailVerification(token);
+      if (payload.email !== email) {
+        throw new BadRequestException('EMAIL_VERIFICATION_TOKEN_INVALID');
+      }
+      return new Date();
+    } catch (err) {
+      if (err instanceof BadRequestException) {
+        throw err;
+      }
+      throw new BadRequestException('EMAIL_VERIFICATION_TOKEN_INVALID');
+    }
+  }
+
+  private generateOtpCode(): string {
+    return randomInt(0, 1_000_000).toString().padStart(6, '0');
+  }
+
+  private hashOtp(
+    purpose: EmailOtpPurpose,
+    email: string,
+    otp: string,
+  ): string {
+    return this.tokens.hashToken(`${purpose}:${email}:${otp}`);
+  }
+
+  private hashesEqual(a: string, b: string): boolean {
+    const bufA = Buffer.from(a, 'utf8');
+    const bufB = Buffer.from(b, 'utf8');
+    if (bufA.length !== bufB.length) {
+      return false;
+    }
+    return timingSafeEqual(bufA, bufB);
+  }
+
+  private otpRepo(manager?: EntityManager): Repository<EmailOtp> {
+    return manager ? manager.getRepository(EmailOtp) : this.emailOtps;
+  }
+
+  private async assertOtpCooldown(
+    email: string,
+    purpose: EmailOtpPurpose,
+    manager?: EntityManager,
+  ): Promise<void> {
+    const repo = this.otpRepo(manager);
+    const latest = await repo.findOne({
+      where: { email, purpose },
+      order: { createdAt: 'DESC' },
+    });
+    if (!latest) return;
+
+    const elapsedMs = Date.now() - latest.createdAt.getTime();
+    const cooldownMs = OTP_COOLDOWN_SECONDS * 1000;
+    if (elapsedMs < cooldownMs) {
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((cooldownMs - elapsedMs) / 1000),
+      );
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.TOO_MANY_REQUESTS,
+          message: 'OTP_COOLDOWN',
+          retryAfterSeconds,
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+  }
+
+  private async issueEmailOtp(
+    email: string,
+    purpose: EmailOtpPurpose,
+    ttlMs: number,
+    manager?: EntityManager,
+  ): Promise<string> {
+    await this.assertOtpCooldown(email, purpose, manager);
+    const repo = this.otpRepo(manager);
+    const otp = this.generateOtpCode();
+
+    await repo.delete({ email, purpose });
+    await repo.save(
+      repo.create({
+        email,
+        purpose,
+        codeHash: this.hashOtp(purpose, email, otp),
+        attempts: 0,
+        expiresAt: new Date(Date.now() + ttlMs),
+      }),
+    );
+    return otp;
+  }
+
+  private async checkOtpRecord(
+    repo: Repository<EmailOtp>,
+    email: string,
+    purpose: EmailOtpPurpose,
+    otp: string,
+  ): Promise<EmailOtp> {
+    const record = await repo.findOne({
+      where: { email, purpose, consumedAt: IsNull() },
+      order: { createdAt: 'DESC' },
+    });
+    if (!record) {
+      throw new BadRequestException('OTP_INVALID');
+    }
+    if (record.expiresAt.getTime() <= Date.now()) {
+      throw new BadRequestException('OTP_EXPIRED');
+    }
+    if (record.attempts >= OTP_MAX_ATTEMPTS) {
+      throw new BadRequestException('OTP_MAX_ATTEMPTS');
+    }
+
+    const expectedHash = this.hashOtp(purpose, email, otp);
+    if (!this.hashesEqual(expectedHash, record.codeHash)) {
+      const nextAttempts = record.attempts + 1;
+      await repo.update(
+        { id: record.id, consumedAt: IsNull() },
+        { attempts: nextAttempts },
+      );
+      if (nextAttempts >= OTP_MAX_ATTEMPTS) {
+        throw new BadRequestException('OTP_MAX_ATTEMPTS');
+      }
+      throw new BadRequestException('OTP_INVALID');
+    }
+    return record;
+  }
+
+  private async verifyAndConsumeOtp(
+    email: string,
+    purpose: EmailOtpPurpose,
+    otp: string,
+    manager?: EntityManager,
+  ): Promise<void> {
+    const repo = this.otpRepo(manager);
+    const record = await this.checkOtpRecord(repo, email, purpose, otp);
+    const now = new Date();
+    const consumed = await repo.update(
+      {
+        id: record.id,
+        consumedAt: IsNull(),
+        expiresAt: MoreThan(now),
+        attempts: LessThan(OTP_MAX_ATTEMPTS),
+      },
+      { consumedAt: now },
+    );
+    if (consumed.affected !== 1) {
+      throw new BadRequestException('OTP_INVALID');
+    }
+  }
 
   private async loginExistingWithGoogle(
     account: Account,
     userAgent?: string,
   ): Promise<GoogleAuthResponseDto> {
     this.assertCanAuthenticate(account);
+    if (!account.emailVerifiedAt) {
+      const verifiedAt = new Date();
+      account.emailVerifiedAt = verifiedAt;
+      await this.accounts.update(
+        { id: account.id },
+        { emailVerifiedAt: verifiedAt },
+      );
+    }
     const tokens = await this.issueTokens(account, userAgent);
     return { ...tokens, isNewAccount: false };
   }
@@ -537,21 +1116,27 @@ export class AuthService {
 
   // Tạo ACCOUNT base (PENDING). UNIQUE(email) là chốt cuối khi 2 request cùng email chạy song song.
   // Mọi unique violation ở đây đều là email: phone/phone_hash để NULL (SĐT nộp ở bước kích hoạt).
-  private async createAccount(input: {
-    email: string;
-    passwordHash: string;
-    fullName: string;
-    role: SelfRegisterRole;
-    status?: 'ACTIVE' | 'PENDING';
-  }): Promise<Account> {
+  private async createAccount(
+    input: {
+      email: string;
+      passwordHash: string;
+      fullName: string;
+      role: SelfRegisterRole;
+      status?: 'ACTIVE' | 'PENDING';
+      emailVerifiedAt?: Date | null;
+    },
+    manager?: EntityManager,
+  ): Promise<Account> {
+    const repo = manager ? manager.getRepository(Account) : this.accounts;
     try {
-      return await this.accounts.save(
-        this.accounts.create({
+      return await repo.save(
+        repo.create({
           email: input.email,
           passwordHash: input.passwordHash,
           fullName: input.fullName,
           role: input.role,
           status: input.status ?? 'PENDING',
+          emailVerifiedAt: input.emailVerifiedAt ?? null,
         }),
       );
     } catch (err) {

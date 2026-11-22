@@ -67,3 +67,60 @@ export class ForgotPasswordResponseDto {
   @ApiProperty({ example: true })
   success!: boolean;
 }
+
+export class SendOtpResponseDto {
+  @ApiProperty({ example: true })
+  success!: boolean;
+
+  @ApiProperty({ example: 300, description: 'Thời gian hiệu lực mã OTP (giây)' })
+  expiresInSeconds!: number;
+
+  @ApiProperty({ example: 60, description: 'Thời gian chờ tối thiểu giữa 2 lần gửi lại OTP (giây)' })
+  cooldownSeconds!: number;
+}
+
+export class VerifyRegisterOtpResponseDto {
+  @ApiProperty({ example: true })
+  verified!: boolean;
+
+  @ApiProperty({ description: 'Token xác thực email tạm (hiệu lực 15 phút) truyền vào /auth/register' })
+  verificationToken!: string;
+}
+
+export class VerifyEmailResponseDto {
+  @ApiProperty({ example: true })
+  success!: boolean;
+
+  @ApiProperty({ example: true })
+  emailVerified!: boolean;
+}
+
+export class VerifyResetOtpResponseDto {
+  @ApiProperty({ example: true })
+  verified!: boolean;
+
+  @ApiProperty({ description: 'Token đặt lại mật khẩu một lần để gửi lên /auth/reset-password' })
+  resetToken!: string;
+
+  @ApiProperty({ example: 900, description: 'Thời gian hiệu lực resetToken (giây)' })
+  expiresInSeconds!: number;
+}
+
+export class ActiveSessionDto {
+  @ApiProperty({ format: 'uuid' })
+  id!: string;
+
+  @ApiProperty({ nullable: true, example: 'Mozilla/5.0 ...' })
+  userAgent!: string | null;
+
+  @ApiProperty()
+  createdAt!: Date;
+
+  @ApiProperty()
+  expiresAt!: Date;
+}
+
+export class RevokeSessionResponseDto {
+  @ApiProperty({ example: true })
+  success!: boolean;
+}

@@ -10,6 +10,7 @@ import { EkycModule } from '../ekyc/ekyc.module';
 import { CryptoModule } from '../crypto/crypto.module';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
+import { EmailOtp } from './entities/email-otp.entity';
 import { TokenService } from './token.service';
 import { AuthService } from './auth.service';
 import { GoogleIdTokenVerifier } from './google-id-token.verifier';
@@ -21,6 +22,7 @@ import { AuthController } from './auth.controller';
     TypeOrmModule.forFeature([
       RefreshToken,
       PasswordResetToken,
+      EmailOtp,
       CustomerProfile,
       EkycRecord,
     ]),

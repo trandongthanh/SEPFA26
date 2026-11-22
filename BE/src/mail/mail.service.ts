@@ -6,6 +6,8 @@ const SMTP_TIMEOUT_MS = 10_000;
 const SMTP_SOCKET_TIMEOUT_MS = 15_000;
 // Hạn link đặt lại mật khẩu — nguồn duy nhất: AuthService dùng để đặt expires_at, mail in ra cho người dùng.
 export const PASSWORD_RESET_LINK_MINUTES = 30;
+export const REGISTER_OTP_MINUTES = 5;
+export const RESET_PASSWORD_OTP_MINUTES = 10;
 
 export interface GooglePasswordMail {
   to: string;
@@ -17,6 +19,13 @@ export interface PasswordResetMail {
   to: string;
   fullName: string;
   token: string; // token thô — chỉ xuất hiện trong link của mail này
+}
+
+export interface EmailOtpMail {
+  to: string;
+  fullName?: string;
+  otp: string;
+  expiresMinutes: number;
 }
 
 /**
@@ -131,6 +140,93 @@ export class MailService {
       );
       return false;
     }
+  }
+
+  async sendRegistrationOtp(mail: EmailOtpMail): Promise<boolean> {
+    return this.sendOtpEmail(mail, {
+      subject: 'LanCare Hub — Mã OTP xác thực đăng ký tài khoản',
+      title: 'Xác thực đăng ký tài khoản',
+      intro:
+        'Vui lòng nhập mã OTP 6 chữ số dưới đây để hoàn tất xác thực email đăng ký tài khoản LanCare Hub:',
+      logLabel: 'OTP đăng ký',
+    });
+  }
+
+  async sendEmailVerificationOtp(mail: EmailOtpMail): Promise<boolean> {
+    return this.sendOtpEmail(mail, {
+      subject: 'LanCare Hub — Mã OTP xác thực địa chỉ email',
+      title: 'Xác thực địa chỉ email',
+      intro:
+        'Vui lòng nhập mã OTP 6 chữ số dưới đây để xác thực quyền sở hữu email cho tài khoản LanCare Hub của bạn:',
+      logLabel: 'OTP xác thực email',
+    });
+  }
+
+  async sendPasswordResetOtp(mail: EmailOtpMail): Promise<boolean> {
+    return this.sendOtpEmail(mail, {
+      subject: 'LanCare Hub — Mã OTP đặt lại mật khẩu',
+      title: 'Đặt lại mật khẩu qua mã OTP',
+      intro:
+        'Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản LanCare Hub của bạn. Sử dụng mã OTP 6 chữ số sau:',
+      logLabel: 'OTP đặt lại mật khẩu',
+    });
+  }
+
+  private async sendOtpEmail(
+    mail: EmailOtpMail,
+    meta: { subject: string; title: string; intro: string; logLabel: string },
+  ): Promise<boolean> {
+    if (!this.transporter) {
+      this.logger.warn(
+        this.isProduction
+          ? `SMTP chưa cấu hình — bỏ qua mail ${meta.logLabel} cho ${mail.to}`
+          : `SMTP chưa cấu hình — ${meta.logLabel} cho ${mail.to}: ${mail.otp} (hết hạn sau ${mail.expiresMinutes} phút)`,
+      );
+      return false;
+    }
+    const greetingName = mail.fullName?.trim() || 'bạn';
+    try {
+      await this.transporter.sendMail({
+        from: this.from,
+        to: mail.to,
+        subject: meta.subject,
+        text: [
+          `Xin chào ${greetingName},`,
+          meta.intro,
+          `Mã OTP: ${mail.otp}`,
+          `Mã có hiệu lực trong ${mail.expiresMinutes} phút và chỉ dùng được 1 lần. Tuyệt đối không chia sẻ mã này cho bất kỳ ai.`,
+        ].join('\n'),
+        html: this.otpEmailHtml(mail, meta.title, meta.intro),
+      });
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `Gửi mail ${meta.logLabel} cho ${mail.to} thất bại: ${(err as Error).message}`,
+      );
+      return false;
+    }
+  }
+
+  private otpEmailHtml(
+    mail: EmailOtpMail,
+    title: string,
+    intro: string,
+  ): string {
+    const name = escapeHtml(mail.fullName?.trim() || 'bạn');
+    const otp = escapeHtml(mail.otp);
+    const safeTitle = escapeHtml(title);
+    const safeIntro = escapeHtml(intro);
+    return `
+<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#1f1b2e">
+  <h2 style="color:#6027D2">LanCare Hub — ${safeTitle}</h2>
+  <p>Xin chào <b>${name}</b>,</p>
+  <p>${safeIntro}</p>
+  <div style="background:#F3E8FF;border-radius:10px;padding:16px;text-align:center;margin:16px 0">
+    <span style="font-family:monospace;font-size:28px;font-weight:bold;letter-spacing:6px;color:#6027D2">${otp}</span>
+  </div>
+  <p style="color:#6b6880;font-size:13px">Mã OTP có hiệu lực trong <b>${mail.expiresMinutes} phút</b> và chỉ dùng được 1 lần.
+     Tuyệt đối không chia sẻ mã này cho bất kỳ ai. Nếu bạn không yêu cầu, hãy bỏ qua email này.</p>
+</div>`;
   }
 
   private passwordResetHtml(mail: PasswordResetMail, url: string): string {

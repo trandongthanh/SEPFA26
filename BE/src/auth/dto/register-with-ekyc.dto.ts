@@ -6,6 +6,7 @@ import {
   IsIn,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -64,6 +65,37 @@ export class RegisterWithEkycDto {
   @IsOptional()
   @IsString()
   phone?: string;
+
+  @ApiPropertyOptional({
+    example: '123456',
+    description: 'Mã OTP 6 chữ số xác thực email khi đăng ký (tuỳ chọn)',
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' && value.trim() === ''
+      ? undefined
+      : typeof value === 'string'
+        ? value.trim()
+        : value,
+  )
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{6}$/, { message: 'OTP phải gồm đúng 6 chữ số' })
+  otp?: string;
+
+  @ApiPropertyOptional({
+    description: 'Token xác thực email nhận từ /auth/register/verify-otp (tuỳ chọn)',
+  })
+  @Transform(({ value }) =>
+    typeof value === 'string' && value.trim() === ''
+      ? undefined
+      : typeof value === 'string'
+        ? value.trim()
+        : value,
+  )
+  @IsOptional()
+  @IsString()
+  @MaxLength(512)
+  verificationToken?: string;
 
   // Cho phép Swagger hoặc Client gửi field rỗng cho file mà không bị chặn bởi forbidNonWhitelisted
   @Allow()

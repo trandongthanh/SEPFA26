@@ -8,6 +8,11 @@
 
 BEGIN;
 
+-- 0. Đảm bảo 2 cột date_of_birth và place_of_origin tồn tại (độc lập thứ tự chạy với no-cccd-storage.sql)
+ALTER TABLE "customer_profiles"
+  ADD COLUMN IF NOT EXISTS "date_of_birth" character varying(20),
+  ADD COLUMN IF NOT EXISTS "place_of_origin" character varying(255);
+
 -- 1. Xoá mọi CHECK constraint cũ liên quan tới verification_status trên customer_profiles
 --    (tránh phụ thuộc tên hash tự sinh CHK_... của TypeORM, an toàn khi chạy lại nhiều lần)
 DO $$

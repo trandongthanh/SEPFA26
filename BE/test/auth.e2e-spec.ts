@@ -265,6 +265,7 @@ describe('Auth (e2e)', () => {
         phone: null,
         role: 'CUSTOMER',
         status: 'PENDING',
+        emailVerified: false,
       });
     });
 
@@ -1413,6 +1414,138 @@ describe('Auth (e2e)', () => {
       await login('lan@example.com', 'matkhau123').expect(401);
       const s3 = await login('lan@example.com', 'matkhaumoi456').expect(200);
       await me(s3.body.accessToken).expect(200);
+    });
+  });
+
+  // ===================== OTP đăng ký & xác thực email =====================
+  describe('OTP đăng ký & xác thực email', () => {
+    it('send-otp → verify-otp → register với verificationToken đánh dấu emailVerified = true', async () => {
+      await request(http)
+        .post(`${API}/auth/register/send-otp`)
+        .send({ email: 'otp@example.com', fullName: 'OTP User' })
+        .expect(200);
+
+      const otp = ctx.mailbox.otpMails.find(
+        (m) => m.purpose === 'REGISTER' && m.to === 'otp@example.com',
+      )!.otp;
+
+      const verified = await request(http)
+        .post(`${API}/auth/register/verify-otp`)
+        .send({ email: 'otp@example.com', otp })
+        .expect(200);
+      expect(verified.body.verified).toBe(true);
+
+      await register({
+        email: 'otp@example.com',
+        verificationToken: verified.body.verificationToken,
+      }).expect(201);
+
+      const loggedIn = await login('otp@example.com').expect(200);
+      const profile = await me(loggedIn.body.accessToken).expect(200);
+      expect(profile.body.emailVerified).toBe(true);
+    });
+
+    it('đăng ký thường rồi gọi verify-email/send-otp → verify-email → emailVerified = true', async () => {
+      await register({ email: 'postverify@example.com' }).expect(201);
+      await request(http)
+        .post(`${API}/auth/verify-email/send-otp`)
+        .send({ email: 'postverify@example.com' })
+        .expect(200);
+
+      const otp = ctx.mailbox.otpMails.find(
+        (m) =>
+          m.purpose === 'VERIFY_EMAIL' && m.to === 'postverify@example.com',
+      )!.otp;
+
+      await request(http)
+        .post(`${API}/auth/verify-email`)
+        .send({ email: 'postverify@example.com', otp })
+        .expect(200);
+
+      const loggedIn = await login('postverify@example.com').expect(200);
+      const profile = await me(loggedIn.body.accessToken).expect(200);
+      expect(profile.body.emailVerified).toBe(true);
+    });
+  });
+
+  // ===================== Quên mật khẩu qua OTP & quản lý phiên =====================
+  describe('Quên mật khẩu qua OTP & Active Sessions', () => {
+    it('forgot-password/otp → forgot-password/verify-otp → reset-password thu hồi mọi phiên', async () => {
+      await register().expect(201);
+      const s1 = await login().expect(200);
+
+      await request(http)
+        .post(`${API}/auth/forgot-password/otp`)
+        .send({ email: 'lan@example.com' })
+        .expect(200);
+      const otp = ctx.mailbox.otpMails.find(
+        (m) => m.purpose === 'RESET_PASSWORD',
+      )!.otp;
+
+      const verified = await request(http)
+        .post(`${API}/auth/forgot-password/verify-otp`)
+        .send({ email: 'lan@example.com', otp })
+        .expect(200);
+
+      await request(http)
+        .post(`${API}/auth/reset-password`)
+        .send({
+          token: verified.body.resetToken,
+          newPassword: 'matkhaumoiOtp1',
+        })
+        .expect(204);
+
+      await refresh(s1.body.refreshToken).expect(401);
+      await login('lan@example.com', 'matkhaumoiOtp1').expect(200);
+    });
+
+    it('forgot-password/otp → reset-password-otp (1 bước) đổi mật khẩu ngay', async () => {
+      await register().expect(201);
+      await request(http)
+        .post(`${API}/auth/forgot-password/otp`)
+        .send({ email: 'lan@example.com' })
+        .expect(200);
+      const otp = ctx.mailbox.otpMails.find(
+        (m) => m.purpose === 'RESET_PASSWORD',
+      )!.otp;
+
+      await request(http)
+        .post(`${API}/auth/reset-password-otp`)
+        .send({
+          email: 'lan@example.com',
+          otp,
+          newPassword: 'matkhaumoiOtp2',
+        })
+        .expect(204);
+
+      await login('lan@example.com', 'matkhaumoiOtp2').expect(200);
+    });
+
+    it('GET /auth/sessions & DELETE /auth/sessions/:sessionId thu hồi đúng 1 phiên', async () => {
+      await register().expect(201);
+      const s1 = await login()
+        .set('User-Agent', 'Browser-1')
+        .expect(200);
+      const s2 = await login()
+        .set('User-Agent', 'Mobile-2')
+        .expect(200);
+
+      const listRes = await request(http)
+        .get(`${API}/auth/sessions`)
+        .set('Authorization', `Bearer ${s2.body.accessToken}`)
+        .expect(200);
+      expect(listRes.body).toHaveLength(2);
+      const browserSession = (
+        listRes.body as { id: string; userAgent: string | null }[]
+      ).find((s) => s.userAgent === 'Browser-1')!;
+
+      await request(http)
+        .delete(`${API}/auth/sessions/${browserSession.id}`)
+        .set('Authorization', `Bearer ${s2.body.accessToken}`)
+        .expect(200);
+
+      await refresh(s1.body.refreshToken).expect(401);
+      await refresh(s2.body.refreshToken).expect(200);
     });
   });
 });

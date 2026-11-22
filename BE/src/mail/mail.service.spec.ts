@@ -125,6 +125,61 @@ describe('MailService', () => {
     });
   });
 
+  describe('sendOtpEmails', () => {
+    type SentMail = { to: string; subject: string; text: string; html: string };
+    const OTP_MAIL = {
+      to: 'hoa@gmail.com',
+      fullName: '<b>Hoa</b>',
+      otp: '482910',
+      expiresMinutes: 5,
+    };
+    const withFakeTransport = () => {
+      const service = makeService({ SMTP_HOST: 'smtp.gmail.com' });
+      const sendMail = jest
+        .fn<Promise<unknown>, [SentMail]>()
+        .mockResolvedValue({});
+      (service as unknown as { transporter: unknown }).transporter = {
+        sendMail,
+      };
+      return { service, sendMail };
+    };
+    afterEach(() => jest.restoreAllMocks());
+
+    it('gửi OTP đăng ký / xác thực email / đặt lại mật khẩu và HTML-escape fullName', async () => {
+      const { service, sendMail } = withFakeTransport();
+
+      await expect(service.sendRegistrationOtp(OTP_MAIL)).resolves.toBe(true);
+      await expect(service.sendEmailVerificationOtp(OTP_MAIL)).resolves.toBe(true);
+      await expect(
+        service.sendPasswordResetOtp({ ...OTP_MAIL, expiresMinutes: 10 }),
+      ).resolves.toBe(true);
+
+      expect(sendMail).toHaveBeenCalledTimes(3);
+      for (const [mail] of sendMail.mock.calls) {
+        expect(mail.text).toContain('482910');
+        expect(mail.html).toContain('482910');
+        expect(mail.html).toContain('&lt;b&gt;Hoa&lt;/b&gt;');
+        expect(mail.html).not.toContain('<b>Hoa</b>');
+      }
+    });
+
+    it('không SMTP ở production → KHÔNG ghi mã OTP ra log', async () => {
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => {});
+      const service = makeService({ SMTP_HOST: '', NODE_ENV: 'production' });
+      await expect(service.sendRegistrationOtp(OTP_MAIL)).resolves.toBe(false);
+      expect(warn.mock.calls[0][0]).not.toContain('482910');
+    });
+
+    it('SMTP lỗi → trả false, không ném', async () => {
+      const { service, sendMail } = withFakeTransport();
+      sendMail.mockRejectedValue(new Error('535 auth failed'));
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+      await expect(service.sendPasswordResetOtp(OTP_MAIL)).resolves.toBe(false);
+    });
+  });
+
   describe('SMTP treo', () => {
     let server: Server;
     const sockets: Socket[] = [];
