@@ -32,7 +32,7 @@ const privacySections: DocumentSection[] = [
     title: '2. Phạm vi thu thập (Dữ liệu thu thập)',
     icon: <DatabaseOutlined className="text-[#6027D2]" />,
     rawText:
-      'Thông tin tài khoản: Họ tên, số điện thoại, địa chỉ email, địa chỉ liên hệ. Thông tin Nhà cung cấp (Provider): Giấy tờ tùy thân (CCCD/CMND), chứng chỉ chuyên môn, hình ảnh vườn lan, địa chỉ kinh doanh. Dữ liệu dịch vụ (Booking evidence): Hình ảnh tình trạng cây lan trước và sau khi chăm sóc, ghi chú dịch vụ, lịch sử đặt lịch. Dữ liệu thanh toán: Mã giao dịch (Transaction codes), lịch sử thanh toán. Lưu ý: Chúng tôi tuyệt đối KHÔNG lưu trữ thông tin thẻ ngân hàng của người dùng.',
+      'Thông tin tài khoản: Họ tên, số điện thoại, địa chỉ email, địa chỉ liên hệ. Thông tin Nhà cung cấp (Provider): Họ tên, ngày sinh, quê quán của người đại diện (không thu số CCCD hay ảnh giấy tờ), tài khoản ngân hàng nhận tiền, chứng chỉ chuyên môn, hình ảnh vườn lan, địa chỉ kinh doanh. Dữ liệu dịch vụ (Booking evidence): Hình ảnh tình trạng cây lan trước và sau khi chăm sóc, ghi chú dịch vụ, lịch sử đặt lịch. Dữ liệu thanh toán: Mã giao dịch (Transaction codes), lịch sử thanh toán. Lưu ý: Chúng tôi tuyệt đối KHÔNG lưu trữ thông tin thẻ ngân hàng của người dùng.',
     content: (
       <ul className="list-disc pl-5 space-y-1.5">
         <li>
@@ -40,8 +40,9 @@ const privacySections: DocumentSection[] = [
           địa chỉ email, địa chỉ liên hệ.
         </li>
         <li>
-          <strong className="text-[#1E1B2E]">Thông tin Nhà cung cấp (Provider):</strong> Giấy tờ tùy
-          thân (CCCD/CMND), chứng chỉ chuyên môn, hình ảnh vườn lan, địa chỉ kinh doanh.
+          <strong className="text-[#1E1B2E]">Thông tin Nhà cung cấp (Provider):</strong> Họ tên, ngày
+          sinh, quê quán của người đại diện (không thu số CCCD hay ảnh giấy tờ), tài khoản ngân hàng
+          nhận tiền, chứng chỉ chuyên môn, hình ảnh vườn lan, địa chỉ kinh doanh.
         </li>
         <li>
           <strong className="text-[#1E1B2E]">Dữ liệu dịch vụ (Booking evidence):</strong> Hình ảnh tình

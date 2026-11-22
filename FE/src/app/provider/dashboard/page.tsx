@@ -136,11 +136,8 @@ export default function ProviderDashboardPage() {
       const rawMsg =
         err?.response?.data?.message || err?.message || 'Có lỗi xảy ra khi xử lý đơn hàng.';
       const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
-      if (msgText.includes('PROVIDER_IDENTITY_INCOMPLETE')) {
-        message.error(
-          'Vui lòng cập nhật đầy đủ Số điện thoại và Số CCCD (12 chữ số) tại mục Hồ sơ nhà vườn trước khi chấp nhận đơn!'
-        );
-      } else if (msgText.includes('INVALID_STATE_TRANSITION')) {
+      // Mã lỗi khác (vd PROVIDER_IDENTITY_INCOMPLETE) đã được lib/api.ts dịch sẵn sang tiếng Việt.
+      if (msgText.includes('INVALID_STATE_TRANSITION')) {
         message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới dữ liệu...');
         fetchData();
       } else {

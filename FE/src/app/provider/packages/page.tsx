@@ -6,6 +6,7 @@ import {
   AppstoreOutlined,
   CheckCircleOutlined,
   DeleteOutlined,
+  EditOutlined,
   DollarOutlined,
   EnvironmentOutlined,
   ExclamationCircleOutlined,
@@ -23,7 +24,6 @@ import {
   Popconfirm,
   Select,
   Spin,
-  Switch,
   Tag,
   message,
 } from 'antd';
@@ -36,6 +36,16 @@ import {
 } from '@/lib/provider.api';
 import ProviderHeader from '../components/ProviderHeader';
 import ProviderSidebar from '../components/ProviderSidebar';
+import ListToolbar, { NoResults } from '../components/ListToolbar';
+import Highlight from '../components/Highlight';
+import { matchesQuery, useUrlParam } from '@/lib/search';
+
+const PACKAGE_FILTERS = [
+  { value: 'ALL', label: 'Tất cả' },
+  { value: 'APPROVED', label: 'Đã duyệt' },
+  { value: 'PENDING', label: 'Chờ duyệt' },
+  { value: 'REJECTED', label: 'Bị từ chối' },
+];
 
 function PackagesPageContent() {
   const router = useRouter();
@@ -46,6 +56,8 @@ function PackagesPageContent() {
   const [profile, setProfile] = useState<ProviderProfileResponse | null>(null);
   const [packages, setPackages] = useState<ServicePackageItem[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  // null = tạo gói mới; có giá trị = đang sửa gói đó (dùng chung 1 hộp thoại).
+  const [editingPackage, setEditingPackage] = useState<ServicePackageItem | null>(null);
 
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const [form] = Form.useForm();
@@ -65,8 +77,9 @@ function PackagesPageContent() {
   // Open modal if query param ?create=true is set
   useEffect(() => {
     if (searchParams.get('create') === 'true') {
-      setIsModalOpen(true);
+      openCreateModal();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   const loadData = async () => {
@@ -99,8 +112,42 @@ function PackagesPageContent() {
     }
   }, [mounted, isAuthenticated]);
 
-  // Handle Create Package Submission
-  const handleCreatePackage = async (values: any) => {
+  const openCreateModal = () => {
+    setEditingPackage(null);
+    setIsModalOpen(true);
+  };
+
+  const openEditModal = (pkg: ServicePackageItem) => {
+    setEditingPackage(pkg);
+    setIsModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setEditingPackage(null);
+  };
+
+  // Điền form SAU khi hộp thoại đã mở (Modal destroyOnClose → form chỉ tồn tại lúc đang mở).
+  useEffect(() => {
+    if (!isModalOpen) return;
+    if (!editingPackage) {
+      form.resetFields();
+      return;
+    }
+    form.setFieldsValue({
+      name: editingPackage.name,
+      description: editingPackage.description ?? '',
+      durationDays: Number(editingPackage.durationDays),
+      reportFrequencyDays: Number(editingPackage.reportFrequencyDays),
+      maxPlants: Number(editingPackage.maxPlants),
+      basePrice: Number(editingPackage.basePrice),
+      minDeclaredValue: Number(editingPackage.minDeclaredValue ?? 0),
+      maxDeclaredValue: Number(editingPackage.maxDeclaredValue ?? 0),
+    });
+  }, [isModalOpen, editingPackage, form]);
+
+  // Tạo hoặc sửa gói — cùng 8 trường của UpsertPackageDto (BE bắt buộc gửi đủ cả khi sửa).
+  const handleSubmitPackage = async (values: any) => {
     setSubmitting(true);
     try {
       const payload: CreatePackagePayload = {
@@ -112,13 +159,16 @@ function PackagesPageContent() {
         basePrice: Number(values.basePrice),
         minDeclaredValue: Number(values.minDeclaredValue || 0),
         maxDeclaredValue: Number(values.maxDeclaredValue || 0),
-        isActive: values.isActive ?? true,
       };
 
-      await providerApi.createPackage(payload);
-      message.success('Đã tạo thành công Gói chăm sóc mới!');
-      setIsModalOpen(false);
-      form.resetFields();
+      if (editingPackage) {
+        await providerApi.updatePackage(editingPackage.id, payload);
+        message.success('Đã lưu thay đổi. Gói chuyển về Chờ Admin duyệt và tạm ngưng bán tới khi được duyệt lại.');
+      } else {
+        await providerApi.createPackage(payload);
+        message.success('Đã tạo gói mới. Gói sẽ mở bán sau khi Admin duyệt.');
+      }
+      closeModal();
       loadData();
     } catch (err: any) {
       const rawMsg =
@@ -130,6 +180,10 @@ function PackagesPageContent() {
         message.error('Vui lòng hoàn thiện và lưu Hồ sơ nhà vườn trước khi tạo gói dịch vụ.');
       } else if (msgText.includes('PROFILE_NOT_APPROVED')) {
         message.error('Chỉ nhà vườn đã được Admin phê duyệt hồ sơ mới có thể tạo gói dịch vụ mới.');
+      } else if (msgText.includes('PACKAGE_NOT_FOUND')) {
+        message.error('Gói này không còn tồn tại (có thể đã bị xoá). Đang tải lại danh sách...');
+        closeModal();
+        loadData();
       } else {
         message.error(msgText);
       }
@@ -150,13 +204,28 @@ function PackagesPageContent() {
     }
   };
 
+  // ===== Tìm kiếm + lọc trạng thái duyệt + sắp xếp (phía FE) =====
+  const [searchQuery, setSearchQuery] = useUrlParam('q');
+  const [approvalFilter, setApprovalFilter] = useState('ALL');
+  const [sortBy, setSortBy] = useState<'NEWEST' | 'PRICE_ASC' | 'PRICE_DESC'>('NEWEST');
+  // Gói chưa có approvalStatus (dữ liệu cũ) coi như đang chờ duyệt — giống thẻ trạng thái bên dưới.
+  const approvalOf = (pkg: ServicePackageItem) => pkg.approvalStatus ?? 'PENDING';
+  const searchedPackages = packages.filter((pkg) => matchesQuery(searchQuery, pkg.name));
+  const visiblePackages = searchedPackages
+    .filter((pkg) => approvalFilter === 'ALL' || approvalOf(pkg) === approvalFilter)
+    .sort((a, b) => {
+      if (sortBy === 'PRICE_ASC') return Number(a.basePrice) - Number(b.basePrice);
+      if (sortBy === 'PRICE_DESC') return Number(b.basePrice) - Number(a.basePrice);
+      return new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime();
+    });
+
   if (!mounted || !isAuthenticated) return null;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#F6F4FC] font-sans">
       <ProviderSidebar
         profile={profile}
-        onOpenCreatePackageModal={() => setIsModalOpen(true)}
+        onOpenCreatePackageModal={openCreateModal}
       />
 
       <div className="flex-1 h-screen flex flex-col min-w-0 overflow-hidden">
@@ -174,7 +243,7 @@ function PackagesPageContent() {
             <Button
               type="primary"
               icon={<PlusOutlined />}
-              onClick={() => setIsModalOpen(true)}
+              onClick={openCreateModal}
               className="!h-11 !px-5 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !font-semibold text-sm shadow-[0_4px_12px_rgba(96,39,210,0.25)]"
             >
               Tạo gói dịch vụ mới
@@ -208,15 +277,53 @@ function PackagesPageContent() {
               <Button
                 type="primary"
                 icon={<PlusOutlined />}
-                onClick={() => setIsModalOpen(true)}
+                onClick={openCreateModal}
                 className="mt-5 !h-10 !px-5 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !font-semibold"
               >
                 Tạo gói chăm sóc ngay
               </Button>
             </div>
           ) : (
+            <div className="flex flex-col gap-4">
+              <ListToolbar
+                query={searchQuery}
+                onQueryChange={setSearchQuery}
+                placeholder="Tìm tên gói…"
+                chips={PACKAGE_FILTERS.map((f) => ({
+                  ...f,
+                  count:
+                    f.value === 'ALL'
+                      ? searchedPackages.length
+                      : searchedPackages.filter((pkg) => approvalOf(pkg) === f.value).length,
+                }))}
+                activeChip={approvalFilter}
+                onChipChange={setApprovalFilter}
+                extra={
+                  <Select
+                    size="large"
+                    value={sortBy}
+                    onChange={setSortBy}
+                    aria-label="Sắp xếp gói"
+                    className="w-48"
+                    options={[
+                      { value: 'NEWEST', label: 'Mới tạo trước' },
+                      { value: 'PRICE_ASC', label: 'Giá thấp → cao' },
+                      { value: 'PRICE_DESC', label: 'Giá cao → thấp' },
+                    ]}
+                  />
+                }
+              />
+              {visiblePackages.length === 0 ? (
+                <NoResults
+                  label={searchQuery || PACKAGE_FILTERS.find((f) => f.value === approvalFilter)?.label || ''}
+                  onReset={() => {
+                    setSearchQuery('');
+                    setApprovalFilter('ALL');
+                  }}
+                />
+              ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {packages.map((pkg) => (
+              {visiblePackages.map((pkg) => (
                 <div
                   key={pkg.id}
                   className="bg-white rounded-2xl p-6 border border-[#ECE7FA] hover:border-[#6027D2] shadow-[0_4px_16px_rgba(96,39,210,0.04)] transition-all flex flex-col justify-between group"
@@ -225,7 +332,7 @@ function PackagesPageContent() {
                     <div className="flex items-start justify-between gap-3 mb-3">
                       <div>
                         <h3 className="font-bold text-base text-[#1E1B2E] group-hover:text-[#6027D2] transition-colors">
-                          {pkg.name}
+                          <Highlight text={pkg.name} query={searchQuery} />
                         </h3>
                         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                           {pkg.approvalStatus === 'APPROVED' ? (
@@ -318,14 +425,17 @@ function PackagesPageContent() {
 
                     <Button
                       type="default"
-                      onClick={() => message.info(`Chi tiết gói ${pkg.name}`)}
+                      icon={<EditOutlined />}
+                      onClick={() => openEditModal(pkg)}
                       className="!rounded-xl !border-[#ECE7FA] !text-[#6027D2] hover:!border-[#6027D2] !font-medium text-xs"
                     >
-                      Chi tiết
+                      Sửa gói
                     </Button>
                   </div>
                 </div>
               ))}
+            </div>
+              )}
             </div>
           )}
         </main>
@@ -335,14 +445,11 @@ function PackagesPageContent() {
           title={
             <div className="flex items-center gap-2 text-lg font-bold text-[#1E1B2E]">
               <AppstoreOutlined className="text-[#6027D2]" />
-              <span>Đăng ký Gói dịch vụ mới</span>
+              <span>{editingPackage ? 'Sửa gói dịch vụ' : 'Đăng ký Gói dịch vụ mới'}</span>
             </div>
           }
           open={isModalOpen}
-          onCancel={() => {
-            setIsModalOpen(false);
-            form.resetFields();
-          }}
+          onCancel={closeModal}
           footer={null}
           width={640}
           destroyOnClose
@@ -351,7 +458,7 @@ function PackagesPageContent() {
           <Form
             form={form}
             layout="vertical"
-            onFinish={handleCreatePackage}
+            onFinish={handleSubmitPackage}
             initialValues={{
               durationDays: 30,
               reportFrequencyDays: 7,
@@ -359,19 +466,26 @@ function PackagesPageContent() {
               basePrice: 500000,
               minDeclaredValue: 1000000,
               maxDeclaredValue: 5000000,
-              isActive: true,
             }}
             className="pt-3 space-y-4"
           >
+            {editingPackage && (
+              <div className="p-3 rounded-xl bg-[#FFFBEB] border border-[#FDE68A] text-xs text-[#92400E]">
+                Sau khi lưu, gói chuyển về <b>Chờ Admin duyệt</b> và <b>tạm ngưng bán</b> cho tới khi
+                Admin duyệt lại. Đơn khách đã đặt trước đó không bị ảnh hưởng.
+              </div>
+            )}
             <Form.Item
               name="name"
               label={<span className="font-semibold text-xs text-[#1E1B2E]">Tên gói dịch vụ</span>}
               rules={[
                 { required: true, message: 'Vui lòng nhập tên gói dịch vụ' },
                 { min: 2, message: 'Tên gói quá ngắn (tối thiểu 2 ký tự)' },
+                { max: 255, message: 'Tên gói tối đa 255 ký tự' },
               ]}
             >
               <Input
+                maxLength={255}
                 placeholder="VD: Gói chăm sóc lan đột biến cao cấp 30 ngày"
                 className="!rounded-xl !py-2.5"
               />
@@ -380,10 +494,15 @@ function PackagesPageContent() {
             <Form.Item
               name="description"
               label={<span className="font-semibold text-xs text-[#1E1B2E]">Mô tả chi tiết</span>}
-              rules={[{ required: true, message: 'Vui lòng nhập mô tả gói dịch vụ' }]}
+              rules={[
+                { required: true, whitespace: true, message: 'Vui lòng nhập mô tả gói dịch vụ' },
+                { max: 2000, message: 'Mô tả tối đa 2000 ký tự' },
+              ]}
             >
               <Input.TextArea
                 rows={3}
+                maxLength={2000}
+                showCount
                 placeholder="Mô tả quy trình chăm sóc, chất dinh dưỡng, tưới tiêu, chế độ ánh sáng..."
                 className="!rounded-xl"
               />
@@ -395,7 +514,7 @@ function PackagesPageContent() {
                 label={<span className="font-semibold text-xs text-[#1E1B2E]">Thời gian (ngày)</span>}
                 rules={[{ required: true, message: 'Bắt buộc' }]}
               >
-                <InputNumber min={1} className="w-full !rounded-xl !py-1" />
+                <InputNumber min={1} className="!w-full !rounded-xl !py-1" />
               </Form.Item>
 
               <Form.Item
@@ -403,7 +522,7 @@ function PackagesPageContent() {
                 label={<span className="font-semibold text-xs text-[#1E1B2E]">Tần suất báo cáo (ngày)</span>}
                 rules={[{ required: true, message: 'Bắt buộc' }]}
               >
-                <InputNumber min={1} className="w-full !rounded-xl !py-1" />
+                <InputNumber min={1} className="!w-full !rounded-xl !py-1" />
               </Form.Item>
 
               <Form.Item
@@ -411,7 +530,7 @@ function PackagesPageContent() {
                 label={<span className="font-semibold text-xs text-[#1E1B2E]">Số chậu lan tối đa</span>}
                 rules={[{ required: true, message: 'Bắt buộc' }]}
               >
-                <InputNumber min={1} className="w-full !rounded-xl !py-1" />
+                <InputNumber min={1} className="!w-full !rounded-xl !py-1" />
               </Form.Item>
             </div>
 
@@ -426,7 +545,7 @@ function PackagesPageContent() {
                   step={50000}
                   formatter={(val) => `${val}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
                   parser={(val) => (val ? (Number(val.replace(/\$\s?|(,*)/g, '')) as any) : 0)}
-                  className="w-full !rounded-xl !py-1"
+                  className="!w-full !rounded-xl !py-1"
                 />
               </Form.Item>
 
@@ -439,7 +558,7 @@ function PackagesPageContent() {
                   step={100000}
                   formatter={(val) => `${val}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
                   parser={(val) => (val ? (Number(val.replace(/\$\s?|(,*)/g, '')) as any) : 0)}
-                  className="w-full !rounded-xl !py-1"
+                  className="!w-full !rounded-xl !py-1"
                 />
               </Form.Item>
 
@@ -452,23 +571,19 @@ function PackagesPageContent() {
                   step={500000}
                   formatter={(val) => `${val}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
                   parser={(val) => (val ? (Number(val.replace(/\$\s?|(,*)/g, '')) as any) : 0)}
-                  className="w-full !rounded-xl !py-1"
+                  className="!w-full !rounded-xl !py-1"
                 />
               </Form.Item>
             </div>
 
-            <Form.Item name="isActive" valuePropName="checked" className="!mb-2">
-              <div className="flex items-center gap-3">
-                <Switch defaultChecked />
-                <span className="text-xs font-semibold text-[#1E1B2E]">
-                  Kích hoạt gói dịch vụ ngay sau khi tạo
-                </span>
-              </div>
-            </Form.Item>
+            {/* Không có công tắc mở bán: BE chỉ cho Admin bật/tắt (tạo/sửa gói luôn tạm ngưng chờ duyệt). */}
+            <p className="m-0 text-xs text-[#6E6A8A]">
+              Gói mở bán sau khi Admin duyệt. Muốn ngừng bán một gói thì xoá gói đó.
+            </p>
 
             <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#ECE7FA]">
               <Button
-                onClick={() => setIsModalOpen(false)}
+                onClick={closeModal}
                 className="!h-10 !px-5 !rounded-xl !bg-[#F6F4FC] !border-none !text-[#4B4764]"
               >
                 Hủy bỏ
@@ -479,7 +594,7 @@ function PackagesPageContent() {
                 loading={submitting}
                 className="!h-10 !px-6 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !font-semibold shadow-sm"
               >
-                Đăng ký gói
+                {editingPackage ? 'Lưu & gửi duyệt lại' : 'Đăng ký gói'}
               </Button>
             </div>
           </Form>
