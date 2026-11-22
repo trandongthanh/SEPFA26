@@ -315,7 +315,7 @@ export default function AdminPackagesPage() {
             {stat('Đã từ chối', counts.REJECTED, 'text-[#C0262D]')}
           </div>
 
-          <div className="bg-white rounded-2xl border border-[#ECE7FA] p-5 shadow-xs space-y-4">
+          <div className="bg-white rounded-2xl border border-[#ECE7FA] p-5 shadow-xs flex flex-col gap-4">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               <div className="max-w-full overflow-x-auto">
                 <Segmented
@@ -426,7 +426,7 @@ export default function AdminPackagesPage() {
         }
       >
         {sel && (
-          <div className="space-y-4">
+          <div className="flex flex-col gap-4">
             {sel.provider && sel.provider.verificationStatus !== 'APPROVED' && (
               <Alert
                 type="warning"
@@ -466,7 +466,7 @@ export default function AdminPackagesPage() {
               </Button>
             )}
             {selState === 'PENDING' && rejecting && (
-              <div className="space-y-1">
+              <div className="flex flex-col gap-1">
                 <label htmlFor="reject-reason" className="text-sm font-semibold text-[#1E1B2E]">
                   Lý do từ chối <span className="text-[#C0262D]">*</span>
                 </label>
