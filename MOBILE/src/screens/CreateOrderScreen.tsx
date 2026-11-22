@@ -19,6 +19,7 @@ import { customerService } from '../services/customerService';
 import { uploadService } from '../services/uploadService';
 import { providerService } from '../services/providerService';
 import { calculateRoadDistanceKm } from '../utils/distance';
+import { customerFeeFor } from '../components/order/orderMoney';
 
 interface CreateOrderScreenProps {
   navigation: any;
@@ -160,7 +161,8 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
   // Submit state
   const [submitting, setSubmitting] = useState<boolean>(false);
 
-  const priceVal = pkg.price || Number(pkg.basePrice || 0);
+  // BE trả basePrice (chuỗi số); `price` chỉ còn để đọc dữ liệu cũ truyền qua navigation.
+  const priceVal = Number(pkg.basePrice || 0) || Number(pkg.price || 0);
   const pkgMin = pkg.minDeclaredValue != null && Number(pkg.minDeclaredValue) > 0 ? Number(pkg.minDeclaredValue) : null;
   const pkgMax = pkg.maxDeclaredValue != null && Number(pkg.maxDeclaredValue) > 0 ? Number(pkg.maxDeclaredValue) : null;
 
@@ -177,7 +179,11 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
 
   const pickupFeeNumber = pickupQuote ? Number(pickupQuote.pickupFee) : 0;
   const packageTotalNumber = priceVal * plants.length;
-  const grandTotalEstimate = packageTotalNumber + pickupFeeNumber + declaredDepositTotal;
+  // Phí dịch vụ 6% khách trả thêm — CHỈ trên giá gói, cùng công thức BE customerFeeFor.
+  // Thiếu khoản này thì tổng hiện ra thấp hơn số tiền QR bắt khách chuyển.
+  const customerFeeNumber = customerFeeFor(packageTotalNumber);
+  const grandTotalEstimate =
+    packageTotalNumber + customerFeeNumber + pickupFeeNumber + declaredDepositTotal;
 
   // Handlers for plants
   const handleAddPlant = () => {
@@ -355,16 +361,15 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
           error?.message ||
           'Không thể tạo đơn hàng. Vui lòng kiểm tra lại kết nối.';
 
-      // Nếu BE trả 403 gộp chung thiếu SĐT / thiếu mặt sau CCCD / chưa xác thực -> kiểm tra chi tiết hồ sơ để báo đúng nguyên nhân
+      // BE trả 403 PROFILE_NOT_APPROVED gộp 2 lý do: chưa xác thực (APPROVED) hoặc chưa có SĐT
+      // (orders.service createOrder) -> đọc lại hồ sơ để báo đúng nguyên nhân.
       if (error?.response?.status === 403) {
         try {
           const prof = await customerService.getMyProfile();
-          if (prof?.verificationStatus === 'APPROVED') {
-            if (!prof.phone) {
-              errMsg = 'Tài khoản đã xác thực nhưng chưa có Số điện thoại. Vui lòng cập nhật Số điện thoại trong mục Cá nhân -> Thông tin cá nhân trước khi đặt đơn.';
-            } else if (!prof.cccdBackUrl) {
-              errMsg = 'Hồ sơ của bạn hiện thiếu ảnh mặt sau CCCD trên hệ thống (do tài khoản cũ chưa chụp mặt sau). Vui lòng liên hệ quản trị viên để cập nhật lại hoặc dùng tài khoản mới quét đủ 2 mặt CCCD.';
-            }
+          if (prof?.verificationStatus !== 'APPROVED') {
+            errMsg = 'Tài khoản chưa được xác thực. Vui lòng vào mục Cá nhân -> Xác thực bằng eKYC trước khi đặt đơn.';
+          } else if (!prof.phone) {
+            errMsg = 'Tài khoản đã xác thực nhưng chưa có Số điện thoại. Vui lòng cập nhật Số điện thoại trong mục Cá nhân -> Thông tin cá nhân trước khi đặt đơn.';
           }
         } catch (_) {}
       }
@@ -671,6 +676,7 @@ export const CreateOrderScreen: React.FC<CreateOrderScreenProps> = ({
           </Text>
           <Text style={styles.footerShippingNote}>
             Gói ({packageTotalNumber.toLocaleString('vi-VN')}đ)
+            {customerFeeNumber > 0 ? ` + Phí dịch vụ 6% (${customerFeeNumber.toLocaleString('vi-VN')}đ)` : ''}
             {pickupFeeNumber > 0 ? ` + Phí lấy (${pickupFeeNumber.toLocaleString('vi-VN')}đ)` : ''}
             {declaredDepositTotal > 0 ? ` + Bảo đảm (${declaredDepositTotal.toLocaleString('vi-VN')}đ - hoàn 100%)` : ''}
           </Text>

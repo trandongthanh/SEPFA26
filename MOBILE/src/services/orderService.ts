@@ -114,7 +114,72 @@ export interface OrderItem {
   careReportSchedule?: CareReportSchedule | null;
   declaredDepositTotal?: string;
   settlement?: CustomerSettlement | null;
+  // Các mốc giờ BE trả kèm chi tiết đơn (orders.service getOrderDetail).
+  deadlines?: OrderDeadlines;
+  // Lúc tiền đơn về (SePay). null = chưa từng trả, kể cả đơn huỷ trước khi trả (BE PR #48).
+  paidAt?: string | null;
+  // Chỉ có khi đơn PAID: "huỷ bây giờ nhận lại bao nhiêu" (order-cancel.service previewCancel).
+  cancelPreview?: CancelPreview | null;
+  // Chỉ có khi khách còn bấm được "Không giao cây" (cancel-rules isDeclineOpen) — previewDecline.
+  declinePreview?: DeclinePreview | null;
+  // Tranh chấp của đơn (mỗi đơn tối đa 1) — chi tiết đầy đủ ở GET /orders/:id/dispute.
+  dispute?: OrderDisputeSummary | null;
+  cancelledBy?: 'CUSTOMER' | 'PROVIDER' | 'SYSTEM' | null;
+  cancelCode?: string | null;
+  cancelReason?: string | null;
+  cancelledAt?: string | null;
 }
+
+export interface OrderDeadlines {
+  providerRespondDueAt: string | null;
+  agreementDueAt: string | null;
+  paymentDueAt: string | null;
+  // Khách huỷ đơn đã thanh toán miễn phí tới mốc này (giờ hẹn − 3 giờ).
+  freeCancelUntil: string;
+  // Từ mốc này (giờ hẹn + 30 phút) khách mới báo được "vườn không tới".
+  noShowFrom: string;
+}
+
+// Mã huỷ khi khách bấm huỷ đơn đã thanh toán (BE cancel-rules decideCancel).
+export type CustomerPaidCancelCode =
+  | 'CUSTOMER_CANCELLED_FREE'
+  | 'CUSTOMER_CANCELLED_LATE'
+  | 'PROVIDER_NO_SHOW';
+
+export interface CancelPreview {
+  cancelCode: CustomerPaidCancelCode;
+  refundAmount: string;
+  declaredDepositReturned: string;
+  // Phần vườn giữ (phí lấy cây) nếu huỷ lúc này; huỷ miễn phí → "0".
+  pickupFeeKept: string;
+}
+
+// Khách không giao cây: vườn giữ phí lấy cây (KEEP_PICKUP_FEE). Đơn mẫu 424.000 / 300.000 / 60.000.
+export interface DeclinePreview {
+  refundAmount: string;
+  declaredDepositReturned: string;
+  pickupFeeKept: string;
+}
+
+export interface OrderDisputeSummary {
+  id: string;
+  status: DisputeStatus;
+  outcome: DisputeOutcome | null;
+  negotiationDueAt: string | null;
+  adminDueAt: string | null;
+}
+
+// Response POST /orders/:id/cancel (khách) và POST /orders/:id/handover/decline.
+export interface CustomerCancelResult {
+  status: string;
+  cancelCode?: string;
+  refundAmount: string;
+  declaredDepositReturned: string;
+}
+
+// Khách rút / huỷ được ở các trạng thái này (BE decideCancel, vai CUSTOMER). Trạng thái khác → 409.
+export const CUSTOMER_WITHDRAW_STATUSES = ['PENDING_PROVIDER', 'AGREEMENT_PENDING', 'AWAITING_PAYMENT'];
+export const CANCEL_REASON_MAX = 500;
 
 export interface CustomerSettlement {
   packageAmount: string;
@@ -260,6 +325,24 @@ export const orderService = {
    */
   async confirmHandover(orderId: string): Promise<any> {
     const response = await apiClient.post(`/orders/${orderId}/handover/confirm`, {});
+    return response.data;
+  },
+
+  /**
+   * Khách rút / huỷ đơn trước khi vườn mở phiên nhận cây (POST /orders/:orderId/cancel).
+   * Chỉ gửi lý do — mã lý do và số tiền hoàn do BE quyết theo trạng thái đơn và giờ hẹn.
+   */
+  async cancelOrder(orderId: string, reason: string): Promise<CustomerCancelResult> {
+    const response = await apiClient.post<CustomerCancelResult>(`/orders/${orderId}/cancel`, { reason });
+    return response.data;
+  },
+
+  /**
+   * Khách không giao cây sau khi xem biên bản nhận cây (POST /orders/:orderId/handover/decline).
+   * Vườn giữ phí lấy cây, khách nhận lại phần còn lại.
+   */
+  async declineHandover(orderId: string, reason: string): Promise<CustomerCancelResult> {
+    const response = await apiClient.post<CustomerCancelResult>(`/orders/${orderId}/handover/decline`, { reason });
     return response.data;
   },
 
@@ -429,8 +512,24 @@ export interface AddonPaymentQrResponse {
   transferContent: string;
 }
 
+// Đúng mã BE (BE/src/orders/dispute-rules.ts).
 export type DisputeStatus = 'NEGOTIATING' | 'ADMIN_REVIEW' | 'RESOLVED';
-export type DisputeOutcome = 'OFFER_ACCEPTED' | 'WITHDRAWN' | 'ADMIN_RESOLVED';
+// AGREED hai bên đồng ý 1 đề nghị · WITHDRAWN khách rút · ADJUDICATED admin phân xử.
+export type DisputeOutcome = 'AGREED' | 'WITHDRAWN' | 'ADJUDICATED';
+// Kết luận admin cho từng cây: NOT_AT_FAULT vườn không lỗi · SERVICE_FAULT vườn lỗi, hoàn tiền công cây đó ·
+// VALUE_LOST vườn lỗi và cây mất giá trị: hoàn tiền công + đền trọn mức đền.
+export type DisputeVerdict = 'NOT_AT_FAULT' | 'SERVICE_FAULT' | 'VALUE_LOST';
+
+export const DISPUTE_OUTCOME_LABELS: Record<DisputeOutcome, string> = {
+  AGREED: 'Hai bên đã thống nhất',
+  WITHDRAWN: 'Khách đã rút khiếu nại',
+  ADJUDICATED: 'Ban quản trị đã phân xử',
+};
+export const DISPUTE_VERDICT_LABELS: Record<DisputeVerdict, string> = {
+  NOT_AT_FAULT: 'Vườn không có lỗi',
+  SERVICE_FAULT: 'Vườn có lỗi, hoàn tiền công cây này',
+  VALUE_LOST: 'Cây mất giá trị, hoàn tiền công + đền trọn mức đền',
+};
 
 export interface DisputeEvidenceItem {
   id: string;
@@ -448,7 +547,7 @@ export interface DisputeOfferItem {
   compensationAmount: string;
   customerReceives: string;
   message: string | null;
-  status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'SUPERSEDED';
+  status: 'PENDING' | 'ACCEPTED' | 'SUPERSEDED'; // BE không có REJECTED
   respondedAt: string | null;
   createdAt: string;
 }
@@ -457,7 +556,7 @@ export interface DisputePlantItem {
   plantId: string;
   name: string | null;
   compensationCap: string | null;
-  verdict: 'UPHELD' | 'DISMISSED' | null;
+  verdict: DisputeVerdict | null;
 }
 
 export interface DisputeDetail {

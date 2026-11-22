@@ -180,7 +180,7 @@ export function CareReportsSection({
   );
 
   return (
-    <section className="bg-white rounded-2xl border border-[#ECE7FA] p-5 space-y-3">
+    <section className="bg-white rounded-2xl border border-[#ECE7FA] p-5 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h3 className="text-sm font-bold text-[#1E1B2E] m-0">
           Báo cáo chăm sóc {reports ? `(${reports.length} kỳ)` : ''}
@@ -223,7 +223,7 @@ export function AddonsSection({ orderId }: { orderId: string }) {
   }, [orderId]);
 
   return (
-    <section className="bg-white rounded-2xl border border-[#ECE7FA] p-5 space-y-3">
+    <section className="bg-white rounded-2xl border border-[#ECE7FA] p-5 flex flex-col gap-3">
       <h3 className="text-sm font-bold text-[#1E1B2E] m-0">
         Add-on – dịch vụ phát sinh {addons ? `(${addons.length})` : ''}
       </h3>

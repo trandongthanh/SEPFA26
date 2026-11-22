@@ -8,10 +8,10 @@ export interface ProviderProfileResponse {
   bio?: string | null;
   licenseInfo?: string | null;
   portfolioUrl?: string | null;
-  selfieUrl?: string | null;
-  cccdFrontUrl?: string | null;
-  cccdBackUrl?: string | null;
   businessLicenseUrl?: string | null;
+  // Người đại diện — in vào hợp đồng. BE KHÔNG thu số CCCD hay ảnh giấy tờ/chân dung.
+  dateOfBirth?: string | null;
+  placeOfOrigin?: string | null;
   verificationStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
   verificationNote?: string | null;
   ratingAvg?: string | null;
@@ -25,8 +25,8 @@ export interface ProviderProfileResponse {
   bankName?: string | null;
   bankAccount?: string | null;
   bankHolder?: string | null;
+  bankBin?: string | null;
   phone?: string | null;
-  cccdNumber?: string | null;
   account?: {
     id: string;
     fullName: string;
@@ -43,10 +43,10 @@ export interface UpsertProfilePayload {
   licenseInfo?: string;
   portfolioUrl?: string;
   phone?: string;
-  cccdNumber?: string;
-  selfieUrl?: string;
-  cccdFrontUrl?: string;
-  cccdBackUrl?: string;
+  // Không gửi field nào ngoài DTO: BE bật forbidNonWhitelisted → field lạ (vd cccdNumber cũ) bị 400.
+  fullName?: string;
+  dateOfBirth?: string;
+  placeOfOrigin?: string;
   businessLicenseUrl?: string;
   address?: string;
   gpsLat?: number;
@@ -58,6 +58,16 @@ export interface UpsertProfilePayload {
   bankName?: string;
   bankAccount?: string;
   bankHolder?: string;
+}
+
+// Body POST /orders/:id/handover/cancel (BE: orders/dto/cancel-handover.dto.ts).
+export type HandoverCancelReasonCode = 'CUSTOMER_ABSENT' | 'PROVIDER_CANNOT_SERVE';
+export const HANDOVER_CANCEL_MAX_PHOTOS = 5;
+export const HANDOVER_CANCEL_REASON_MAX = 500;
+export interface CancelHandoverPayload {
+  reason: string; // bắt buộc, tối đa 500 ký tự
+  reasonCode?: HandoverCancelReasonCode;
+  photos?: { photoUrl: string; gpsLat?: number; gpsLng?: number }[]; // tối đa 5
 }
 
 export type OrderStatus =
@@ -99,6 +109,10 @@ export interface OrderItem {
   provisionalTotal: string;
   finalTotal?: string;
   scheduledPickupAt: string;
+  // Hạn chờ của từng bước (cột của đơn, có trong cả danh sách và chi tiết).
+  providerRespondDueAt?: string | null;
+  agreementDueAt?: string | null;
+  paymentDueAt?: string | null;
   careDueAt?: string | null;
   careReportSchedule?: CareReportSchedule | null;
   handoverStatus?: string | null;
@@ -142,7 +156,7 @@ export interface CreatePackagePayload {
   basePrice: number;
   minDeclaredValue: number;
   maxDeclaredValue: number;
-  isActive?: boolean;
+  // Không gửi isActive: BE bỏ qua, chỉ Admin bật/tắt mở bán (tạo/sửa gói luôn isActive=false).
 }
 
 export type SubstrateMoisture = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -259,9 +273,10 @@ export const providerApi = {
     return res.data;
   },
 
-  // Danh sách đơn hàng phía Provider
-  listOrders: async (status?: string) => {
-    const params = status ? { status } : {};
+  // Danh sách đơn hàng phía Provider — BE phân trang, KHÔNG truyền limit thì BE chỉ trả 10 đơn.
+  listOrders: async (status?: string, page = 1, limit = 10) => {
+    const params: Record<string, string | number> = { page, limit };
+    if (status) params.status = status;
     const res = await api.get<any>('/api/v1/orders', { params });
     const raw = res.data;
     const items: OrderItem[] = Array.isArray(raw)
@@ -275,6 +290,20 @@ export const providerApi = {
       items,
       total: raw?.total ?? items.length,
     };
+  },
+
+  // Tải HẾT đơn (mỗi lần 50 — mức tối đa BE cho) để FE tự tìm/lọc/phân trang.
+  // BE chưa có tham số tìm theo từ khoá nên không lọc phía server được.
+  listAllOrders: async (status?: string) => {
+    const PAGE_SIZE = 50;
+    const MAX_PAGES = 40; // chặn vòng lặp vô hạn nếu BE trả total sai (tối đa 2.000 đơn)
+    const all: OrderItem[] = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const { items, total } = await providerApi.listOrders(status, page, PAGE_SIZE);
+      all.push(...items);
+      if (items.length < PAGE_SIZE || all.length >= total) break;
+    }
+    return all;
   },
 
   // Chi tiết đơn hàng phía Provider
@@ -319,6 +348,13 @@ export const providerApi = {
     return res.data;
   },
 
+  // Sửa gói (PUT /api/v1/providers/me/packages/:packageId). DTO bắt buộc gửi đủ 8 trường.
+  // BE: sửa xong gói luôn về "Chờ duyệt" và TẠM NGƯNG bán (isActive=false) tới khi Admin duyệt lại.
+  updatePackage: async (packageId: string, payload: CreatePackagePayload) => {
+    const res = await api.put<ServicePackageItem>(`/api/v1/providers/me/packages/${packageId}`, payload);
+    return res.data;
+  },
+
   // Xóa gói dịch vụ
   deletePackage: async (packageId: string) => {
     await api.delete(`/api/v1/providers/me/packages/${packageId}`);
@@ -349,7 +385,7 @@ export const providerApi = {
     return res.data;
   },
 
-  // Upload tài liệu / CCCD lên Cloudinary (POST /api/v1/uploads/provider-document)
+  // Upload ảnh giấy phép kinh doanh / chứng chỉ lên Cloudinary (POST /api/v1/uploads/provider-document)
   uploadDocument: async (file: File) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -386,6 +422,26 @@ export const providerApi = {
   // Hoàn tất thẩm định bàn giao (POST /api/v1/orders/:orderId/handover/complete)
   completeHandover: async (orderId: string, payload?: { proposedFinalTotal?: string }) => {
     const res = await api.post(`/api/v1/orders/${orderId}/handover/complete`, payload || {});
+    return res.data;
+  },
+
+  // Vườn huỷ đơn trước khi mở phiên nhận cây (POST /api/v1/orders/:orderId/cancel) — body chỉ { reason },
+  // mã lý do và tiền hoàn do BE tự quyết theo trạng thái đơn.
+  cancelOrder: async (orderId: string, reason: string) => {
+    const res = await api.post<{ status: 'CANCELLED'; cancelCode: string }>(`/api/v1/orders/${orderId}/cancel`, {
+      reason,
+    });
+    return res.data;
+  },
+
+  // Vườn huỷ ở chặng nhận cây (POST /api/v1/orders/:orderId/handover/cancel) — khớp CancelHandoverDto:
+  //  - phiên AWAITING_DEPOSIT (chờ vườn nộp bảo đảm): chỉ cần `reason`;
+  //  - phiên IN_PROGRESS / AWAITING_CUSTOMER: bắt buộc `reasonCode`; CUSTOMER_ABSENT bắt buộc 1–5 ảnh.
+  cancelHandover: async (orderId: string, payload: CancelHandoverPayload) => {
+    const res = await api.post<{ status: 'CANCELLED'; cancelCode: string }>(
+      `/api/v1/orders/${orderId}/handover/cancel`,
+      payload,
+    );
     return res.data;
   },
 

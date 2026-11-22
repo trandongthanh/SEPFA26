@@ -125,12 +125,5 @@ export const ekycService = {
     const response = await apiClient.post<{ success: boolean; message: string }>('/ekyc/retry');
     return response.data;
   },
-
-  /**
-   * Lấy Signed URL xem ảnh CCCD/Selfie bảo mật có thời hạn
-   */
-  async getDocumentUrl(field: 'front' | 'back' | 'selfie'): Promise<{ url: string }> {
-    const response = await apiClient.get<{ url: string }>(`/ekyc/documents/${field}`);
-    return response.data;
-  },
+  // GET /ekyc/documents/:field đã ngừng phục vụ — BE không lưu ảnh CCCD/chân dung nữa.
 };

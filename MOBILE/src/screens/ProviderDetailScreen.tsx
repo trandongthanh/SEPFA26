@@ -56,11 +56,16 @@ export const ProviderDetailScreen: React.FC<ProviderDetailScreenProps> = ({
     loadData();
   }, [providerId]);
 
-  const formatPrice = (price: number) => {
+  // basePrice là chuỗi số từ BE; giá trị lạ thì hiện "Liên hệ" thay vì "NaN ₫".
+  const formatPrice = (price: string | number | null | undefined) => {
+    const value = Number(price);
+    if (price === null || price === undefined || price === '' || !Number.isFinite(value)) {
+      return 'Liên hệ';
+    }
     return new Intl.NumberFormat('vi-VN', {
       style: 'currency',
       currency: 'VND',
-    }).format(price);
+    }).format(value);
   };
 
   if (loading) {
@@ -200,7 +205,7 @@ export const ProviderDetailScreen: React.FC<ProviderDetailScreenProps> = ({
                 <View style={styles.packageCardHeader}>
                   <Text style={styles.packageName}>{pkg.name}</Text>
                   <Text style={styles.packagePrice}>
-                    {formatPrice(pkg.price)}
+                    {formatPrice(pkg.basePrice)}
                   </Text>
                 </View>
 

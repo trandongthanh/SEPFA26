@@ -145,12 +145,13 @@ function NewReportPageContent() {
     const init = async () => {
       setLoading(true);
       try {
-        const [prof, inCareRes] = await Promise.all([
+        // Tải HẾT đơn đang chăm sóc (trước đây chỉ 10 đơn đầu → vườn đông đơn không chọn được đơn cũ).
+        const [prof, inCare] = await Promise.all([
           providerApi.getProfile().catch(() => null),
-          providerApi.listOrders('IN_CARE').catch(() => ({ items: [] })),
+          providerApi.listAllOrders('IN_CARE').catch(() => []),
         ]);
         setProfile(prof);
-        setInCareOrders(Array.isArray(inCareRes?.items) ? inCareRes.items : []);
+        setInCareOrders(inCare);
       } finally {
         setLoading(false);
       }
@@ -299,7 +300,7 @@ function NewReportPageContent() {
         <ProviderHeader profile={profile} />
 
         <main className="flex-1 p-6 overflow-y-auto">
-          <div className="max-w-5xl mx-auto space-y-6 pb-10">
+          <div className="max-w-5xl mx-auto flex flex-col gap-6 pb-10">
             {/* Top Bar */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
@@ -340,7 +341,7 @@ function NewReportPageContent() {
                 className="space-y-6"
               >
                 {/* Card 1: Chọn đơn hàng */}
-                <section className="bg-white rounded-2xl p-6 border border-[#ECE7FA] shadow-sm space-y-4">
+                <section className="bg-white rounded-2xl p-6 border border-[#ECE7FA] shadow-sm flex flex-col gap-4">
                   <h2 className="text-sm font-bold text-[#1E1B2E]">
                     1. Chọn đơn hàng đang chăm sóc
                   </h2>

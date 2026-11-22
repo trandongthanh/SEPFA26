@@ -404,7 +404,7 @@ export default function AdminDisbursementsPage() {
           </div>
 
           {/* Filter & Table */}
-          <div className="bg-white rounded-2xl border border-[#ECE7FA] p-5 shadow-xs space-y-4">
+          <div className="bg-white rounded-2xl border border-[#ECE7FA] p-5 shadow-xs flex flex-col gap-4">
             <Segmented
               value={statusFilter}
               onChange={(val) => {
@@ -457,7 +457,7 @@ export default function AdminDisbursementsPage() {
         centered
       >
         {selectedItem && (
-          <div className="space-y-4 pt-2">
+          <div className="flex flex-col gap-4 pt-2">
             <div className="p-3.5 rounded-xl bg-[#FAF8FE] border border-[#ECE7FA] text-xs space-y-1">
               <div className="flex justify-between">
                 <span className="text-[#6E6A8A]">Loại lệnh chi:</span>
