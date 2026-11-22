@@ -9,7 +9,6 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
-  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -57,12 +56,6 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
     message?: string;
     rejectionReason?: string;
   } | null>(null);
-
-  // Image Preview Modal
-  const [previewModalVisible, setPreviewModalVisible] = useState<boolean>(false);
-  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
-  const [previewTitle, setPreviewTitle] = useState<string>('');
-  const [loadingPreview, setLoadingPreview] = useState<boolean>(false);
 
   useEffect(() => {
     loadCurrentEkycStatus();
@@ -282,22 +275,6 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
       Alert.alert('Lỗi', err?.message || 'Không thể thiết lập lại phiên eKYC.');
     } finally {
       setInitialLoading(false);
-    }
-  };
-
-  // Xem ảnh bảo mật (khi đã VERIFIED)
-  const handleViewDocument = async (field: 'front' | 'back' | 'selfie', title: string) => {
-    try {
-      setLoadingPreview(true);
-      setPreviewTitle(title);
-      setPreviewModalVisible(true);
-      const res = await ekycService.getDocumentUrl(field);
-      setPreviewImageUrl(res.url);
-    } catch (err: any) {
-      Alert.alert('Lỗi', 'Không thể tải hình ảnh lúc này. Vui lòng thử lại sau.');
-      setPreviewModalVisible(false);
-    } finally {
-      setLoadingPreview(false);
     }
   };
 
@@ -742,24 +719,6 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
                   </View>
                 </View>
 
-                {/* Secure Documents Viewer Buttons */}
-                <View style={styles.secureDocsRow}>
-                  <TouchableOpacity
-                    style={styles.secureDocBtn}
-                    onPress={() => handleViewDocument('front', 'Mặt trước thẻ CCCD')}
-                  >
-                    <Ionicons name="id-card-outline" size={14} color="#6025D2" />
-                    <Text style={styles.secureDocBtnText}>Xem CCCD trước</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.secureDocBtn}
-                    onPress={() => handleViewDocument('selfie', 'Ảnh chân dung Selfie')}
-                  >
-                    <Ionicons name="person-outline" size={14} color="#6025D2" />
-                    <Text style={styles.secureDocBtnText}>Xem ảnh Selfie</Text>
-                  </TouchableOpacity>
-                </View>
-
                 <TouchableOpacity
                   style={styles.doneBtn}
                   onPress={() => navigation.goBack()}
@@ -831,36 +790,6 @@ export const EkycScreen: React.FC<EkycScreenProps> = ({ navigation }) => {
           </View>
         )}
       </ScrollView>
-
-      {/* MODAL XEM ẢNH BẢO MẬT */}
-      <Modal
-        visible={previewModalVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setPreviewModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalInner}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalHeaderTitle}>{previewTitle}</Text>
-              <TouchableOpacity onPress={() => setPreviewModalVisible(false)}>
-                <Ionicons name="close-circle" size={24} color="#64748B" />
-              </TouchableOpacity>
-            </View>
-
-            {loadingPreview ? (
-              <View style={styles.modalLoadingBox}>
-                <ActivityIndicator size="large" color="#6025D2" />
-                <Text style={styles.loadingText}>Đang tải ảnh giấy tờ...</Text>
-              </View>
-            ) : previewImageUrl ? (
-              <Image source={{ uri: previewImageUrl }} style={styles.modalPreviewImage} resizeMode="contain" />
-            ) : (
-              <Text style={styles.loadingText}>Không thể hiển thị ảnh</Text>
-            )}
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 };
