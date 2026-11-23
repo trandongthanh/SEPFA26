@@ -248,6 +248,7 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
       declaredDeposit: '300000',
       declaredDepositReturned: '0',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     });
   });
 
@@ -290,11 +291,17 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
     expect((await declaredComponent(id)).status).toBe('PAID');
   });
 
-  it('khách chuyển dư 10.000 → phần dư vào sổ đơn, sổ khai giá vẫn đúng 300.000', async () => {
+  it('khách chuyển dư 10.000 → phần dư thối lại ngay (lệnh chi OVERPAY_RETURN), sổ đơn 484.000, sổ khai giá vẫn đúng 300.000', async () => {
     const { c } = await toAwaitingPayment();
     await seed.webhook(c.order.orderCode, '794000').expect(200);
-    expect(await balance(c.order.orderId, 'ORDER')).toBe('494000');
+    expect(await balance(c.order.orderId, 'ORDER')).toBe('484000');
     expect(await balance(c.order.orderId, 'DECLARED')).toBe('300000');
+    expect(
+      await sql(
+        `SELECT type, amount FROM disbursements WHERE service_order_id = $1`,
+        [c.order.orderId],
+      ),
+    ).toEqual([{ type: 'OVERPAY_RETURN', amount: '10000' }]);
   });
 
   it('đơn xong không tranh chấp → trả đủ 300.000 cho khách, chi được ngay, ba sổ về 0', async () => {
@@ -323,6 +330,7 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
     expect(view.settlement).toMatchObject({
       declaredDepositReturned: '300000',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     });
   });
 
@@ -381,6 +389,7 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
     expect(forCustomer.settlement).toMatchObject({
       declaredDepositReturned: '0',
       declaredDepositForfeited: '300000',
+      overpayReturned: '0',
     });
     const forProvider = await detail(id, c.provider.auth);
     expect(forProvider.settlement.declaredForfeitReceived).toBe('300000');

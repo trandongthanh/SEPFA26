@@ -602,7 +602,8 @@ export class HandoverService {
   /**
    * POST /orders/:id/return/start — vườn bắt đầu trả cây (IN_CARE → RETURN_IN_PROGRESS).
    * Chỉ khi đã hết hạn chăm (care_due_at); trả sớm = dừng giữa chừng, làm sau.
-   * Còn add-on đã trả tiền mà chưa báo xong thì chưa trả cây được (ADDON_OPEN).
+   * Còn add-on đã trả tiền mà chưa báo xong thì chưa trả cây được (ADDON_OPEN); còn add-on khách đã đồng ý
+   * và đang trong hạn trả tiền thì cũng chờ (ADDON_AWAITING_PAYMENT).
    */
   async startReturn(accountId: string, orderId: string) {
     const order = await this.getOrderAsProvider(accountId, orderId);

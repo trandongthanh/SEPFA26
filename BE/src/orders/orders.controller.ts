@@ -314,7 +314,7 @@ export class OrdersController {
   @ApiResponse({
     status: 409,
     description:
-      'CARE_NOT_DUE | INVALID_STATE_TRANSITION | ADDON_OPEN (còn add-on khách đã trả tiền mà vườn chưa báo xong)',
+      'CARE_NOT_DUE | INVALID_STATE_TRANSITION | ADDON_OPEN (còn add-on khách đã trả tiền mà vườn chưa báo xong hoặc trả lại) | ADDON_AWAITING_PAYMENT (còn add-on khách đã đồng ý, đang trong 24 giờ trả tiền)',
   })
   @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
   @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })

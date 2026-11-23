@@ -51,8 +51,9 @@ export async function expireOverdueAddons(
  * Vườn bắt đầu trả cây — gọi BÊN TRONG transaction đã khoá dòng đơn.
  * - Còn add-on khách đã trả tiền mà vườn chưa báo xong → 409 ADDON_OPEN (phải làm xong rồi mới trả cây,
  *   vì tiền add-on chia cùng đơn và phí chỉ tính trên việc đã làm).
- * - Đề xuất còn chờ trả lời / chờ trả tiền → đóng thành EXPIRED (ORDER_RETURNING): cây sắp về nhà khách,
- *   không còn làm thêm được nữa.
+ * - Khách đã đồng ý, còn trong hạn trả tiền 24 giờ → 409 ADDON_AWAITING_PAYMENT (chờ khách trả hoặc quá hạn).
+ * - Đề xuất còn chờ trả lời (hoặc đã quá hạn trả tiền) → đóng thành EXPIRED (ORDER_RETURNING / lý do quá hạn):
+ *   cây sắp về nhà khách, không còn làm thêm được nữa.
  */
 export async function closeAddonsForReturn(
   manager: EntityManager,
@@ -68,6 +69,16 @@ export async function closeAddonsForReturn(
   });
   if (open.some((proposal) => proposal.status === 'PAID')) {
     throw new ConflictException('ADDON_OPEN');
+  }
+  // Khách đã đồng ý và còn trong 24 giờ trả tiền → chờ (chốt 23/11): đóng lúc này thì khách vừa quét QR
+  // xong tiền đã rơi vào hộp chờ admin hoàn tay. Quá hạn thì overdueReason ra NOT_PAID, đóng như thường.
+  if (
+    open.some(
+      (proposal) =>
+        proposal.status === 'ACCEPTED' && !overdueReason(proposal, now),
+    )
+  ) {
+    throw new ConflictException('ADDON_AWAITING_PAYMENT');
   }
   for (const proposal of open) {
     await expireAddon(

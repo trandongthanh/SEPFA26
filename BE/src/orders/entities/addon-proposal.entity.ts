@@ -23,7 +23,7 @@ import { ServiceOrder } from './service-order.entity';
 @Entity({ name: 'addon_proposals' })
 @Check(
   'CHK_addon_proposals_status',
-  `"status" IN ('PENDING','ACCEPTED','PAID','DONE','REJECTED','EXPIRED')`,
+  `"status" IN ('PENDING','ACCEPTED','PAID','DONE','REJECTED','EXPIRED','REFUNDED')`,
 )
 @Check('CHK_addon_proposals_price', `"price" > 0`)
 @Check(
@@ -129,4 +129,18 @@ export class AddonProposal extends BaseEntity {
   @ManyToOne(() => Account, { onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'created_by_account_id' })
   createdBy!: Account;
+
+  // Vườn trả lại add-on đã thu tiền (PAID → REFUNDED): lúc nào, ai bấm, vì sao. Không tính vi phạm, chỉ lưu vết.
+  @Column({ type: 'timestamptz', name: 'refunded_at', nullable: true })
+  refundedAt!: Date | null;
+
+  @Column({ type: 'uuid', name: 'refunded_by_account_id', nullable: true })
+  refundedByAccountId!: string | null;
+
+  @ManyToOne(() => Account, { onDelete: 'RESTRICT', nullable: true })
+  @JoinColumn({ name: 'refunded_by_account_id' })
+  refundedBy!: Account | null;
+
+  @Column({ type: 'text', name: 'refund_reason', nullable: true })
+  refundReason!: string | null;
 }

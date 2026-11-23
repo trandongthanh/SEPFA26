@@ -3,6 +3,7 @@ import { EntityManager } from 'typeorm';
 import { ServiceOrder } from '../orders/entities/service-order.entity';
 import { PaymentComponent } from './entities/payment-component.entity';
 import { escrowBalance } from './escrow-balance';
+import { returnOverpay } from './overpay';
 import {
   createCustomerDisbursement,
   createProviderDisbursement,
@@ -96,21 +97,38 @@ export async function refundCancelledOrder(
   const { orderBalance, customerRefund, providerReceives, declaredReturn } =
     await computeCancelRefund(manager, order, mode);
 
-  await writeLedgerEntries(manager, order.id, 'ORDER', orderBalance, [
-    {
-      type: 'REFUND',
-      amount: customerRefund,
-      note:
-        mode === 'KEEP_PICKUP_FEE'
-          ? `Hoàn khách đơn ${order.orderCode} (${label}): giá gói + phí 6%, vườn giữ phí lấy cây`
-          : `Hoàn khách toàn bộ đơn ${order.orderCode} (${label}), kể cả phí lấy cây`,
-    },
-    {
-      type: 'PAYOUT',
-      amount: providerReceives,
-      note: `Phí lấy cây trả vườn cho đơn ${order.orderCode} (${label}), chi sau ${DISBURSE_HOLD_DAYS} ngày`,
-    },
-  ]);
+  const orderLeftover = await writeLedgerEntries(
+    manager,
+    order.id,
+    'ORDER',
+    orderBalance,
+    [
+      {
+        type: 'REFUND',
+        amount: customerRefund,
+        note:
+          mode === 'KEEP_PICKUP_FEE'
+            ? `Hoàn khách đơn ${order.orderCode} (${label}): giá gói + phí 6%, vườn giữ phí lấy cây`
+            : `Hoàn khách toàn bộ đơn ${order.orderCode} (${label}), kể cả phí lấy cây`,
+      },
+      {
+        type: 'PAYOUT',
+        amount: providerReceives,
+        note: `Phí lấy cây trả vườn cho đơn ${order.orderCode} (${label}), chi sau ${DISBURSE_HOLD_DAYS} ngày`,
+      },
+    ],
+  );
+  // Lưới quét (KEEP_PICKUP_FEE chỉ hoàn đúng giá gói + 6%): sổ đơn còn thừa = tiền chuyển dư cũ → trả khách.
+  // FULL đã hoàn cả số dư nên orderLeftover = 0, không ghi gì.
+  await returnOverpay(
+    manager,
+    order,
+    'ORDER',
+    orderLeftover,
+    'CUSTOMER',
+    now,
+    null,
+  );
 
   const eligibleAt = new Date(now.getTime() + DISBURSE_HOLD_DAYS * DAY_MS);
   if (mode === 'KEEP_PICKUP_FEE') {

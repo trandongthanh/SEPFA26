@@ -667,6 +667,7 @@ describe('Tranh chấp lúc trả cây (e2e)', () => {
         declaredDeposit: '0',
         declaredDepositReturned: '0',
         declaredDepositForfeited: '0',
+        overpayReturned: '0',
       },
     });
 

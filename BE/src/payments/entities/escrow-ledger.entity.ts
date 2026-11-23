@@ -33,7 +33,7 @@ export type EscrowBook = (typeof ESCROW_BOOKS)[number];
 @Entity({ name: 'escrow_ledger' })
 @Check(
   'CHK_escrow_ledger_entry_type',
-  `"entry_type" IN ('DEPOSIT','REFUND','PAYOUT','PLATFORM_FEE','SECURITY_IN','SECURITY_RETURN','COMPENSATION','DECLARED_IN','DECLARED_RETURN','DECLARED_FORFEIT')`,
+  `"entry_type" IN ('DEPOSIT','REFUND','PAYOUT','PLATFORM_FEE','SECURITY_IN','SECURITY_RETURN','COMPENSATION','DECLARED_IN','DECLARED_RETURN','DECLARED_FORFEIT','OVERPAY_RETURN')`,
 )
 @Check('CHK_escrow_ledger_book', `"book" IN ('ORDER','SECURITY','DECLARED')`)
 export class EscrowLedger extends AppendOnlyEntity {
@@ -66,7 +66,9 @@ export class EscrowLedger extends AppendOnlyEntity {
     | 'COMPENSATION'
     | 'DECLARED_IN'
     | 'DECLARED_RETURN'
-    | 'DECLARED_FORFEIT';
+    | 'DECLARED_FORFEIT'
+    // Thối tiền chuyển dư cho người chuyển ngay lúc tiền về (overpay.ts) — sổ ORDER hoặc SECURITY.
+    | 'OVERPAY_RETURN';
 
   // Sổ của bút toán. Mặc định ORDER để mọi dòng cũ (trước khi có tiền bảo đảm) thuộc sổ đơn.
   @Column({ type: 'varchar', length: 10, default: 'ORDER' })
