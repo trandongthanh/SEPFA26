@@ -6,6 +6,10 @@ import {
   GoogleLoginPayload,
   GoogleLoginResponse,
   UserRole,
+  SendRegisterOtpPayload,
+  SendRegisterOtpResponse,
+  VerifyRegisterOtpPayload,
+  VerifyRegisterOtpResponse,
 } from '../types/auth';
 import axios from 'axios';
 
@@ -62,6 +66,55 @@ export const registerUser = async (payload: RegisterPayload): Promise<RegisterRe
       throw error;
     }
     throw new Error('Không thể kết nối đến máy chủ. Vui lòng kiểm tra kết nối mạng.');
+  }
+};
+
+export const sendRegisterOtp = async (payload: SendRegisterOtpPayload): Promise<SendRegisterOtpResponse> => {
+  try {
+    const response = await apiClient.post<SendRegisterOtpResponse>('/auth/register/send-otp', {
+      email: payload.email.trim().toLowerCase(),
+      fullName: payload.fullName.trim(),
+    });
+    return response.data;
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error) && error.response) {
+      const errorData = error.response.data as any;
+      const rawMsg = errorData.message;
+      if (rawMsg === 'EMAIL_EXISTS') {
+        throw new Error('Email này đã được sử dụng. Vui lòng chọn email khác.');
+      }
+      if (rawMsg === 'OTP_COOLDOWN') {
+        throw new Error('Mã OTP vừa được gửi. Vui lòng đợi trong giây lát trước khi gửi lại.');
+      }
+      throw new Error(rawMsg || 'Không thể gửi mã OTP lúc này.');
+    }
+    throw new Error('Không thể kết nối đến máy chủ.');
+  }
+};
+
+export const verifyRegisterOtp = async (payload: VerifyRegisterOtpPayload): Promise<VerifyRegisterOtpResponse> => {
+  try {
+    const response = await apiClient.post<VerifyRegisterOtpResponse>('/auth/register/verify-otp', {
+      email: payload.email.trim().toLowerCase(),
+      otp: payload.otp.trim(),
+    });
+    return response.data;
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error) && error.response) {
+      const errorData = error.response.data as any;
+      const rawMsg = errorData.message;
+      if (rawMsg === 'OTP_INVALID') {
+        throw new Error('Mã OTP không chính xác. Vui lòng kiểm tra lại.');
+      }
+      if (rawMsg === 'OTP_EXPIRED') {
+        throw new Error('Mã OTP đã hết hiệu lực. Vui lòng bấm gửi lại mã mới.');
+      }
+      if (rawMsg === 'OTP_MAX_ATTEMPTS') {
+        throw new Error('Bạn đã nhập sai mã OTP quá 5 lần. Vui lòng yêu cầu mã OTP mới.');
+      }
+      throw new Error(rawMsg || 'Xác thực mã OTP thất bại.');
+    }
+    throw new Error('Không thể kết nối đến máy chủ.');
   }
 };
 

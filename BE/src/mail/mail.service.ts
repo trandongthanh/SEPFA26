@@ -39,26 +39,34 @@ export class MailService {
   private readonly from: string;
   private readonly appBaseUrl: string;
   private readonly isProduction: boolean;
+  private readonly resendApiKey: string | null;
 
   constructor(config: ConfigService) {
     // Chuỗi rỗng trong .env (vd `MAIL_FROM=`) coi như chưa cấu hình → dùng `||`, không dùng `??`.
     const host = config.get<string>('SMTP_HOST') || '';
     const port = Number(config.get<number>('SMTP_PORT') || 587);
     const user = config.get<string>('SMTP_USER') || '';
-    this.transporter = host
-      ? createTransport({
-          host,
-          port,
-          // 465 = TLS ngay từ đầu; 587 = STARTTLS.
-          secure: port === 465,
-          auth: { user, pass: config.get<string>('SMTP_PASS') || '' },
-          // Mặc định nodemailer chờ tới 2 phút (kết nối) / 10 phút (socket) — request
-          // đăng ký Google đang chờ mail sẽ treo theo. Quá hạn → bỏ qua mail, ghi log.
-          connectionTimeout: SMTP_TIMEOUT_MS,
-          greetingTimeout: SMTP_TIMEOUT_MS,
-          socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
-        })
-      : null;
+    const pass = config.get<string>('SMTP_PASS') || '';
+
+    // Nếu cấu hình Resend (API key bắt đầu bằng re_ hoặc host là smtp.resend.com), gửi qua HTTPS REST API để không bị ISP chặn cổng SMTP
+    this.resendApiKey =
+      pass.startsWith('re_') || host.includes('resend.com') ? pass : null;
+
+    this.transporter =
+      host && !this.resendApiKey
+        ? createTransport({
+            host,
+            port,
+            // 465 = TLS ngay từ đầu; 587 = STARTTLS.
+            secure: port === 465,
+            auth: { user, pass },
+            // Mặc định nodemailer chờ tới 2 phút (kết nối) / 10 phút (socket) — request
+            // đăng ký Google đang chờ mail sẽ treo theo. Quá hạn → bỏ qua mail, ghi log.
+            connectionTimeout: SMTP_TIMEOUT_MS,
+            greetingTimeout: SMTP_TIMEOUT_MS,
+            socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
+          })
+        : null;
     this.from =
       config.get<string>('MAIL_FROM') || user || 'no-reply@lancarehub.vn';
     // Có SMTP thì env.validation bắt buộc APP_BASE_URL → link trong mail luôn tuyệt đối.
@@ -69,6 +77,74 @@ export class MailService {
     this.isProduction = config.get<string>('NODE_ENV') === 'production';
   }
 
+  /** Gửi email qua Resend REST API (cổng 443 HTTPS chống chặn cổng) hoặc qua Nodemailer SMTP */
+  private async dispatchEmail(options: {
+    to: string;
+    subject: string;
+    text: string;
+    html: string;
+    logLabel: string;
+  }): Promise<boolean> {
+    if (this.resendApiKey) {
+      try {
+        const response = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.resendApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: this.from,
+            to: [options.to],
+            subject: options.subject,
+            text: options.text,
+            html: options.html,
+          }),
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          this.logger.error(
+            `Resend API gửi mail ${options.logLabel} cho ${options.to} thất bại: ${JSON.stringify(errData)}`,
+          );
+          return false;
+        }
+
+        return true;
+      } catch (err) {
+        this.logger.error(
+          `Resend API lỗi gửi mail cho ${options.to}: ${(err as Error).message}`,
+        );
+        return false;
+      }
+    }
+
+    if (!this.transporter) {
+      this.logger.warn(
+        this.isProduction
+          ? `SMTP chưa cấu hình — bỏ qua mail ${options.logLabel} cho ${options.to}`
+          : `SMTP chưa cấu hình — ${options.logLabel} cho ${options.to}`,
+      );
+      return false;
+    }
+
+    try {
+      await this.transporter.sendMail({
+        from: this.from,
+        to: options.to,
+        subject: options.subject,
+        text: options.text,
+        html: options.html,
+      });
+      return true;
+    } catch (err) {
+      this.logger.error(
+        `Gửi mail ${options.logLabel} cho ${options.to} thất bại: ${(err as Error).message}`,
+      );
+      return false;
+    }
+  }
+
   // Mail đặt lại mật khẩu (POST /auth/forgot-password). Link trỏ trang web FE
   // `${APP_BASE_URL}/auth/reset-password?token=...` (cùng nhóm /auth/* với trang login/register của FE)
   // — FE đọc token rồi gọi POST /api/v1/auth/reset-password.
@@ -76,7 +152,7 @@ export class MailService {
   // production KHÔNG ghi (link là chìa khoá đổi mật khẩu).
   async sendPasswordReset(mail: PasswordResetMail): Promise<boolean> {
     const resetUrl = `${this.appBaseUrl}/auth/reset-password?token=${encodeURIComponent(mail.token)}`;
-    if (!this.transporter) {
+    if (!this.resendApiKey && !this.transporter) {
       this.logger.warn(
         this.isProduction
           ? `SMTP chưa cấu hình — bỏ qua mail đặt lại mật khẩu cho ${mail.to}`
@@ -84,26 +160,18 @@ export class MailService {
       );
       return false;
     }
-    try {
-      await this.transporter.sendMail({
-        from: this.from,
-        to: mail.to,
-        subject: 'LanCare Hub — Đặt lại mật khẩu',
-        text: [
-          `Xin chào ${mail.fullName},`,
-          'Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản LanCare Hub của bạn.',
-          `Đặt lại mật khẩu (link hết hạn sau ${PASSWORD_RESET_LINK_MINUTES} phút, dùng 1 lần): ${resetUrl}`,
-          'Nếu bạn không yêu cầu, hãy bỏ qua email này — mật khẩu hiện tại vẫn giữ nguyên.',
-        ].join('\n'),
-        html: this.passwordResetHtml(mail, resetUrl),
-      });
-      return true;
-    } catch (err) {
-      this.logger.error(
-        `Gửi mail đặt lại mật khẩu cho ${mail.to} thất bại: ${(err as Error).message}`,
-      );
-      return false;
-    }
+    return this.dispatchEmail({
+      to: mail.to,
+      subject: 'LanCare Hub — Đặt lại mật khẩu',
+      text: [
+        `Xin chào ${mail.fullName},`,
+        'Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản LanCare Hub của bạn.',
+        `Đặt lại mật khẩu (link hết hạn sau ${PASSWORD_RESET_LINK_MINUTES} phút, dùng 1 lần): ${resetUrl}`,
+        'Nếu bạn không yêu cầu, hãy bỏ qua email này — mật khẩu hiện tại vẫn giữ nguyên.',
+      ].join('\n'),
+      html: this.passwordResetHtml(mail, resetUrl),
+      logLabel: 'đặt lại mật khẩu',
+    });
   }
 
   // Mail gửi mật khẩu tự sinh khi tài khoản được tạo bằng Google.
@@ -111,35 +179,27 @@ export class MailService {
   // Caller AWAIT hàm này (không chạy nền) vì trên Vercel serverless tác vụ nền có thể bị
   // huỷ ngay sau khi trả response → đổi lại request chậm thêm ~4s với Gmail.
   async sendGooglePassword(mail: GooglePasswordMail): Promise<boolean> {
-    if (!this.transporter) {
+    if (!this.resendApiKey && !this.transporter) {
       this.logger.warn(
         `SMTP chưa cấu hình — bỏ qua mail mật khẩu cho ${mail.to}`,
       );
       return false;
     }
     const changePasswordUrl = `${this.appBaseUrl}/account/change-password`;
-    try {
-      await this.transporter.sendMail({
-        from: this.from,
-        to: mail.to,
-        subject: 'LanCare Hub — Mật khẩu đăng nhập tài khoản của bạn',
-        text: [
-          `Xin chào ${mail.fullName},`,
-          'Tài khoản LanCare Hub của bạn đã được tạo bằng Google.',
-          'Bạn có thể đăng nhập bằng Google, hoặc bằng email và mật khẩu dưới đây:',
-          `Email: ${mail.to}`,
-          `Mật khẩu: ${mail.password}`,
-          `Đổi mật khẩu: ${changePasswordUrl}`,
-        ].join('\n'),
-        html: this.googlePasswordHtml(mail, changePasswordUrl),
-      });
-      return true;
-    } catch (err) {
-      this.logger.error(
-        `Gửi mail mật khẩu cho ${mail.to} thất bại: ${(err as Error).message}`,
-      );
-      return false;
-    }
+    return this.dispatchEmail({
+      to: mail.to,
+      subject: 'LanCare Hub — Mật khẩu đăng nhập tài khoản của bạn',
+      text: [
+        `Xin chào ${mail.fullName},`,
+        'Tài khoản LanCare Hub của bạn đã được tạo bằng Google.',
+        'Bạn có thể đăng nhập bằng Google, hoặc bằng email và mật khẩu dưới đây:',
+        `Email: ${mail.to}`,
+        `Mật khẩu: ${mail.password}`,
+        `Đổi mật khẩu: ${changePasswordUrl}`,
+      ].join('\n'),
+      html: this.googlePasswordHtml(mail, changePasswordUrl),
+      logLabel: 'mật khẩu Google',
+    });
   }
 
   async sendRegistrationOtp(mail: EmailOtpMail): Promise<boolean> {
@@ -176,7 +236,7 @@ export class MailService {
     mail: EmailOtpMail,
     meta: { subject: string; title: string; intro: string; logLabel: string },
   ): Promise<boolean> {
-    if (!this.transporter) {
+    if (!this.resendApiKey && !this.transporter) {
       this.logger.warn(
         this.isProduction
           ? `SMTP chưa cấu hình — bỏ qua mail ${meta.logLabel} cho ${mail.to}`
@@ -185,26 +245,18 @@ export class MailService {
       return false;
     }
     const greetingName = mail.fullName?.trim() || 'bạn';
-    try {
-      await this.transporter.sendMail({
-        from: this.from,
-        to: mail.to,
-        subject: meta.subject,
-        text: [
-          `Xin chào ${greetingName},`,
-          meta.intro,
-          `Mã OTP: ${mail.otp}`,
-          `Mã có hiệu lực trong ${mail.expiresMinutes} phút và chỉ dùng được 1 lần. Tuyệt đối không chia sẻ mã này cho bất kỳ ai.`,
-        ].join('\n'),
-        html: this.otpEmailHtml(mail, meta.title, meta.intro),
-      });
-      return true;
-    } catch (err) {
-      this.logger.error(
-        `Gửi mail ${meta.logLabel} cho ${mail.to} thất bại: ${(err as Error).message}`,
-      );
-      return false;
-    }
+    return this.dispatchEmail({
+      to: mail.to,
+      subject: meta.subject,
+      text: [
+        `Xin chào ${greetingName},`,
+        meta.intro,
+        `Mã OTP: ${mail.otp}`,
+        `Mã có hiệu lực trong ${mail.expiresMinutes} phút và chỉ dùng được 1 lần. Tuyệt đối không chia sẻ mã này cho bất kỳ ai.`,
+      ].join('\n'),
+      html: this.otpEmailHtml(mail, meta.title, meta.intro),
+      logLabel: meta.logLabel,
+    });
   }
 
   private otpEmailHtml(

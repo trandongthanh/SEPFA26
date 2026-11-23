@@ -18,6 +18,29 @@ export interface RegisterPayload {
   providerType?: 'NURSERY' | 'EXPERT';
   gpsLat?: number;
   gpsLng?: number;
+  otp?: string;
+  verificationToken?: string;
+}
+
+export interface SendRegisterOtpPayload {
+  email: string;
+  fullName: string;
+}
+
+export interface SendRegisterOtpResponse {
+  success: boolean;
+  expiresInSeconds: number;
+  cooldownSeconds: number;
+}
+
+export interface VerifyRegisterOtpPayload {
+  email: string;
+  otp: string;
+}
+
+export interface VerifyRegisterOtpResponse {
+  success: boolean;
+  verificationToken: string;
 }
 
 export interface AccountSummary {
@@ -313,6 +336,22 @@ export const authApi = {
     const res = await api.post<RegisterResponse>('/api/v1/auth/register', {
       ...payload,
       role: payload.role ?? 'CUSTOMER',
+    });
+    return res.data;
+  },
+
+  sendRegisterOtp: async (payload: SendRegisterOtpPayload) => {
+    const res = await api.post<SendRegisterOtpResponse>('/api/v1/auth/register/send-otp', {
+      email: payload.email.trim().toLowerCase(),
+      fullName: payload.fullName.trim(),
+    });
+    return res.data;
+  },
+
+  verifyRegisterOtp: async (payload: VerifyRegisterOtpPayload) => {
+    const res = await api.post<VerifyRegisterOtpResponse>('/api/v1/auth/register/verify-otp', {
+      email: payload.email.trim().toLowerCase(),
+      otp: payload.otp.trim(),
     });
     return res.data;
   },
