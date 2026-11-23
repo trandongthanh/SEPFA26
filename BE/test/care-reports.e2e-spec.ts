@@ -49,9 +49,11 @@ describe('Care reports (e2e)', () => {
   }
 
   // Đi hết luồng nhận cây bằng API thật → đơn IN_CARE (giống order-return.e2e-spec).
-  const toInCare = async (): Promise<Ctx> => {
-    const customer = await seed.customer();
-    const provider = await seed.provider();
+  const toInCare = async (
+    actors: { customer?: OrderActor; provider?: OrderProvider } = {},
+  ): Promise<Ctx> => {
+    const customer = actors.customer ?? (await seed.customer());
+    const provider = actors.provider ?? (await seed.provider());
     const order = await seed.draftOrder(customer, provider);
     const id = order.orderId;
     await postOrder(`${id}/submit`, customer.auth).expect(200);
@@ -63,12 +65,16 @@ describe('Care reports (e2e)', () => {
     await seed.webhook(order.orderCode, order.amountDue).expect(200);
     await postOrder(`${id}/handover/start`, provider.auth).expect(201);
     for (const plantId of order.plantIds) {
-      await postOrder(`${id}/handover/plants/${plantId}/assess`, provider.auth, {
-        checklist: { leaf: 'xanh' },
-        decision: 'ACCEPT',
-        isHighRisk: false,
-        photos: [{ photoUrl: 'https://example.com/in.jpg' }],
-      }).expect(201);
+      await postOrder(
+        `${id}/handover/plants/${plantId}/assess`,
+        provider.auth,
+        {
+          checklist: { leaf: 'xanh' },
+          decision: 'ACCEPT',
+          isHighRisk: false,
+          photos: [{ photoUrl: 'https://example.com/in.jpg' }],
+        },
+      ).expect(201);
     }
     await postOrder(`${id}/handover/complete`, provider.auth).expect(200);
     await postOrder(`${id}/handover/confirm`, customer.auth).expect(200);
@@ -152,7 +158,8 @@ describe('Care reports (e2e)', () => {
     });
     const period = res.body as { periodStart: string; periodEnd: string };
     expect(
-      new Date(period.periodEnd).getTime() - new Date(period.periodStart).getTime(),
+      new Date(period.periodEnd).getTime() -
+        new Date(period.periodStart).getTime(),
     ).toBe(7 * 24 * 60 * 60 * 1000);
 
     const detail = await request(http)
@@ -169,7 +176,9 @@ describe('Care reports (e2e)', () => {
       .query({ serviceOrderId: c.order.orderId })
       .set(c.customer.auth)
       .expect(200);
-    const reports = list.body as Array<Record<string, any>>;
+    // Luôn phân trang; xem theo 1 đơn thì limit mặc định 50 (đủ mọi kỳ).
+    expect(list.body).toMatchObject({ total: 1, page: 1, limit: 50 });
+    const reports = list.body.data as Array<Record<string, any>>;
     expect(reports).toHaveLength(1);
     expect(reports[0]).toMatchObject({
       periodIndex: 1,
@@ -207,7 +216,11 @@ describe('Care reports (e2e)', () => {
       .query({ serviceOrderId: c.order.orderId })
       .set(c.provider.auth)
       .expect(200);
-    expect((list.body as Array<{ periodIndex: number }>).map((r) => r.periodIndex)).toEqual([1, 2]);
+    expect(
+      (list.body.data as Array<{ periodIndex: number }>).map(
+        (r) => r.periodIndex,
+      ),
+    ).toEqual([1, 2]);
   });
 
   it('hết gói: nộp đủ 5 kỳ (kỳ 5 ngắn) rồi nộp thêm → 409 ALL_PERIODS_SUBMITTED', async () => {
@@ -250,7 +263,10 @@ describe('Care reports (e2e)', () => {
     const [p1, p2] = c.order.plantIds;
     const res = await submit(
       c.provider.auth,
-      reportBody(c, [plantEntry(p1, { leafCondition: 'POOR' }), plantEntry(p2)]),
+      reportBody(c, [
+        plantEntry(p1, { leafCondition: 'POOR' }),
+        plantEntry(p2),
+      ]),
     ).expect(400);
     expect(res.body.message).toBe('PLANT_PHOTO_REQUIRED');
   });
@@ -295,7 +311,12 @@ describe('Care reports (e2e)', () => {
       .query({ serviceOrderId: c.order.orderId })
       .set(stranger.auth)
       .expect(200);
-    expect(strangerList.body).toEqual([]);
+    expect(strangerList.body).toEqual({
+      data: [],
+      total: 0,
+      page: 1,
+      limit: 50,
+    });
 
     const admin = await adminAuth();
     const viewed = await request(http)
@@ -304,5 +325,127 @@ describe('Care reports (e2e)', () => {
       .expect(200);
     expect(viewed.body).toMatchObject({ id: reportId, periodIndex: 1 });
     expect(viewed.body.plants).toHaveLength(2);
+  });
+  describe('danh sách: phân trang, tìm không dấu, lọc nộp trễ (review 22/11)', () => {
+    const sql = (query: string, params: unknown[] = []) =>
+      ctx.dataSource.query(query, params) as Promise<Record<string, any>[]>;
+
+    const list = async (auth: Auth, query: Record<string, string> = {}) =>
+      (
+        await request(http)
+          .get(`${API}/care-reports`)
+          .query(query)
+          .set(auth)
+          .expect(200)
+      ).body as {
+        data: Array<{ id: string; serviceOrderId: string; isLate: boolean }>;
+        total: number;
+        page: number;
+        limit: number;
+      };
+
+    // Một vườn, 2 đơn đang chăm:
+    //   đơn A — khách "Nguyễn Văn Minh", cây "Lan Hồ Điệp" + "Lan 2": kỳ 1 nộp trễ, kỳ 2 đúng hạn;
+    //   đơn B — khách "Lê Thị Hoa": kỳ 1 đúng hạn. Giờ nộp: A1 < A2 < B1.
+    const build = async () => {
+      const provider = await seed.provider();
+      const minh = await seed.customer();
+      const hoa = await seed.customer();
+      await sql('UPDATE accounts SET full_name = $2 WHERE id = $1', [
+        minh.accountId,
+        'Nguyễn Văn Minh',
+      ]);
+      await sql('UPDATE accounts SET full_name = $2 WHERE id = $1', [
+        hoa.accountId,
+        'Lê Thị Hoa',
+      ]);
+      const a = await toInCare({ customer: minh, provider });
+      const b = await toInCare({ customer: hoa, provider });
+      await sql('UPDATE plants SET name = $2 WHERE id = $1', [
+        a.order.plantIds[0],
+        'Lan Hồ Điệp',
+      ]);
+
+      await shiftCare(a.order.orderId, 10);
+      const a1 = (await submit(provider.auth, reportBody(a)).expect(201)).body
+        .id as string;
+      const a2 = (await submit(provider.auth, reportBody(a)).expect(201)).body
+        .id as string;
+      const b1 = (
+        await submit(provider.auth, {
+          ...reportBody(b),
+          otherCareNote: 'Tưới sáng',
+        }).expect(201)
+      ).body.id as string;
+      for (const [id, hoursAgo] of [
+        [a1, 3],
+        [a2, 2],
+        [b1, 1],
+      ] as const) {
+        await sql(
+          `UPDATE care_reports SET submitted_at = now() - make_interval(hours => $2) WHERE id = $1`,
+          [id, hoursAgo],
+        );
+      }
+      return { provider, minh, hoa, a, b, a1, a2, b1 };
+    };
+
+    const ids = (body: { data: Array<{ id: string }> }) =>
+      body.data.map((report) => report.id);
+
+    it('vườn không lọc đơn: mới nộp trước, đúng total/page/limit; trang 2', async () => {
+      const w = await build();
+      const all = await list(w.provider.auth);
+      expect(ids(all)).toEqual([w.b1, w.a2, w.a1]);
+      expect(all).toMatchObject({ total: 3, page: 1, limit: 10 });
+      const second = await list(w.provider.auth, { limit: '2', page: '2' });
+      expect(ids(second)).toEqual([w.a1]);
+      expect(second).toMatchObject({ total: 3, page: 2, limit: 2 });
+    });
+
+    it('late=true chỉ ra báo cáo nộp trễ; q không dấu theo tên cây, tên khách, mã đơn, ghi chú', async () => {
+      const w = await build();
+      const late = await list(w.provider.auth, { late: 'true' });
+      expect(ids(late)).toEqual([w.a1]);
+      expect(late.total).toBe(1);
+      expect(ids(await list(w.provider.auth, { q: 'lan ho' }))).toEqual([
+        w.a2,
+        w.a1,
+      ]);
+      expect(ids(await list(w.provider.auth, { q: 'le thi hoa' }))).toEqual([
+        w.b1,
+      ]);
+      expect(
+        ids(
+          await list(w.provider.auth, {
+            q: w.b.order.orderCode.toLowerCase(),
+          }),
+        ),
+      ).toEqual([w.b1]);
+      expect((await list(w.provider.auth, { q: 'cat tia la gia' })).total).toBe(
+        2,
+      );
+      expect(
+        (await list(w.provider.auth, { q: 'lan ho', late: 'true' })).total,
+      ).toBe(1);
+    });
+
+    it('khách chỉ thấy báo cáo đơn của mình; admin xem theo đơn → theo kỳ, limit 50; late lạ → 400', async () => {
+      const w = await build();
+      expect(ids(await list(w.minh.auth))).toEqual([w.a2, w.a1]);
+      expect(ids(await list(w.hoa.auth))).toEqual([w.b1]);
+      expect(
+        (await list(w.hoa.auth, { serviceOrderId: w.a.order.orderId })).total,
+      ).toBe(0);
+      const admin = await adminAuth();
+      const byOrder = await list(admin, { serviceOrderId: w.a.order.orderId });
+      expect(ids(byOrder)).toEqual([w.a1, w.a2]);
+      expect(byOrder.limit).toBe(50);
+      await request(http)
+        .get(`${API}/care-reports`)
+        .query({ late: 'abc' })
+        .set(w.provider.auth)
+        .expect(400);
+    });
   });
 });
