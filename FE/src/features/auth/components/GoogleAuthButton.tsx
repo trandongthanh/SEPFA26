@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Script from 'next/script';
 import { useRouter } from 'next/navigation';
-import { App, Modal } from 'antd';
+import { App } from 'antd';
 import { authApi, getApiErrorCode } from '@/lib/api';
 import { useAuthStore } from '@/lib/auth.store';
 import { homePathForRole } from '../homePath';
@@ -46,10 +46,12 @@ interface GoogleAuthButtonProps {
 
 export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, beforeSubmit }) => {
   const router = useRouter();
-  const { message } = App.useApp();
+  // Dùng modal từ App.useApp: Modal.confirm tĩnh không hiện trên React 19 + antd 5.
+  const { message, modal } = App.useApp();
   const setAuth = useAuthStore((state) => state.setAuth);
   const buttonContainerRef = useRef<HTMLDivElement>(null);
   const [scriptLoaded, setScriptLoaded] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const clientId =
@@ -124,7 +126,7 @@ export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, before
         // Nếu tài khoản chưa đăng ký (404 GOOGLE_ACCOUNT_NOT_REGISTERED)
         if (status === 404 && getApiErrorCode(loginErr) === 'GOOGLE_ACCOUNT_NOT_REGISTERED') {
           const userEmail = data?.email || 'email này';
-          Modal.confirm({
+          modal.confirm({
             title: 'Tài khoản chưa đăng ký',
             content: `Tài khoản Google (${userEmail}) chưa tồn tại trong hệ thống. Bạn có muốn đăng ký làm Đối tác (Provider) với tài khoản này không?`,
             okText: 'Đăng ký ngay',
@@ -185,13 +187,31 @@ export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, before
     }
   };
 
+  // Google chỉ nhận callback một lần lúc initialize → gọi qua ref để luôn dùng bản mới nhất
+  // (vd. trạng thái tick "đồng ý điều khoản" trong beforeSubmit).
+  const handlerRef = useRef(handleCredentialResponse);
+  handlerRef.current = handleCredentialResponse;
+
+  // Script Google đã tải từ trang trước (chuyển trang login ↔ register) thì onLoad không chạy lại
+  // → kiểm tra sẵn khi mount, và báo lỗi nếu sau 10 giây vẫn chưa tải được.
+  useEffect(() => {
+    if (window.google?.accounts?.id) {
+      setScriptLoaded(true);
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (!window.google?.accounts?.id) setLoadFailed(true);
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     if (!scriptLoaded || !window.google || !buttonContainerRef.current) return;
 
     try {
       window.google.accounts.id.initialize({
         client_id: clientId,
-        callback: handleCredentialResponse,
+        callback: (res) => handlerRef.current(res),
         auto_select: false,
         cancel_on_tap_outside: true,
       });
@@ -218,7 +238,11 @@ export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, before
       <Script
         src="https://accounts.google.com/gsi/client"
         strategy="afterInteractive"
-        onLoad={() => setScriptLoaded(true)}
+        onReady={() => {
+          setLoadFailed(false);
+          setScriptLoaded(true);
+        }}
+        onError={() => setLoadFailed(true)}
       />
       <div className="w-full flex flex-col items-center justify-center min-h-[44px]">
         {loading && (
@@ -232,10 +256,19 @@ export const GoogleAuthButton: React.FC<GoogleAuthButtonProps> = ({ mode, before
             loading ? 'opacity-50 pointer-events-none' : 'opacity-100'
           }`}
         />
-        {!scriptLoaded && (
+        {!scriptLoaded && !loadFailed && (
           <div className="h-10 w-full max-w-[320px] rounded-full border border-gray-200 bg-gray-50 flex items-center justify-center text-xs text-gray-400">
             Đang tải dịch vụ Google...
           </div>
+        )}
+        {!scriptLoaded && loadFailed && (
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="h-10 w-full max-w-[320px] rounded-full border border-gray-200 bg-white flex items-center justify-center text-xs text-[#6027D2] hover:bg-[#F8F6FE]"
+          >
+            Không tải được dịch vụ Google — bấm để thử lại
+          </button>
         )}
       </div>
     </>
