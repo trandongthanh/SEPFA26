@@ -443,7 +443,18 @@ export class OrdersController {
 
   @Roles('CUSTOMER', 'PROVIDER')
   @Get()
-  @ApiOperation({ summary: 'Danh sách đơn phía mình (khách/vườn tự lọc)' })
+  @ApiOperation({
+    summary:
+      'Danh sách đơn phía mình: tìm, lọc trạng thái, sắp xếp, phân trang',
+    description:
+      'q tìm không dấu trong mã đơn, tên khách, tên gói, tên cây. sort: newest (mặc định) | oldest | pickupSoon. ' +
+      'statusCounts đếm theo q, KHÔNG theo status (để hiện số trên các tab). Vườn không thấy đơn DRAFT.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ data: [{ ...đơn, customer, provider, servicePackageName, customerName, gardenName, plantNames, handoverStatus, deadlines }], total, page, limit, statusCounts: { PENDING_PROVIDER: 3, ... } }',
+  })
   listOrders(
     @CurrentUser() user: CurrentUserData,
     @Query() query: QueryOrderDto,
