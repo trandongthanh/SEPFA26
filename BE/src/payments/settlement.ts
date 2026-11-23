@@ -24,6 +24,31 @@ export function customerFeeFor(serviceAmount: bigint): bigint {
   return halfUpPercent(serviceAmount, CUSTOMER_FEE_PERCENT);
 }
 
+/**
+ * Giá công chốt lúc nhận cây = giá ĐÃ KÝ của cả đơn chia đều theo cây, nhân số cây vườn nhận.
+ * Giá đã ký là `provisional_total`: giá gói × số cây, hoặc giá vườn chốt lại khi Nhận đơn (khách ký = đồng ý).
+ * Chia nguyên → phần lẻ dưới 1 đồng nghiêng về khách. Nhận đủ cây thì ra đúng giá đã ký,
+ * nên không bao giờ vượt số khách đã trả.
+ * Ví dụ: ký 300.000 cho 2 cây, nhận 1 → 150.000; ký 400.000 (giá gói) cho 2 cây, nhận 1 → 200.000 như cũ.
+ */
+export function agreedServiceTotal(
+  provisionalTotal: bigint,
+  keptCount: number,
+  plantCount: number,
+): bigint {
+  if (
+    provisionalTotal < 0n ||
+    !Number.isInteger(keptCount) ||
+    !Number.isInteger(plantCount) ||
+    keptCount < 0 ||
+    plantCount <= 0 ||
+    keptCount > plantCount
+  ) {
+    throw new RangeError('agreedServiceTotal nhận số cây không hợp lệ');
+  }
+  return (provisionalTotal * BigInt(keptCount)) / BigInt(plantCount);
+}
+
 export interface SettlementInput {
   serviceAmount: bigint;
   pickupFee: bigint;

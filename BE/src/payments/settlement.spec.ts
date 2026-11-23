@@ -1,4 +1,5 @@
 import {
+  agreedServiceTotal,
   computeAddonSettlement,
   computeDisputeSettlement,
   computeHandoverCancelSettlement,
@@ -8,6 +9,34 @@ import {
 } from './settlement';
 
 describe('settlement', () => {
+  describe('agreedServiceTotal — giá công chốt lúc nhận cây theo giá đã ký', () => {
+    it('nhận đủ cây → đúng giá đã ký (kể cả vườn hạ / tăng giá)', () => {
+      expect(agreedServiceTotal(300_000n, 2, 2)).toBe(300_000n);
+      expect(agreedServiceTotal(500_000n, 2, 2)).toBe(500_000n);
+    });
+
+    it('đơn không đổi giá → giống công thức cũ giá gói × số cây nhận', () => {
+      expect(agreedServiceTotal(400_000n, 1, 2)).toBe(200_000n);
+      expect(agreedServiceTotal(400_000n, 2, 2)).toBe(400_000n);
+    });
+
+    it('từ chối bớt cây → chia đều giá đã ký theo cây', () => {
+      expect(agreedServiceTotal(300_000n, 1, 2)).toBe(150_000n);
+      expect(agreedServiceTotal(300_000n, 2, 3)).toBe(200_000n);
+    });
+
+    it('chia lẻ → phần lẻ dưới 1 đồng nghiêng về khách', () => {
+      // 100.000 × 2 / 3 = 66.666,67 → 66.666
+      expect(agreedServiceTotal(100_000n, 2, 3)).toBe(66_666n);
+    });
+
+    it('từ chối số cây không hợp lệ', () => {
+      expect(() => agreedServiceTotal(400_000n, 3, 2)).toThrow(RangeError);
+      expect(() => agreedServiceTotal(400_000n, 1, 0)).toThrow(RangeError);
+      expect(() => agreedServiceTotal(-1n, 1, 2)).toThrow(RangeError);
+    });
+  });
+
   describe('halfUpPercent', () => {
     it('chia hết thì giữ nguyên', () => {
       expect(halfUpPercent(1_000_000n, 6n)).toBe(60_000n);
