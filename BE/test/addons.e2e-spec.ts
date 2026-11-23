@@ -641,23 +641,49 @@ describe('Add-on: đề xuất, trả tiền, báo xong, chia tiền (e2e)', () 
       );
     });
 
-    it('bắt đầu trả cây thì đề xuất còn chờ trả lời / chờ trả tiền bị đóng (ORDER_RETURNING); tiền về sau đó không ghi sổ', async () => {
+    it('khách đã đồng ý, còn hạn trả tiền → chưa được bắt đầu trả cây (409 ADDON_AWAITING_PAYMENT), không đóng gì', async () => {
       const c = await toInCare();
       const waiting = await propose(c);
       const accepted = await propose(c, { title: 'Trị nấm' });
       await respond(c, accepted.id, 'ACCEPT').expect(200);
+      await makeCareDue(c.order.orderId);
+
+      const res = await post(
+        `${c.order.orderId}/return/start`,
+        c.provider.auth,
+      ).expect(409);
+      expect(res.body.message).toBe('ADDON_AWAITING_PAYMENT');
+      const rows = await sql(
+        `SELECT status FROM addon_proposals WHERE id = ANY($1::uuid[]) ORDER BY title`,
+        [[waiting.id, accepted.id]],
+      );
+      expect(rows).toEqual([{ status: 'PENDING' }, { status: 'ACCEPTED' }]);
+      expect((await detail(c.order.orderId, c.provider.auth)).status).toBe(
+        'IN_CARE',
+      );
+    });
+
+    it('bắt đầu trả cây thì đề xuất chờ trả lời đóng (ORDER_RETURNING), đã quá hạn trả tiền đóng (NOT_PAID); tiền về sau đó không ghi sổ', async () => {
+      const c = await toInCare();
+      const waiting = await propose(c);
+      const accepted = await propose(c, { title: 'Trị nấm' });
+      await respond(c, accepted.id, 'ACCEPT').expect(200);
+      await sql(
+        `UPDATE addon_proposals SET payment_due_at = now() - interval '1 minute' WHERE id = $1`,
+        [accepted.id],
+      );
       await makeCareDue(c.order.orderId);
       await post(`${c.order.orderId}/return/start`, c.provider.auth).expect(
         200,
       );
 
       const rows = await sql(
-        `SELECT status, expired_reason FROM addon_proposals WHERE id = ANY($1::uuid[])`,
+        `SELECT status, expired_reason FROM addon_proposals WHERE id = ANY($1::uuid[]) ORDER BY title`,
         [[waiting.id, accepted.id]],
       );
       expect(rows).toEqual([
         { status: 'EXPIRED', expired_reason: 'ORDER_RETURNING' },
-        { status: 'EXPIRED', expired_reason: 'ORDER_RETURNING' },
+        { status: 'EXPIRED', expired_reason: 'NOT_PAID' },
       ]);
       const late = await seed.webhook(accepted.addonCode, '106000').expect(200);
       expect(late.body.ignored).toBe('ADDON_NOT_PAYABLE');
@@ -724,6 +750,7 @@ describe('Add-on: đề xuất, trả tiền, báo xong, chia tiền (e2e)', () 
         declaredDeposit: '0',
         declaredDepositReturned: '0',
         declaredDepositForfeited: '0',
+        overpayReturned: '0',
       });
       // Vườn: giá dịch vụ đã làm 500.000, bị trừ 12% = 60.000, nhận 500.000 (gồm phí lấy cây 60.000).
       const providerView = (await detail(c.order.orderId, c.provider.auth))

@@ -158,6 +158,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       declaredDeposit: '0',
       declaredDepositReturned: '0',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     };
     // Trước COMPLETED: khách và vườn cùng thấy đúng phần hoá đơn, chưa có phần chia tiền.
     expect((await detail(id, c.customer.auth)).settlement).toEqual(
@@ -207,6 +208,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       declaredDeposit: '0',
       declaredDepositReturned: '0',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     });
     expect((await detail(id, c.provider.auth)).settlement).toMatchObject({
       refundAmount: '212000',

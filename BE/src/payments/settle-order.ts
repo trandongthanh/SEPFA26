@@ -7,6 +7,7 @@ import { Disbursement } from './entities/disbursement.entity';
 import { type EscrowBook, EscrowLedger } from './entities/escrow-ledger.entity';
 import { PaymentComponent } from './entities/payment-component.entity';
 import { escrowBalance } from './escrow-balance';
+import { returnOverpay } from './overpay';
 import { computeDisputeSettlement } from './settlement';
 
 // Lệnh chi cho vườn chờ 3 ngày để admin đối soát sổ với tài khoản ngân hàng trước khi chuyển.
@@ -92,23 +93,40 @@ export async function settleOrder(
   }
 
   // Dòng 0đ không ghi (đơn giá dịch vụ 0 thì không có phí nền tảng). Mỗi sổ trừ dần số dư của riêng nó.
-  await writeLedgerEntries(manager, order.id, 'ORDER', balance, [
-    {
-      type: 'REFUND',
-      amount: customerRefund,
-      note: `Hoàn khách đơn ${order.orderCode}: tiền công ${settlement.rejectedAmount + (opts.refund ?? 0n)}đ + phí 6% tương ứng ${settlement.customerFeeRefund}đ`,
-    },
-    {
-      type: 'PLATFORM_FEE',
-      amount: platformFee,
-      note: `Nền tảng giữ phí 6% khách + 12% vườn của đơn ${order.orderCode}${addonComponents.length > 0 ? ' (gồm add-on)' : ''}`,
-    },
-    {
-      type: 'PAYOUT',
-      amount: providerReceives,
-      note: `Phải trả vườn cho đơn ${order.orderCode}, chi sau ${DISBURSE_HOLD_DAYS} ngày`,
-    },
-  ]);
+  const orderLeftover = await writeLedgerEntries(
+    manager,
+    order.id,
+    'ORDER',
+    balance,
+    [
+      {
+        type: 'REFUND',
+        amount: customerRefund,
+        note: `Hoàn khách đơn ${order.orderCode}: tiền công ${settlement.rejectedAmount + (opts.refund ?? 0n)}đ + phí 6% tương ứng ${settlement.customerFeeRefund}đ`,
+      },
+      {
+        type: 'PLATFORM_FEE',
+        amount: platformFee,
+        note: `Nền tảng giữ phí 6% khách + 12% vườn của đơn ${order.orderCode}${addonComponents.length > 0 ? ' (gồm add-on)' : ''}`,
+      },
+      {
+        type: 'PAYOUT',
+        amount: providerReceives,
+        note: `Phải trả vườn cho đơn ${order.orderCode}, chi sau ${DISBURSE_HOLD_DAYS} ngày`,
+      },
+    ],
+  );
+  // Lưới quét: chia đúng số trên hoá đơn xong mà sổ đơn còn thừa (tiền chuyển dư của đơn cũ, trước khi
+  // webhook biết thối) → trả nốt cho khách, sổ đơn về đúng 0.
+  await returnOverpay(
+    manager,
+    order,
+    'ORDER',
+    orderLeftover,
+    'CUSTOMER',
+    now,
+    null,
+  );
   // Sổ bảo đảm: đền cho khách C, phần còn lại trả vườn → về 0. Không dính phí nào.
   await writeLedgerEntries(manager, order.id, 'SECURITY', securityBalance, [
     {
@@ -263,7 +281,7 @@ export async function writeLedgerEntries(
 export async function createCustomerDisbursement(
   manager: EntityManager,
   order: ServiceOrder,
-  type: 'REFUND' | 'COMPENSATION' | 'DECLARED_RETURN',
+  type: 'REFUND' | 'COMPENSATION' | 'DECLARED_RETURN' | 'OVERPAY_RETURN',
   amount: bigint,
   eligibleAt: Date,
 ): Promise<void> {
@@ -295,7 +313,7 @@ export async function createCustomerDisbursement(
 export async function createProviderDisbursement(
   manager: EntityManager,
   order: ServiceOrder,
-  type: 'PAYOUT' | 'SECURITY_RETURN' | 'DECLARED_FORFEIT',
+  type: 'PAYOUT' | 'SECURITY_RETURN' | 'DECLARED_FORFEIT' | 'OVERPAY_RETURN',
   amount: bigint,
   eligibleAt: Date,
 ): Promise<void> {
