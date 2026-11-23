@@ -223,10 +223,7 @@ function PackagesPageContent() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#F6F4FC] font-sans">
-      <ProviderSidebar
-        profile={profile}
-        onOpenCreatePackageModal={openCreateModal}
-      />
+      <ProviderSidebar profile={profile} />
 
       <div className="flex-1 h-screen flex flex-col min-w-0 overflow-hidden">
         <ProviderHeader profile={profile} />
