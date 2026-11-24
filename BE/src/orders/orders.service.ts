@@ -58,6 +58,7 @@ import {
   assertProviderIdentityComplete,
   buildPartySnapshot,
   readPartySnapshot,
+  safeDecrypt,
   type PartySnapshotV3,
 } from './party-snapshot';
 import {
@@ -703,6 +704,29 @@ export class OrdersService {
           photos: plantPhotos,
         };
       }),
+      customer: customer
+        ? {
+            id: customer.id,
+            accountId: customer.accountId,
+            account: customer.account
+              ? {
+                  id: customer.account.id,
+                  fullName: customer.account.fullName,
+                  phone: safeDecrypt(this.crypto, customer.account.phone),
+                  email: customer.account.email,
+                }
+              : null,
+          }
+        : null,
+      provider: provider
+        ? {
+            id: provider.id,
+            displayName: provider.displayName,
+            gardenName: provider.displayName,
+            phone: safeDecrypt(this.crypto, provider.account?.phone),
+            address: provider.address,
+          }
+        : null,
       negotiation,
       agreement: agreement
         ? {

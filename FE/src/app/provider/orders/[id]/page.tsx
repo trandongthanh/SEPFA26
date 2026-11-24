@@ -949,52 +949,73 @@ export default function ProviderOrderDetailPage() {
             </div>
 
             {/* Customer & Delivery Information */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-              <div className="p-4 rounded-2xl bg-[#FAF8FE] border border-[#ECE7FA] space-y-2">
-                <span className="text-[11px] font-bold text-[#6027D2] uppercase tracking-wider flex items-center gap-1.5">
-                  <UserOutlined /> Thông tin khách hàng
-                </span>
-                <div className="flex items-center gap-3">
-                  <Avatar
-                    size={40}
-                    className="bg-[#6027D2] text-white font-bold shrink-0"
-                  >
-                    {order.customer?.account?.fullName?.charAt(0) || 'K'}
-                  </Avatar>
-                  <div>
-                    <h4 className="font-bold text-sm text-[#1E1B2E]">
-                      {order.customer?.account?.fullName || 'Khách hàng'}
-                    </h4>
-                    <p className="text-xs text-[#6E6A8A]">
-                      {order.customer?.account?.phone ? `📞 ${order.customer.account.phone}` : 'Chưa có SĐT'}
-                      {order.customer?.account?.email ? ` | ✉️ ${order.customer.account.email}` : ''}
+            {(() => {
+              const customerParty = order.agreement?.termsSnapshot?.parties?.customer;
+              const customerName =
+                order.customer?.account?.fullName ||
+                customerParty?.fullName ||
+                'Khách hàng';
+              const customerPhone =
+                order.customer?.account?.phone ||
+                customerParty?.phone;
+              const customerEmail =
+                order.customer?.account?.email;
+              const customerAddress =
+                order.pickupAddress ||
+                customerParty?.address ||
+                'Chưa cung cấp';
+
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                  <div className="p-4 rounded-2xl bg-[#FAF8FE] border border-[#ECE7FA] space-y-2">
+                    <span className="text-[11px] font-bold text-[#6027D2] uppercase tracking-wider flex items-center gap-1.5">
+                      <UserOutlined /> Thông tin khách hàng
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <Avatar
+                        size={40}
+                        className="bg-[#6027D2] text-white font-bold shrink-0"
+                      >
+                        {customerName.charAt(0) || 'K'}
+                      </Avatar>
+                      <div>
+                        <h4 className="font-bold text-sm text-[#1E1B2E]">
+                          {customerName}
+                        </h4>
+                        <p className="text-xs text-[#6E6A8A]">
+                          {customerPhone && customerPhone !== '[CHƯA CẬP NHẬT]'
+                            ? `📞 ${customerPhone}`
+                            : 'Chưa có SĐT'}
+                          {customerEmail ? ` | ✉️ ${customerEmail}` : ''}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-[#FAF8FE] border border-[#ECE7FA] space-y-2">
+                    <span className="text-[11px] font-bold text-[#6027D2] uppercase tracking-wider flex items-center gap-1.5">
+                      <EnvironmentOutlined /> Địa chỉ tiếp nhận & Hẹn lấy cây
+                    </span>
+                    <p className="text-xs text-[#1E1B2E] font-medium leading-relaxed">
+                      {customerAddress}
                     </p>
+                    {order.scheduledPickupAt && (
+                      <p className="text-[11.5px] text-[#6E6A8A] flex items-center gap-1">
+                        <CalendarOutlined className="text-[#6027D2]" /> Hẹn tiếp nhận:{' '}
+                        <strong className="text-[#1E1B2E]">
+                          {new Date(order.scheduledPickupAt).toLocaleDateString('vi-VN')}
+                        </strong>
+                      </p>
+                    )}
+                    {order.customerNote && (
+                      <p className="text-xs text-[#DD6B20] bg-[#FFFBEB] p-2 rounded-xl border border-[#FDE68A]">
+                        💬 <strong>Ghi chú:</strong> "{order.customerNote}"
+                      </p>
+                    )}
                   </div>
                 </div>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-[#FAF8FE] border border-[#ECE7FA] space-y-2">
-                <span className="text-[11px] font-bold text-[#6027D2] uppercase tracking-wider flex items-center gap-1.5">
-                  <EnvironmentOutlined /> Địa chỉ tiếp nhận & Hẹn lấy cây
-                </span>
-                <p className="text-xs text-[#1E1B2E] font-medium leading-relaxed">
-                  {order.pickupAddress || 'Chưa cung cấp'}
-                </p>
-                {order.scheduledPickupAt && (
-                  <p className="text-[11.5px] text-[#6E6A8A] flex items-center gap-1">
-                    <CalendarOutlined className="text-[#6027D2]" /> Hẹn tiếp nhận:{' '}
-                    <strong className="text-[#1E1B2E]">
-                      {new Date(order.scheduledPickupAt).toLocaleDateString('vi-VN')}
-                    </strong>
-                  </p>
-                )}
-                {order.customerNote && (
-                  <p className="text-xs text-[#DD6B20] bg-[#FFFBEB] p-2 rounded-xl border border-[#FDE68A]">
-                    💬 <strong>Ghi chú:</strong> "{order.customerNote}"
-                  </p>
-                )}
-              </div>
-            </div>
+              );
+            })()}
           </div>
 
           {/* 2. Care Plan & Schedule */}
@@ -1347,12 +1368,10 @@ export default function ProviderOrderDetailPage() {
                       )}
 
                       {/* Actions for Paid addon */}
-                      {(ad.status === 'PAID' || ad.status === 'ACCEPTED') && (
+                      {ad.status === 'PAID' && (
                         <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
                           <span className="text-xs text-[#6E6A8A]">
-                            {ad.status === 'PAID'
-                              ? 'Khách đã thanh toán. Nhà vườn hãy tiến hành xử lý và nộp ảnh nghiệm thu.'
-                              : 'Khách đã duyệt đề xuất.'}
+                            Khách đã thanh toán. Nhà vườn hãy tiến hành xử lý và nộp ảnh nghiệm thu.
                           </span>
                           <Button
                             type="primary"
@@ -1362,6 +1381,13 @@ export default function ProviderOrderDetailPage() {
                           >
                             Báo đã hoàn tất
                           </Button>
+                        </div>
+                      )}
+                      {ad.status === 'ACCEPTED' && (
+                        <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
+                          <span className="text-xs text-amber-600 font-medium">
+                            Khách đã duyệt đề xuất, đang chờ khách thanh toán qua VietQR...
+                          </span>
                         </div>
                       )}
                     </div>
