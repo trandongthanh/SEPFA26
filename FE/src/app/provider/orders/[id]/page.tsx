@@ -41,6 +41,7 @@ import ProviderSidebar from '../../components/ProviderSidebar';
 import HandoverCancelModal, { canCancelHandover } from '../../components/HandoverCancelModal';
 import OrderDeadline from '../../components/OrderDeadline';
 import OrderCancelModal, { PROVIDER_CANCELLABLE_STATUSES } from '../../components/OrderCancelModal';
+import RefundAddonModal from '../../components/RefundAddonModal';
 import dayjs from 'dayjs';
 
 const CALL_ELIGIBLE_STATUSES = new Set([
@@ -73,6 +74,8 @@ export default function ProviderOrderDetailPage() {
 
   // Addons state
   const [addons, setAddons] = useState<AddonItem[]>([]);
+  // Add-on đang mở hộp thoại "Trả lại tiền" (null = đóng).
+  const [refundAddon, setRefundAddon] = useState<AddonItem | null>(null);
   const [addonsLoading, setAddonsLoading] = useState(false);
 
   // State for Addon Proposal Modal
@@ -1235,6 +1238,7 @@ export default function ProviderOrderDetailPage() {
                     DONE: { color: 'green', label: 'Đã hoàn thành' },
                     REJECTED: { color: 'red', label: 'Khách từ chối' },
                     EXPIRED: { color: 'default', label: 'Đã hết hạn' },
+                    REFUNDED: { color: 'blue', label: 'Đã trả lại khách' },
                   };
                   const st = statusMap[ad.status] || { color: 'default', label: ad.status };
 
@@ -1308,6 +1312,25 @@ export default function ProviderOrderDetailPage() {
                         )}
                       </div>
 
+                      {/* Vườn đã trả lại add-on: khách được hoàn giá + 6% */}
+                      {ad.status === 'REFUNDED' && (
+                        <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-900 space-y-1.5">
+                          <p className="font-bold">
+                            Đã trả lại khách
+                            {ad.refundedAt ? ` · ${new Date(ad.refundedAt).toLocaleString('vi-VN')}` : ''}
+                          </p>
+                          {ad.refundReason && (
+                            <p>
+                              <strong>Lý do:</strong> {ad.refundReason}
+                            </p>
+                          )}
+                          <p>
+                            Khách được hoàn <strong>{Number(ad.amountDue || 0).toLocaleString('vi-VN')} đ</strong>{' '}
+                            (giá + phí 6%). Add-on này không tính vào tiền vườn nhận.
+                          </p>
+                        </div>
+                      )}
+
                       {/* Completed result banner if DONE */}
                       {ad.status === 'DONE' && (
                         <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs space-y-2">
@@ -1373,14 +1396,26 @@ export default function ProviderOrderDetailPage() {
                           <span className="text-xs text-[#6E6A8A]">
                             Khách đã thanh toán. Nhà vườn hãy tiến hành xử lý và nộp ảnh nghiệm thu.
                           </span>
-                          <Button
-                            type="primary"
-                            icon={<CheckCircleOutlined />}
-                            onClick={() => handleOpenCompleteModal(ad)}
-                            className="!h-9 !px-4 !rounded-xl !bg-[#059669] hover:!bg-[#047857] !border-none !font-semibold text-xs text-white shadow-xs"
-                          >
-                            Báo đã hoàn tất
-                          </Button>
+                          <div className="flex items-center gap-2">
+                            {/* Trả lại chỉ được khi đơn còn đang chăm (BE chặn ở trạng thái khác). */}
+                            {order.status === 'IN_CARE' && (
+                              <Button
+                                danger
+                                onClick={() => setRefundAddon(ad)}
+                                className="!h-9 !px-4 !rounded-xl !font-semibold text-xs"
+                              >
+                                Trả lại tiền
+                              </Button>
+                            )}
+                            <Button
+                              type="primary"
+                              icon={<CheckCircleOutlined />}
+                              onClick={() => handleOpenCompleteModal(ad)}
+                              className="!h-9 !px-4 !rounded-xl !bg-[#059669] hover:!bg-[#047857] !border-none !font-semibold text-xs text-white shadow-xs"
+                            >
+                              Báo đã hoàn tất
+                            </Button>
+                          </div>
                         </div>
                       )}
                       {ad.status === 'ACCEPTED' && (
@@ -1490,6 +1525,22 @@ export default function ProviderOrderDetailPage() {
           onCancelled={() => loadData()}
         />
       </div>
+
+      {/* Modal: Trả lại add-on đã thanh toán */}
+      <RefundAddonModal
+        orderId={order?.id ?? null}
+        addon={refundAddon}
+        onClose={() => setRefundAddon(null)}
+        onRefunded={async () => {
+          setRefundAddon(null);
+          if (!order) return;
+          try {
+            setAddons(await providerApi.listAddons(order.id));
+          } catch {
+            /* danh sách cũ vẫn hiện; lần tải trang sau sẽ đúng */
+          }
+        }}
+      />
 
       {/* Modal: Create Addon Proposal */}
       <Modal

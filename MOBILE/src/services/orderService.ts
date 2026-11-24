@@ -192,6 +192,9 @@ export interface CustomerSettlement {
   declaredDeposit: string;
   declaredDepositReturned: string;
   declaredDepositForfeited: string;
+  // Tiền bạn chuyển DƯ (đơn / add-on) đã được trả lại ngay lúc tiền về; không nằm trong customerTotal.
+  // BE cũ không có field này → coi như "0".
+  overpayReturned?: string;
 }
 
 export interface PaginatedOrdersResponse {
@@ -475,7 +478,8 @@ export type AddonStatus =
   | 'PAID'
   | 'DONE'
   | 'REJECTED'
-  | 'EXPIRED';
+  | 'EXPIRED'
+  | 'REFUNDED'; // vườn trả lại add-on bạn đã trả tiền → được hoàn giá + 6%
 
 export interface AddonItem {
   id: string;
@@ -500,6 +504,8 @@ export interface AddonItem {
   donePlantHealth?: 'GOOD' | 'AVERAGE' | 'POOR' | null;
   expiredReason: 'NO_RESPONSE' | 'NOT_PAID' | 'ORDER_RETURNING' | null;
   expiredAt: string | null;
+  refundedAt?: string | null;
+  refundReason?: string | null;
   createdAt: string;
 }
 

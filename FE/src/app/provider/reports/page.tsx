@@ -31,14 +31,24 @@ import ProviderHeader from '../components/ProviderHeader';
 import ProviderSidebar from '../components/ProviderSidebar';
 import ListToolbar, { NoResults } from '../components/ListToolbar';
 import Highlight from '../components/Highlight';
-import { matchesQuery, useUrlParam } from '@/lib/search';
+import { useUrlParam } from '@/lib/search';
 
+// 9 thẻ = 3 hàng của lưới 3 cột. BE chia trang (GET /care-reports?page&limit), FE không tự cắt nữa.
 const REPORTS_PAGE_SIZE = 9;
 
+// BE chỉ lọc được "nộp trễ" (late=true), chưa lọc được "đúng hạn" → chỉ còn 2 nút lọc.
 const TIMELINESS_FILTERS = [
   { value: 'ALL', label: 'Tất cả' },
-  { value: 'ON_TIME', label: 'Đúng hạn' },
   { value: 'LATE', label: 'Nộp trễ' },
+];
+
+// Đơn đã bắt đầu chăm mới có thể có báo cáo → chỉ liệt kê các đơn này trong ô chọn đơn.
+const ORDER_STATUSES_WITH_REPORTS = [
+  'IN_CARE',
+  'RETURN_IN_PROGRESS',
+  'RETURN_AWAITING_CONFIRM',
+  'COMPLETED',
+  'DISPUTED',
 ];
 
 const SUBSTRATE_LABELS: Record<SubstrateMoisture, string> = {
@@ -74,16 +84,30 @@ function ReportsPageContent() {
 
   const [profile, setProfile] = useState<ProviderProfileResponse | null>(null);
   const [reports, setReports] = useState<CareReportItem[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [reportsError, setReportsError] = useState<string | null>(null);
+  // Tổng theo bộ lọc hiện tại (để chia trang) + số trên 2 nút lọc + tổng báo cáo của vườn (không lọc gì).
+  const [filteredTotal, setFilteredTotal] = useState(0);
+  const [chipCounts, setChipCounts] = useState<{ ALL: number; LATE: number }>({ ALL: 0, LATE: 0 });
+  const [grandTotal, setGrandTotal] = useState<number | null>(null);
   const [ordersMap, setOrdersMap] = useState<Record<string, OrderItem>>({});
   const [orderFilter, setOrderFilter] = useState<string>('ALL');
   const [searchKeyword, setSearchKeyword] = useUrlParam('q');
+  // Gõ xong 300ms mới gọi BE, tránh gọi theo từng phím.
+  const [debouncedKeyword, setDebouncedKeyword] = useState(searchKeyword);
   const [timeliness, setTimeliness] = useState<string>('ALL');
   const [currentPage, setCurrentPage] = useState(1);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedKeyword(searchKeyword.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [searchKeyword]);
 
   // Về trang 1 mỗi khi đổi điều kiện lọc.
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchKeyword, orderFilter, timeliness]);
+  }, [debouncedKeyword, orderFilter, timeliness]);
   const [detailReport, setDetailReport] = useState<CareReportItem | null>(null);
 
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
@@ -109,14 +133,12 @@ function ReportsPageContent() {
   const loadData = async () => {
     setLoading(true);
     try {
-      // Tải HẾT đơn: trước đây chỉ lấy 10 đơn mới nhất nên báo cáo của đơn cũ mất mã đơn / tên khách.
-      const [prof, rpts, ordItems] = await Promise.all([
+      // Báo cáo BE chỉ trả serviceOrderId → vẫn cần danh sách đơn để hiện mã đơn / tên khách trên thẻ.
+      const [prof, ordItems] = await Promise.all([
         providerApi.getProfile().catch(() => null),
-        providerApi.listCareReports().catch(() => []),
         providerApi.listAllOrders().catch(() => [] as OrderItem[]),
       ]);
       setProfile(prof);
-      setReports(Array.isArray(rpts) ? rpts : []);
 
       const map: Record<string, OrderItem> = {};
       ordItems.forEach((o) => {
@@ -134,35 +156,60 @@ function ReportsPageContent() {
     }
   }, [mounted, isAuthenticated]);
 
-  // Lọc theo đơn + từ khoá (không phân biệt dấu); lọc "đúng hạn / nộp trễ" tách riêng để đếm số trên nút lọc.
-  const searchedReports = reports.filter((rpt) => {
-    if (orderFilter !== 'ALL' && rpt.serviceOrderId !== orderFilter) {
-      return false;
-    }
-    const ord = ordersMap[rpt.serviceOrderId];
-    return matchesQuery(
-      searchKeyword,
-      ord?.orderCode,
-      ord?.customer?.account?.fullName,
-      (rpt.plants || []).map((p) => p.plant?.name || '').join(', '),
-      `Kỳ ${rpt.periodIndex}`,
-    );
-  });
-  const filteredReports = searchedReports.filter(
-    (rpt) => timeliness === 'ALL' || (timeliness === 'LATE') === Boolean(rpt.isLate),
-  );
+  // Tìm (q, không dấu), lọc đơn, lọc nộp trễ và chia trang đều do BE làm.
+  // Gọi song song: trang hiện tại + 2 lượt limit=1 chỉ để lấy total cho số trên nút "Tất cả" / "Nộp trễ".
+  useEffect(() => {
+    if (!mounted || !isAuthenticated) return;
+    let cancelled = false;
+    const base = {
+      q: debouncedKeyword || undefined,
+      serviceOrderId: orderFilter !== 'ALL' ? orderFilter : undefined,
+    };
+    setReportsLoading(true);
+    setReportsError(null);
+    Promise.all([
+      providerApi.listCareReports({
+        ...base,
+        late: timeliness === 'LATE',
+        page: currentPage,
+        limit: REPORTS_PAGE_SIZE,
+      }),
+      providerApi.listCareReports({ ...base, limit: 1 }),
+      providerApi.listCareReports({ ...base, late: true, limit: 1 }),
+    ])
+      .then(([pageRes, allRes, lateRes]) => {
+        if (cancelled) return;
+        setReports(pageRes.data);
+        setFilteredTotal(pageRes.total);
+        setChipCounts({ ALL: allRes.total, LATE: lateRes.total });
+        // Không lọc gì → đây là tổng báo cáo của vườn (dùng cho màn "chưa có báo cáo nào").
+        if (!base.q && !base.serviceOrderId) setGrandTotal(allRes.total);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setReports([]);
+        setFilteredTotal(0);
+        setReportsError('Không tải được danh sách báo cáo. Vui lòng thử lại.');
+      })
+      .finally(() => {
+        if (!cancelled) setReportsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mounted, isAuthenticated, debouncedKeyword, orderFilter, timeliness, currentPage, reloadKey]);
+
   const resetFilters = () => {
     setSearchKeyword('');
+    setDebouncedKeyword('');
     setOrderFilter('ALL');
     setTimeliness('ALL');
   };
-  // BE trả hết báo cáo một lần (chưa có page/limit) → FE tự chia trang. 9 thẻ = 3 hàng của lưới 3 cột.
-  const pagedReports = filteredReports.slice(
-    (currentPage - 1) * REPORTS_PAGE_SIZE,
-    currentPage * REPORTS_PAGE_SIZE,
-  );
+  const hasFilter = Boolean(debouncedKeyword) || orderFilter !== 'ALL' || timeliness !== 'ALL';
 
-  const ordersInReports = Object.values(ordersMap);
+  const ordersInReports = Object.values(ordersMap).filter((ord) =>
+    ORDER_STATUSES_WITH_REPORTS.includes(String(ord.status)),
+  );
   const modalOrder = detailReport ? ordersMap[detailReport.serviceOrderId] : null;
 
   if (!mounted || !isAuthenticated) return null;
@@ -201,10 +248,7 @@ function ReportsPageContent() {
               placeholder="Tìm mã đơn, tên khách hoặc tên cây…"
               chips={TIMELINESS_FILTERS.map((f) => ({
                 ...f,
-                count:
-                  f.value === 'ALL'
-                    ? searchedReports.length
-                    : searchedReports.filter((r) => (f.value === 'LATE') === Boolean(r.isLate)).length,
+                count: chipCounts[f.value as 'ALL' | 'LATE'],
               }))}
               activeChip={timeliness}
               onChipChange={setTimeliness}
@@ -219,32 +263,44 @@ function ReportsPageContent() {
                   className="w-full sm:w-80"
                   options={[
                     { value: 'ALL', label: 'Tất cả đơn hàng' },
-                    // Chỉ liệt kê đơn đã có báo cáo.
-                    ...ordersInReports
-                      .map((ord) => ({ ord, count: reports.filter((r) => r.serviceOrderId === ord.id).length }))
-                      .filter(({ count }) => count > 0)
-                      .map(({ ord, count }) => ({
-                        value: ord.id,
-                        label: `#${ord.orderCode} · ${ord.customer?.account?.fullName || 'Khách'} (${count})`,
-                      })),
+                    // Chỉ liệt kê đơn đã bắt đầu chăm (mới có thể có báo cáo).
+                    ...ordersInReports.map((ord) => ({
+                      value: ord.id,
+                      label: `#${ord.orderCode} · ${ord.customer?.account?.fullName || 'Khách'}`,
+                    })),
                   ]}
                 />
               }
             />
           </div>
-          {!loading && reports.length > 0 && (
+          {!loading && !reportsLoading && !reportsError && filteredTotal > 0 && (
             <p className="mb-4 text-xs text-[#6E6A8A]">
-              Hiển thị <b className="text-[#1E1B2E] tabular-nums">{filteredReports.length}</b> /{' '}
-              <b className="text-[#1E1B2E] tabular-nums">{reports.length}</b> báo cáo
+              Hiển thị <b className="text-[#1E1B2E] tabular-nums">{filteredTotal}</b>
+              {grandTotal !== null && (
+                <>
+                  {' '}/ <b className="text-[#1E1B2E] tabular-nums">{grandTotal}</b>
+                </>
+              )}{' '}
+              báo cáo
             </p>
           )}
 
-          {loading ? (
+          {loading || (reportsLoading && reports.length === 0) ? (
             <div className="py-20 text-center">
               <Spin size="large" />
               <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải danh sách báo cáo chăm sóc...</p>
             </div>
-          ) : reports.length === 0 ? (
+          ) : reportsError ? (
+            <div className="bg-white rounded-2xl p-12 text-center border border-[#ECE7FA] flex flex-col items-center gap-3">
+              <p className="text-sm font-semibold text-[#1E1B2E]">{reportsError}</p>
+              <Button
+                onClick={() => setReloadKey((k) => k + 1)}
+                className="!rounded-xl !font-semibold"
+              >
+                Thử tải lại
+              </Button>
+            </div>
+          ) : grandTotal === 0 && !hasFilter ? (
             <div className="bg-white rounded-2xl p-12 text-center border border-[#ECE7FA] flex flex-col items-center justify-center">
               <div className="w-20 h-20 rounded-full bg-[#F3E8FF] text-[#6027D2] flex items-center justify-center text-4xl mb-4">
                 <FileTextOutlined />
@@ -262,10 +318,10 @@ function ReportsPageContent() {
                 Tạo báo cáo đầu tiên
               </Button>
             </div>
-          ) : filteredReports.length === 0 ? (
+          ) : filteredTotal === 0 ? (
             <NoResults
               label={
-                searchKeyword ||
+                debouncedKeyword ||
                 (timeliness !== 'ALL'
                   ? TIMELINESS_FILTERS.find((f) => f.value === timeliness)?.label || ''
                   : 'đơn đã chọn')
@@ -274,8 +330,12 @@ function ReportsPageContent() {
             />
           ) : (
             <div className="flex flex-col gap-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {pagedReports.map((rpt, idx) => {
+            <div
+              className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 transition-opacity ${
+                reportsLoading ? 'opacity-60' : ''
+              }`}
+            >
+              {reports.map((rpt, idx) => {
                 const orderInfo = ordersMap[rpt.serviceOrderId];
                 const plantNames = (rpt.plants || [])
                   .map((p) => p.plant?.name)
@@ -383,12 +443,12 @@ function ReportsPageContent() {
                 );
               })}
             </div>
-              {filteredReports.length > REPORTS_PAGE_SIZE && (
+              {filteredTotal > REPORTS_PAGE_SIZE && (
                 <div className="flex justify-end">
                   <Pagination
                     current={currentPage}
                     pageSize={REPORTS_PAGE_SIZE}
-                    total={filteredReports.length}
+                    total={filteredTotal}
                     onChange={(page) => {
                       setCurrentPage(page);
                       document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' });

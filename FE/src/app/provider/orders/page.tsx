@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   AppstoreAddOutlined,
@@ -32,7 +32,7 @@ import {
 } from '@ant-design/icons';
 import { Avatar, Button, Checkbox, Empty, Image, Input, Modal, Pagination, Radio, Select, Spin, Tag, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
-import { AddonItem, AddonStatus, DisputeDetail, DisputeReason, OrderDisputeItem, OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
+import { AddonItem, AddonStatus, DisputeDetail, DisputeReason, OrderDisputeItem, OrderItem, OrderListSort, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
 import { videoCallApi } from '@/lib/video-call.api';
 import ProviderHeader from '../components/ProviderHeader';
 import ProviderSidebar from '../components/ProviderSidebar';
@@ -41,7 +41,8 @@ import Highlight from '../components/Highlight';
 import HandoverCancelModal, { HANDOVER_CANCEL_ORDER_STATUSES } from '../components/HandoverCancelModal';
 import OrderDeadline from '../components/OrderDeadline';
 import OrderCancelModal, { PROVIDER_CANCELLABLE_STATUSES } from '../components/OrderCancelModal';
-import { matchesQuery, useUrlParam } from '@/lib/search';
+import RefundAddonModal from '../components/RefundAddonModal';
+import { useUrlParam } from '@/lib/search';
 
 const ORDERS_PAGE_SIZE = 10;
 const ORDER_TABS = [
@@ -238,6 +239,8 @@ function OrdersPageContent() {
   const [addonModalOpen, setAddonModalOpen] = useState(false);
   const [addonOrder, setAddonOrder] = useState<OrderItem | null>(null);
   const [addons, setAddons] = useState<AddonItem[]>([]);
+  // Add-on đang mở hộp thoại "Trả lại tiền" (null = đóng).
+  const [refundAddon, setRefundAddon] = useState<AddonItem | null>(null);
   const [addonsLoading, setAddonsLoading] = useState(false);
   const [addonSubmitting, setAddonSubmitting] = useState(false);
   const [addonUploading, setAddonUploading] = useState(false);
@@ -434,71 +437,97 @@ function OrdersPageContent() {
     }
   }, [searchParams]);
 
-  // Tải HẾT đơn một lần; đổi tab / tìm / sắp xếp / sang trang đều lọc tại chỗ, không gọi lại BE.
-  // (Trước đây gọi theo từng tab và không truyền limit → BE chỉ trả 10 đơn mới nhất.)
+  // ===== Tìm kiếm + lọc + sắp xếp + phân trang: BE làm hết (GET /orders?q&status&sort&page&limit) =====
+  const [searchQuery, setSearchQuery] = useUrlParam('q');
+  // Gõ xong 300ms mới gọi BE, tránh gọi theo từng phím.
+  const [debouncedQuery, setDebouncedQuery] = useState(searchQuery.trim());
+  const [sortBy, setSortBy] = useState<OrderListSort>('newest');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalFiltered, setTotalFiltered] = useState(0);
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  // Tổng đơn của vườn khi không tìm gì (để phân biệt "chưa có đơn nào" với "không có kết quả").
+  const [grandTotal, setGrandTotal] = useState<number | null>(null);
+  const ordersRequestId = useRef(0);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Về trang 1 mỗi khi đổi điều kiện lọc.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeTab, debouncedQuery, sortBy]);
+
+  // Gọi lại BE với bộ lọc hiện tại. Các thao tác trên đơn (nhận, huỷ, bàn giao...) gọi loadData → hàm này.
+  const loadOrders = async () => {
+    const requestId = ++ordersRequestId.current;
+    try {
+      const res = await providerApi.searchOrders({
+        status: activeTab === 'ALL' ? undefined : activeTab,
+        q: debouncedQuery || undefined,
+        sort: sortBy,
+        page: currentPage,
+        limit: ORDERS_PAGE_SIZE,
+      });
+      if (requestId !== ordersRequestId.current) return; // đã có lượt gọi mới hơn
+      setOrders(res.data);
+      setTotalFiltered(res.total);
+      setStatusCounts(res.statusCounts);
+      if (!debouncedQuery) {
+        setGrandTotal(Object.values(res.statusCounts).reduce((sum, n) => sum + Number(n || 0), 0));
+      }
+    } catch {
+      if (requestId !== ordersRequestId.current) return;
+      setOrders([]);
+      setTotalFiltered(0);
+      message.error('Không tải được danh sách đơn hàng. Vui lòng thử lại.');
+    }
+  };
+
   const loadData = async () => {
-    setLoading(true);
     try {
       const prof = await providerApi.getProfile();
       setProfile(prof);
     } catch {
       setProfile(null);
     }
-
-    try {
-      setOrders(await providerApi.listAllOrders());
-    } catch {
-      setOrders([]);
-    } finally {
-      setLoading(false);
-    }
+    await loadOrders();
   };
 
+  // Lần đầu: hồ sơ + đơn, có vòng xoay toàn trang.
   useEffect(() => {
-    if (mounted && isAuthenticated) {
-      loadData();
-    }
+    if (!mounted || !isAuthenticated) return;
+    setLoading(true);
+    providerApi
+      .getProfile()
+      .then(setProfile)
+      .catch(() => setProfile(null))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mounted, isAuthenticated]);
 
-  // ===== Tìm kiếm + lọc + sắp xếp + phân trang (phía FE) =====
-  const [searchQuery, setSearchQuery] = useUrlParam('q');
-  const [sortBy, setSortBy] = useState<'NEWEST' | 'PICKUP_SOON' | 'OLDEST'>('NEWEST');
-  const [currentPage, setCurrentPage] = useState(1);
-
-  // Về trang 1 mỗi khi đổi điều kiện lọc.
+  // Mỗi khi đổi tab / từ khoá / sắp xếp / trang → gọi BE lấy đúng trang đó.
+  const [ordersLoading, setOrdersLoading] = useState(false);
   useEffect(() => {
-    setCurrentPage(1);
-  }, [activeTab, searchQuery, sortBy]);
+    if (!mounted || !isAuthenticated) return;
+    setOrdersLoading(true);
+    loadOrders().finally(() => setOrdersLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, isAuthenticated, activeTab, debouncedQuery, sortBy, currentPage]);
 
-  const searchedOrders = orders.filter((order) =>
-    matchesQuery(
-      searchQuery,
-      order.orderCode,
-      order.customer?.account?.fullName,
-      order.servicePackage?.name,
-    ),
-  );
+  // "Tất cả" = tổng mọi trạng thái (kể cả đơn đã huỷ / tranh chấp không có tab riêng).
   const tabCounts = ORDER_TABS.reduce<Record<string, number>>((acc, tab) => {
     acc[tab.value] =
       tab.value === 'ALL'
-        ? searchedOrders.length
-        : searchedOrders.filter((o) => o.status === tab.value).length;
+        ? Object.values(statusCounts).reduce((sum, n) => sum + Number(n || 0), 0)
+        : Number(statusCounts[tab.value] ?? 0);
     return acc;
   }, {});
-  const time = (value?: string | null) => (value ? new Date(value).getTime() : 0);
-  const visibleOrders = searchedOrders
-    .filter((o) => activeTab === 'ALL' || o.status === activeTab)
-    .sort((a, b) => {
-      if (sortBy === 'OLDEST') return time(a.createdAt) - time(b.createdAt);
-      if (sortBy === 'PICKUP_SOON') return time(a.scheduledPickupAt) - time(b.scheduledPickupAt);
-      return time(b.createdAt) - time(a.createdAt);
-    });
-  const pagedOrders = visibleOrders.slice(
-    (currentPage - 1) * ORDERS_PAGE_SIZE,
-    currentPage * ORDERS_PAGE_SIZE,
-  );
+  const pagedOrders = orders;
   const resetFilters = () => {
     setSearchQuery('');
+    setDebouncedQuery('');
     setActiveTab('ALL');
   };
 
@@ -1052,34 +1081,34 @@ function OrdersPageContent() {
                   aria-label="Sắp xếp đơn"
                   className="w-48"
                   options={[
-                    { value: 'NEWEST', label: 'Mới nhất trước' },
-                    { value: 'PICKUP_SOON', label: 'Giờ hẹn gần nhất' },
-                    { value: 'OLDEST', label: 'Cũ nhất trước' },
+                    { value: 'newest', label: 'Mới nhất trước' },
+                    { value: 'pickupSoon', label: 'Giờ hẹn gần nhất' },
+                    { value: 'oldest', label: 'Cũ nhất trước' },
                   ]}
                 />
               }
             />
           </div>
-          {!loading && orders.length > 0 && (
+          {!loading && !ordersLoading && totalFiltered > 0 && (
             <p className="mb-4 text-xs text-[#6E6A8A]">
               {searchQuery || activeTab !== 'ALL' ? (
                 <>
-                  <b className="text-[#1E1B2E] tabular-nums">{visibleOrders.length}</b> kết quả
+                  <b className="text-[#1E1B2E] tabular-nums">{totalFiltered}</b> kết quả
                 </>
               ) : (
                 <>
-                  Tổng <b className="text-[#1E1B2E] tabular-nums">{orders.length}</b> đơn
+                  Tổng <b className="text-[#1E1B2E] tabular-nums">{totalFiltered}</b> đơn
                 </>
               )}
             </p>
           )}
 
-          {loading ? (
+          {loading || (ordersLoading && orders.length === 0) ? (
             <div className="py-20 text-center">
               <Spin size="large" />
               <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải danh sách đơn hàng...</p>
             </div>
-          ) : orders.length === 0 ? (
+          ) : grandTotal === 0 && !debouncedQuery && activeTab === 'ALL' ? (
             <div className="bg-white rounded-2xl p-12 text-center border border-[#ECE7FA] flex flex-col items-center justify-center">
               <div className="w-20 h-20 rounded-full bg-[#F3E8FF] text-[#6027D2] flex items-center justify-center text-4xl mb-4">
                 <ContainerOutlined />
@@ -1089,13 +1118,13 @@ function OrdersPageContent() {
                 Khi khách đặt lịch chăm sóc tại nhà vườn, đơn sẽ hiện ở đây.
               </p>
             </div>
-          ) : visibleOrders.length === 0 ? (
+          ) : totalFiltered === 0 && !ordersLoading ? (
             <NoResults
               label={searchQuery || ORDER_TABS.find((t) => t.value === activeTab)?.label || activeTab}
               onReset={resetFilters}
             />
           ) : (
-            <div className="flex flex-col gap-4">
+            <div className={`flex flex-col gap-4 transition-opacity ${ordersLoading ? 'opacity-60' : ''}`}>
               {pagedOrders.map((order) => {
                 const firstPlantPhoto =
                   (order as any).plants?.[0]?.initialPhotos?.[0]?.photoUrl ||
@@ -1405,12 +1434,12 @@ function OrdersPageContent() {
                   </div>
                 );
               })}
-              {visibleOrders.length > ORDERS_PAGE_SIZE && (
+              {totalFiltered > ORDERS_PAGE_SIZE && (
                 <div className="flex justify-end pt-2">
                   <Pagination
                     current={currentPage}
                     pageSize={ORDERS_PAGE_SIZE}
-                    total={visibleOrders.length}
+                    total={totalFiltered}
                     onChange={(page) => {
                       setCurrentPage(page);
                       document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1697,6 +1726,22 @@ function OrdersPageContent() {
           </div>
         )}
       </Modal>
+
+      {/* Trả lại add-on đã thanh toán */}
+      <RefundAddonModal
+        orderId={addonOrder?.id ?? null}
+        addon={refundAddon}
+        onClose={() => setRefundAddon(null)}
+        onRefunded={async () => {
+          setRefundAddon(null);
+          if (!addonOrder) return;
+          try {
+            setAddons(await providerApi.listAddons(addonOrder.id));
+          } catch {
+            /* danh sách cũ vẫn hiện; mở lại hộp thoại sẽ đúng */
+          }
+        }}
+      />
 
       {/* Contract Detail Modal */}
       <Modal
@@ -2936,6 +2981,7 @@ function OrdersPageContent() {
                     DONE: { color: 'green', label: 'Đã hoàn thành' },
                     REJECTED: { color: 'red', label: 'Khách từ chối' },
                     EXPIRED: { color: 'default', label: 'Đã hết hạn' },
+                    REFUNDED: { color: 'blue', label: 'Đã trả lại khách' },
                   };
                   const st = statusMap[ad.status] || { color: 'default', label: ad.status };
 
@@ -3004,6 +3050,20 @@ function OrdersPageContent() {
                         </div>
                       )}
 
+                      {/* Vườn đã trả lại add-on: khách được hoàn giá + 6% */}
+                      {ad.status === 'REFUNDED' && (
+                        <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-900 space-y-1">
+                          <p className="font-bold">
+                            Đã trả lại khách · hoàn {Number(ad.amountDue || 0).toLocaleString('vi-VN')} đ
+                          </p>
+                          {ad.refundReason && (
+                            <p>
+                              <strong>Lý do:</strong> {ad.refundReason}
+                            </p>
+                          )}
+                        </div>
+                      )}
+
                       {/* Done section if completed */}
                       {ad.status === 'DONE' && (
                         <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 space-y-1.5">
@@ -3054,7 +3114,17 @@ function OrdersPageContent() {
 
                       {/* Action for PAID status: Mark Complete */}
                       {ad.status === 'PAID' && (
-                        <div className="flex justify-end pt-1">
+                        <div className="flex justify-end gap-2 pt-1">
+                          {/* Trả lại chỉ được khi đơn còn đang chăm (BE chặn ở trạng thái khác). */}
+                          {addonOrder?.status === 'IN_CARE' && (
+                            <Button
+                              danger
+                              onClick={() => setRefundAddon(ad)}
+                              className="!h-8 !px-3.5 !rounded-xl !font-semibold text-xs"
+                            >
+                              Trả lại tiền
+                            </Button>
+                          )}
                           <Button
                             type="primary"
                             icon={<CheckCircleOutlined />}

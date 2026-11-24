@@ -46,15 +46,21 @@ const TYPE_LABELS: Record<DisbursementType, string> = {
   REFUND: 'Hoàn tiền công cho khách',
   COMPENSATION: 'Đền giá trị cây cho khách',
   DECLARED_RETURN: 'Trả lại tiền khai giá cho khách',
+  // Hai loại chi ngay (không chờ 3 ngày): thối tiền chuyển dư và hoàn khoản tiền chưa khớp.
+  OVERPAY_RETURN: 'Trả lại tiền chuyển dư',
+  UNMATCHED_REFUND: 'Hoàn tiền chưa khớp',
 };
 
-const RECIPIENT_LABELS = { CUSTOMER: 'Khách hàng', PROVIDER: 'Nhà vườn' } as const;
+const RECIPIENT_LABELS = { CUSTOMER: 'Khách hàng', PROVIDER: 'Nhà vườn', OTHER: 'Người ngoài' } as const;
+const RECIPIENT_COLORS = { CUSTOMER: 'blue', PROVIDER: 'green', OTHER: 'default' } as const;
 
 // Người nhận chưa khai tài khoản: khách bổ sung trên app, nhà vườn bổ sung ở web Hồ sơ.
 // BE tự lấy tài khoản mới trong hồ sơ khi admin bấm xác nhận, không cần thao tác gì thêm.
 const MISSING_BANK = {
   CUSTOMER: { label: 'Khách chưa khai tài khoản', hint: 'Chờ khách bổ sung trên app' },
   PROVIDER: { label: 'Nhà vườn chưa khai tài khoản', hint: 'Chờ nhà vườn bổ sung ở trang Hồ sơ' },
+  // BE luôn lưu tài khoản cho lệnh OTHER; dòng này chỉ để phòng dữ liệu lỗi.
+  OTHER: { label: 'Lệnh chi thiếu tài khoản nhận', hint: 'Kiểm tra lại khoản tiền chưa khớp gốc' },
 } as const;
 
 const MARK_PAID_ERRORS: Record<string, string> = {
@@ -67,10 +73,15 @@ const MARK_PAID_ERRORS: Record<string, string> = {
 };
 
 const recipientOf = (record: DisbursementItem) =>
-  record.recipient ?? (record.customerId ? 'CUSTOMER' : 'PROVIDER');
+  record.recipient ?? (record.customerId ? 'CUSTOMER' : record.providerId ? 'PROVIDER' : 'OTHER');
 
+// Người ngoài không có hồ sơ → lấy tên chủ tài khoản ngân hàng admin đã nhập.
 const recipientNameOf = (record: DisbursementItem) =>
-  record.recipientName ?? record.providerName ?? 'Chưa rõ tên';
+  record.recipientName ?? record.providerName ?? record.bank?.bankHolder ?? 'Chưa rõ tên';
+
+// Mã đơn để hiện; khoản tiền chưa khớp có thể không gắn đơn nào.
+const orderLabelOf = (record: DisbursementItem) =>
+  record.orderCode ? `#${record.orderCode}` : 'Không gắn đơn';
 
 export default function AdminDisbursementsPage() {
   const router = useRouter();
@@ -145,7 +156,11 @@ export default function AdminDisbursementsPage() {
         transferCode: values.transferCode.trim(),
         note: values.note?.trim() || undefined,
       });
-      message.success(`Đã xác nhận chuyển khoản cho đơn #${selectedItem.orderCode}`);
+      message.success(
+        selectedItem.orderCode
+          ? `Đã xác nhận chuyển khoản cho đơn #${selectedItem.orderCode}`
+          : 'Đã xác nhận chuyển khoản',
+      );
       setPayModalOpen(false);
       setSelectedItem(null);
       await fetchDisbursements(page, statusFilter);
@@ -179,9 +194,11 @@ export default function AdminDisbursementsPage() {
       key: 'orderCode',
       render: (_, record) => (
         <div>
-          <span className="font-bold text-[#6027D2] font-mono text-xs">
-            #{record.orderCode}
-          </span>
+          {record.orderCode ? (
+            <span className="font-bold text-[#6027D2] font-mono text-xs">#{record.orderCode}</span>
+          ) : (
+            <span className="font-semibold text-[#8B86A4] text-xs">Không gắn đơn</span>
+          )}
           <div className="text-[11px] text-[#6E6A8A] mt-0.5">
             {TYPE_LABELS[record.type] ?? record.type}
           </div>
@@ -192,12 +209,11 @@ export default function AdminDisbursementsPage() {
       title: 'Người nhận',
       key: 'recipient',
       render: (_, record) => {
-        const toCustomer = recipientOf(record) === 'CUSTOMER';
         return (
           <div className="flex flex-col items-start gap-1">
             <span className="font-semibold text-[#1E1B2E] text-xs">{recipientNameOf(record)}</span>
             <Tag
-              color={toCustomer ? 'blue' : 'green'}
+              color={RECIPIENT_COLORS[recipientOf(record)]}
               className="!m-0 !rounded-md !text-[10px] !leading-4"
             >
               {RECIPIENT_LABELS[recipientOf(record)]}
@@ -358,7 +374,8 @@ export default function AdminDisbursementsPage() {
                 Quản lý giải ngân (Payout)
               </h1>
               <p className="text-xs text-[#6E6A8A] mt-1">
-                Lệnh chi khi đơn hoàn tất: tiền cho khách chi ngay, tiền cho nhà vườn chi sau 3 ngày chờ khiếu nại
+                Lệnh chi khi đơn hoàn tất: tiền cho khách chi ngay, tiền cho nhà vườn chi sau 3 ngày chờ khiếu nại.
+                Tiền chuyển dư và tiền chưa khớp được hoàn cũng hiện ở đây, chi ngay.
               </p>
             </div>
             <Button
@@ -441,7 +458,7 @@ export default function AdminDisbursementsPage() {
       <Modal
         title={
           <span className="font-bold text-[#1E1B2E]">
-            Xác nhận đã chuyển khoản — Đơn #{selectedItem?.orderCode}
+            Xác nhận đã chuyển khoản — {selectedItem ? orderLabelOf(selectedItem) : ''}
           </span>
         }
         open={payModalOpen}
