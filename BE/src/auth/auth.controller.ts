@@ -1,79 +1,378 @@
-import { Body, Controller, HttpCode, Post, Req } from '@nestjs/common';
-import type { Request } from 'express';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  HttpCode,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  UploadedFiles,
+  UseInterceptors,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiHeader,
   ApiOperation,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { Throttle } from '@nestjs/throttler';
+import { RATE_LIMIT_WINDOW_MS } from '../common/throttle';
 import { Public } from './decorators/public.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import type { CurrentUserData } from './types/current-user.type';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
-import { RegisterProviderDto } from './dto/register-provider.dto';
+import { RegisterWithEkycDto } from './dto/register-with-ekyc.dto';
 import { LoginDto } from './dto/login.dto';
+import { GoogleLoginDto } from './dto/google-login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { LogoutDto } from './dto/logout.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import {
+  ResetPasswordWithOtpDto,
+  SendEmailOtpDto,
+  SendRegisterOtpDto,
+  VerifyOtpDto,
+} from './dto/otp.dto';
+import {
+  ActiveSessionDto,
   AuthTokensResponseDto,
+  ForgotPasswordResponseDto,
+  GoogleAuthResponseDto,
   LogoutResponseDto,
   RegisterResponseDto,
+  RevokeSessionResponseDto,
+  SendOtpResponseDto,
+  VerifyEmailResponseDto,
+  VerifyRegisterOtpResponseDto,
+  VerifyResetOtpResponseDto,
 } from './dto/auth-response.dto';
 
+// Rate limit riêng cho route public dễ bị dò/spam (cửa sổ 1 phút, xem common/throttle.ts):
+// - ip: mọi request từ 1 IP (chống 1 máy spam / thử nhiều email);
+// - account: theo IP + email trong body — chặn dò 1 email mà không chặn người khác chung IP
+//   (cả phòng chung Wi-Fi khi demo). Chỉ đếm khi body có email.
+// Vượt → 429 ThrottlerException.
+const throttle = (limits: { ip: number; account?: number }) =>
+  Throttle({
+    default: { limit: limits.ip, ttl: RATE_LIMIT_WINDOW_MS },
+    ...(limits.account !== undefined && {
+      account: { limit: limits.account, ttl: RATE_LIMIT_WINDOW_MS },
+    }),
+  });
+
+// Controller mỏng: chỉ map HTTP → AuthService. User-Agent được lưu kèm refresh token để
+// nhận diện phiên/thiết bị khi tra bảng refresh_tokens. Nghiệp vụ + mã lỗi: xem AuthService.
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Public()
-  @Post('register')
+  @Post('register-with-ekyc')
+  @throttle({ ip: 10, account: 3 })
   @HttpCode(201)
-  @ApiOperation({ summary: 'Đăng ký tài khoản CUSTOMER hoặc PROVIDER' })
+  @ApiOperation({
+    summary: 'Đăng ký tài khoản tự động lồng eKYC trong RAM (Không lưu ảnh & số CCCD)',
+    description:
+      'Đăng ký tài khoản kèm xác thực eKYC tức thời trong RAM. AI chỉ trích xuất họ tên, ngày sinh, quê quán, địa chỉ thường trú; ' +
+      'KHÔNG thu giữ số CCCD và KHÔNG lưu trữ hình ảnh lên DB/Cloud.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['email', 'password', 'cccdFront', 'selfie'],
+      properties: {
+        email: { type: 'string', format: 'email', example: 'customer@lancarehub.vn' },
+        password: { type: 'string', example: 'MatKhau123@' },
+        fullName: { type: 'string', example: 'Nguyễn Văn Lan (tuỳ chọn - AI tự đọc)' },
+        role: { type: 'string', enum: ['CUSTOMER', 'PROVIDER'], default: 'CUSTOMER' },
+        phone: { type: 'string', example: '0901234567' },
+        otp: { type: 'string', example: '123456', description: 'Mã OTP 6 số xác thực email (tuỳ chọn)' },
+        verificationToken: { type: 'string', description: 'Token từ /auth/register/verify-otp (tuỳ chọn)' },
+        cccdFront: { type: 'string', format: 'binary', description: 'Ảnh mặt trước thẻ đối chiếu tức thời trong RAM (không lưu trữ)' },
+        selfie: { type: 'string', format: 'binary', description: 'Ảnh chân dung đối chiếu tức thời trong RAM (không lưu trữ)' },
+      },
+    },
+  })
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'cccdFront', maxCount: 1 },
+        { name: 'selfie', maxCount: 1 },
+      ],
+      {
+        storage: memoryStorage(),
+        limits: { fileSize: 20 * 1024 * 1024 },
+      },
+    ),
+  )
+  @ApiHeader({
+    name: 'user-agent',
+    required: false,
+    description: 'Thiết bị / trình duyệt gửi request (tuỳ chọn)',
+    schema: { default: 'Swagger UI / Browser' },
+  })
+  async registerWithEkyc(
+    @Body() dto: RegisterWithEkycDto,
+    @UploadedFiles()
+    files: {
+      cccdFront?: Express.Multer.File[];
+      selfie?: Express.Multer.File[];
+    },
+    @Headers('user-agent') userAgent?: string,
+  ) {
+    if (!files?.cccdFront?.[0]) {
+      throw new BadRequestException('Vui lòng tải lên ảnh mặt trước thẻ để đối chiếu tức thời (field: cccdFront).');
+    }
+    if (!files?.selfie?.[0]) {
+      throw new BadRequestException('Vui lòng tải lên ảnh chân dung để đối chiếu tức thời (field: selfie).');
+    }
+    return this.auth.registerWithEkyc(
+      dto,
+      {
+        cccdFront: files.cccdFront[0],
+        selfie: files.selfie[0],
+      },
+      userAgent,
+    );
+  }
+
+  @Public()
+  @Post('register/send-otp')
+  @throttle({ ip: 10, account: 3 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Gửi mã OTP 6 chữ số tới Gmail/email để xác thực trước khi đăng ký',
+  })
+  @ApiResponse({ status: 200, type: SendOtpResponseDto })
+  @ApiResponse({ status: 409, description: 'EMAIL_EXISTS' })
+  @ApiResponse({ status: 429, description: 'OTP_COOLDOWN' })
+  sendRegisterOtp(
+    @Body() dto: SendRegisterOtpDto,
+  ): Promise<SendOtpResponseDto> {
+    return this.auth.sendRegisterOtp(dto);
+  }
+
+  @Public()
+  @Post('register/verify-otp')
+  @throttle({ ip: 15, account: 5 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Xác thực mã OTP đăng ký và nhận verificationToken (luồng 2 bước)',
+  })
+  @ApiResponse({ status: 200, type: VerifyRegisterOtpResponseDto })
+  @ApiResponse({
+    status: 400,
+    description: 'OTP_INVALID | OTP_EXPIRED | OTP_MAX_ATTEMPTS',
+  })
+  verifyRegisterOtp(
+    @Body() dto: VerifyOtpDto,
+  ): Promise<VerifyRegisterOtpResponseDto> {
+    return this.auth.verifyRegisterOtp(dto);
+  }
+
+  @Public()
+  @Post('register')
+  // Chống spam tạo account.
+  @throttle({ ip: 30, account: 5 })
+  @HttpCode(201)
+  @ApiOperation({
+    summary: 'Đăng ký tài khoản cơ bản (status PENDING - khuyến khích dùng /register-with-ekyc để tự động kích hoạt)',
+  })
   @ApiResponse({ status: 201, type: RegisterResponseDto })
-  @ApiResponse({ status: 409, description: 'EMAIL_EXISTS — email đã tồn tại' })
+  @ApiResponse({ status: 409, description: 'EMAIL_EXISTS' })
   register(@Body() dto: RegisterDto): Promise<RegisterResponseDto> {
     return this.auth.register(dto);
   }
 
   @Public()
-  @Post('register-provider')
-  @HttpCode(201)
-  @ApiOperation({ summary: 'Đăng ký riêng dành cho Provider kèm tạo hồ sơ provider_profiles PENDING' })
-  @ApiResponse({ status: 201, type: RegisterResponseDto })
-  @ApiResponse({ status: 409, description: 'EMAIL_EXISTS — email đã tồn tại' })
-  registerProvider(@Body() dto: RegisterProviderDto): Promise<RegisterResponseDto> {
-    return this.auth.registerProvider(dto);
+  @Post('verify-email/send-otp')
+  @throttle({ ip: 10, account: 3 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Gửi mã OTP xác thực địa chỉ email cho tài khoản đã đăng ký',
+  })
+  @ApiResponse({ status: 200, type: SendOtpResponseDto })
+  sendEmailVerificationOtp(
+    @Body() dto: SendEmailOtpDto,
+  ): Promise<SendOtpResponseDto> {
+    return this.auth.sendEmailVerificationOtp(dto);
+  }
+
+  @Public()
+  @Post('verify-email')
+  @throttle({ ip: 15, account: 5 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Xác thực OTP để đánh dấu tài khoản đã xác minh email',
+  })
+  @ApiResponse({ status: 200, type: VerifyEmailResponseDto })
+  @ApiResponse({
+    status: 400,
+    description: 'OTP_INVALID | OTP_EXPIRED | OTP_MAX_ATTEMPTS',
+  })
+  verifyEmail(@Body() dto: VerifyOtpDto): Promise<VerifyEmailResponseDto> {
+    return this.auth.verifyEmail(dto);
   }
 
   @Public()
   @Post('login')
+  // Chống dò mật khẩu (brute-force).
+  @throttle({ ip: 30, account: 5 })
   @HttpCode(200)
-  @ApiOperation({ summary: 'Đăng nhập, trả về access + refresh token' })
+  @ApiOperation({ summary: 'Đăng nhập email + mật khẩu' })
   @ApiResponse({ status: 200, type: AuthTokensResponseDto })
   @ApiResponse({ status: 401, description: 'INVALID_CREDENTIALS' })
-  @ApiResponse({
-    status: 403,
-    description: 'ACCOUNT_SUSPENDED (bị khoá) hoặc ACCOUNT_INACTIVE (chưa kích hoạt)',
-  })
+  @ApiResponse({ status: 403, description: 'ACCOUNT_SUSPENDED' })
   login(
     @Body() dto: LoginDto,
-    @Req() req: Request,
+    @Headers('user-agent') userAgent?: string,
   ): Promise<AuthTokensResponseDto> {
-    return this.auth.login(dto, req.headers['user-agent']);
+    return this.auth.login(dto, userAgent);
+  }
+
+  @Public()
+  @Post('google')
+  // Mỗi lần gọi tải/kiểm chữ ký Google; lần đầu có thể gửi mail.
+  @throttle({ ip: 10 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Đăng nhập / đăng ký bằng Google ID token. Lần đầu cần role; tài khoản mới nhận mật khẩu qua mail',
+  })
+  @ApiResponse({ status: 200, type: GoogleAuthResponseDto })
+  @ApiResponse({
+    status: 401,
+    description: 'INVALID_GOOGLE_TOKEN | GOOGLE_EMAIL_NOT_VERIFIED',
+  })
+  @ApiResponse({
+    status: 404,
+    description:
+      'GOOGLE_ACCOUNT_NOT_REGISTERED — chưa có tài khoản, gọi lại cùng idToken kèm role',
+  })
+  @ApiResponse({ status: 403, description: 'ACCOUNT_SUSPENDED' })
+  @ApiResponse({
+    status: 503,
+    description:
+      'GOOGLE_AUTH_NOT_CONFIGURED (thiếu GOOGLE_CLIENT_IDS) | GOOGLE_AUTH_UNAVAILABLE (không kết nối được Google — thử lại sau)',
+  })
+  google(
+    @Body() dto: GoogleLoginDto,
+    @Headers('user-agent') userAgent?: string,
+  ): Promise<GoogleAuthResponseDto> {
+    return this.auth.loginWithGoogle(dto, userAgent);
   }
 
   @Public()
   @Post('refresh')
+  // App tự gọi khi access token hết hạn — nới hơn login.
+  @throttle({ ip: 30 })
   @HttpCode(200)
   @ApiOperation({ summary: 'Làm mới token bằng refresh token (có xoay token)' })
   @ApiResponse({ status: 200, type: AuthTokensResponseDto })
-  @ApiResponse({ status: 401, description: 'INVALID_REFRESH_TOKEN' })
+  @ApiResponse({
+    status: 401,
+    description: 'INVALID_REFRESH_TOKEN | REFRESH_TOKEN_REUSED',
+  })
   refresh(
     @Body() dto: RefreshTokenDto,
-    @Req() req: Request,
+    @Headers('user-agent') userAgent?: string,
   ): Promise<AuthTokensResponseDto> {
-    return this.auth.refresh(dto, req.headers['user-agent']);
+    return this.auth.refresh(dto, userAgent);
+  }
+
+  @Public()
+  @Post('forgot-password')
+  // Mỗi lần gọi gửi 1 mail — chặn spam hộp thư người khác.
+  @throttle({ ip: 10, account: 3 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Quên mật khẩu — gửi link đặt lại qua mail (hạn 30 phút, dùng 1 lần). LUÔN 200, kể cả email không tồn tại',
+  })
+  @ApiResponse({ status: 200, type: ForgotPasswordResponseDto })
+  forgotPassword(
+    @Body() dto: ForgotPasswordDto,
+  ): Promise<ForgotPasswordResponseDto> {
+    return this.auth.forgotPassword(dto);
+  }
+
+  @Public()
+  @Post('forgot-password/otp')
+  @throttle({ ip: 10, account: 3 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Quên mật khẩu bằng OTP — gửi mã 6 chữ số qua email (hạn 10 phút). LUÔN 200',
+  })
+  @ApiResponse({ status: 200, type: SendOtpResponseDto })
+  forgotPasswordOtp(
+    @Body() dto: ForgotPasswordDto,
+  ): Promise<SendOtpResponseDto> {
+    return this.auth.forgotPasswordOtp(dto);
+  }
+
+  @Public()
+  @Post('forgot-password/verify-otp')
+  @throttle({ ip: 10, account: 5 })
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Xác thực OTP quên mật khẩu và nhận resetToken để gọi /auth/reset-password (luồng 2 bước)',
+  })
+  @ApiResponse({ status: 200, type: VerifyResetOtpResponseDto })
+  @ApiResponse({
+    status: 400,
+    description: 'OTP_INVALID | OTP_EXPIRED | OTP_MAX_ATTEMPTS',
+  })
+  verifyForgotPasswordOtp(
+    @Body() dto: VerifyOtpDto,
+  ): Promise<VerifyResetOtpResponseDto> {
+    return this.auth.verifyForgotPasswordOtp(dto);
+  }
+
+  @Public()
+  @Post('reset-password')
+  // Chống dò token.
+  @throttle({ ip: 5 })
+  @HttpCode(204)
+  @ApiOperation({
+    summary:
+      'Đặt lại mật khẩu bằng token trong link mail hoặc từ /auth/forgot-password/verify-otp — thành công thì MỌI phiên bị đăng xuất',
+  })
+  @ApiResponse({ status: 204 })
+  @ApiResponse({
+    status: 400,
+    description: 'RESET_TOKEN_INVALID (sai / hết hạn / đã dùng)',
+  })
+  resetPassword(@Body() dto: ResetPasswordDto): Promise<void> {
+    return this.auth.resetPassword(dto);
+  }
+
+  @Public()
+  @Post('reset-password-otp')
+  @throttle({ ip: 5, account: 5 })
+  @HttpCode(204)
+  @ApiOperation({
+    summary:
+      'Đặt lại mật khẩu trực tiếp bằng email + OTP 6 số (luồng 1 bước) — thành công thì MỌI phiên bị đăng xuất',
+  })
+  @ApiResponse({ status: 204 })
+  @ApiResponse({
+    status: 400,
+    description: 'OTP_INVALID | OTP_EXPIRED | OTP_MAX_ATTEMPTS',
+  })
+  resetPasswordWithOtp(@Body() dto: ResetPasswordWithOtpDto): Promise<void> {
+    return this.auth.resetPasswordWithOtp(dto);
   }
 
   @Post('logout')
@@ -81,7 +380,7 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({
     summary:
-      'Đăng xuất — có refreshToken thì thu hồi 1 thiết bị, bỏ trống thì thu hồi mọi thiết bị',
+      'Đăng xuất — có refreshToken thì thu hồi 1 thiết bị, bỏ trống thì mọi thiết bị',
   })
   @ApiResponse({ status: 200, type: LogoutResponseDto })
   logout(
@@ -89,5 +388,33 @@ export class AuthController {
     @Body() dto: LogoutDto,
   ): Promise<LogoutResponseDto> {
     return this.auth.logout(user, dto);
+  }
+
+  @Get('sessions')
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Liệt kê các phiên đăng nhập (thiết bị) đang hoạt động của tài khoản',
+  })
+  @ApiResponse({ status: 200, type: [ActiveSessionDto] })
+  listSessions(
+    @CurrentUser() user: CurrentUserData,
+  ): Promise<ActiveSessionDto[]> {
+    return this.auth.listSessions(user);
+  }
+
+  @Delete('sessions/:sessionId')
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Thu hồi (đăng xuất từ xa) một phiên đăng nhập cụ thể theo sessionId',
+  })
+  @ApiResponse({ status: 200, type: RevokeSessionResponseDto })
+  @ApiResponse({ status: 404, description: 'SESSION_NOT_FOUND' })
+  revokeSession(
+    @CurrentUser() user: CurrentUserData,
+    @Param('sessionId', ParseUUIDPipe) sessionId: string,
+  ): Promise<RevokeSessionResponseDto> {
+    return this.auth.revokeSession(user, sessionId);
   }
 }

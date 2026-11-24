@@ -8,7 +8,12 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { CurrentUserData } from '../auth/types/current-user.type';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -25,17 +30,41 @@ export class CareReportsController {
   @Roles('PROVIDER')
   @Post()
   @HttpCode(201)
-  @ApiOperation({ summary: 'Nhà vườn nộp báo cáo chăm sóc theo tần suất gói dịch vụ' })
+  @ApiOperation({
+    summary: 'Nhà vườn nộp báo cáo chăm sóc kỳ kế tiếp (server tự tính kỳ)',
+  })
+  @ApiResponse({
+    status: 201,
+    description:
+      '{ id, serviceOrderId, periodIndex, periodStart, periodEnd, isLate, submittedAt }',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'ORDER_NOT_IN_CARE | REPORT_PLANTS_MISMATCH | PLANT_PHOTO_REQUIRED | CARE_ACTIVITY_INVALID',
+  })
+  @ApiResponse({ status: 403, description: 'PROVIDER_NOT_ALLOWED' })
+  @ApiResponse({ status: 404, description: 'SERVICE_ORDER_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'REPORT_PERIOD_NOT_STARTED | ALL_PERIODS_SUBMITTED | CARE_REPORT_DUPLICATE',
+  })
   createCareReport(
     @CurrentUser() user: CurrentUserData,
     @Body() dto: CreateCareReportDto,
   ) {
-    return this.careReportsService.createCareReport(user.accountId, user.role, dto);
+    return this.careReportsService.createCareReport(
+      user.accountId,
+      user.role,
+      dto,
+    );
   }
 
   @Roles('PROVIDER', 'ADMIN', 'CUSTOMER')
   @Get(':id')
-  @ApiOperation({ summary: 'Chi tiết báo cáo chăm sóc' })
+  @ApiOperation({ summary: 'Chi tiết báo cáo chăm sóc (kèm từng cây + ảnh)' })
+  @ApiResponse({ status: 404, description: 'CARE_REPORT_NOT_FOUND' })
   getCareReport(
     @CurrentUser() user: CurrentUserData,
     @Param('id', ParseUUIDPipe) id: string,
@@ -45,11 +74,30 @@ export class CareReportsController {
 
   @Roles('PROVIDER', 'ADMIN', 'CUSTOMER')
   @Get()
-  @ApiOperation({ summary: 'Danh sách báo cáo chăm sóc theo đơn' })
+  @ApiOperation({
+    summary: 'Danh sách báo cáo chăm sóc: phân trang, tìm, lọc nộp trễ',
+    description:
+      'Luôn trả { data, total, page, limit }. Có serviceOrderId → theo kỳ 1→n, limit mặc định 50; ' +
+      'không có → mới nộp trước, limit mặc định 10 (tối đa 50). q tìm không dấu trong mã đơn, tên khách, ' +
+      'ghi chú báo cáo, tên cây, ghi chú từng cây. late=true → chỉ báo cáo nộp trễ.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ data: [{ id, serviceOrderId, periodIndex, isLate, submittedAt, ..., plants: [{ plant, ..., photos }] }], total, page, limit }',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'PROVIDER_NOT_ALLOWED | CUSTOMER_NOT_ALLOWED',
+  })
   listCareReports(
     @CurrentUser() user: CurrentUserData,
     @Query() query: QueryCareReportDto,
   ) {
-    return this.careReportsService.listCareReports(user.accountId, user.role, query);
+    return this.careReportsService.listCareReports(
+      user.accountId,
+      user.role,
+      query,
+    );
   }
 }

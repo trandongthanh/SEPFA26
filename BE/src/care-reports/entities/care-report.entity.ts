@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   Entity,
   Index,
@@ -9,12 +10,29 @@ import {
 } from 'typeorm';
 import { BaseEntity } from '../../common/entities/base.entity';
 import { ServiceOrder } from '../../orders/entities/service-order.entity';
-import { CareReportEvidence } from './care-report-evidence.entity';
+import { numericColumn } from '../care-report.constants';
+import { CareReportPlant } from './care-report-plant.entity';
 
+/**
+ * Báo cáo chăm sóc mỗi kỳ — phần CHUNG của đơn: môi trường vườn + hoạt động chăm.
+ * Sức khỏe, ảnh, chỉ số đo của từng cây nằm ở `care_report_plants`.
+ * Kỳ do server tính (`care-period.ts`); mỗi đơn mỗi kỳ đúng 1 báo cáo. Chỉ thêm, không sửa.
+ */
 @Entity({ name: 'care_reports' })
-@Index('UQ_CARE_REPORT_ORDER_PERIOD', ['serviceOrderId', 'periodStart', 'periodEnd'], {
+@Index('UQ_CARE_REPORT_ORDER_PERIOD', ['serviceOrderId', 'periodIndex'], {
   unique: true,
 })
+@Check('CHK_care_reports_period_index', `"period_index" >= 1`)
+@Check('CHK_care_reports_humidity', `"air_humidity" BETWEEN 0 AND 100`)
+@Check('CHK_care_reports_light', `"light_intensity" >= 0`)
+@Check(
+  'CHK_care_reports_watering',
+  `("watered" AND "water_amount_ml" > 0) OR (NOT "watered" AND "water_amount_ml" IS NULL)`,
+)
+@Check(
+  'CHK_care_reports_fertilizing',
+  `("fertilized" AND "fertilizer_type" IS NOT NULL) OR (NOT "fertilized" AND "fertilizer_type" IS NULL)`,
+)
 export class CareReport extends BaseEntity {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -27,68 +45,91 @@ export class CareReport extends BaseEntity {
   @JoinColumn({ name: 'service_order_id' })
   serviceOrder!: ServiceOrder;
 
+  /** Kỳ thứ n, bắt đầu từ 1. */
+  @Column({ type: 'integer', name: 'period_index' })
+  periodIndex!: number;
+
   @Column({ type: 'timestamptz', name: 'period_start' })
   periodStart!: Date;
 
   @Column({ type: 'timestamptz', name: 'period_end' })
   periodEnd!: Date;
 
-  @Column({ type: 'varchar', length: 255, name: 'plant_name_snapshot' })
-  plantNameSnapshot!: string;
+  @Column({ type: 'timestamptz', name: 'submitted_at' })
+  submittedAt!: Date;
 
-  @Column({ type: 'varchar', length: 255, name: 'plant_code_snapshot' })
-  plantCodeSnapshot!: string;
+  /** Nộp sau period_end — dùng cho điểm tuân thủ sau này. */
+  @Column({ type: 'boolean', name: 'is_late', default: false })
+  isLate!: boolean;
 
-  @Column({ type: 'text', name: 'plot_position_snapshot' })
-  plotPositionSnapshot!: string;
+  // --- Môi trường (°C, %RH, Lux) ---
+  @Column({
+    type: 'numeric',
+    precision: 4,
+    scale: 1,
+    name: 'air_temperature',
+    transformer: numericColumn,
+  })
+  airTemperature!: number;
 
-  @Column({ type: 'varchar', length: 50, name: 'weather' })
-  weather!: string;
+  @Column({
+    type: 'numeric',
+    precision: 4,
+    scale: 1,
+    name: 'air_humidity',
+    transformer: numericColumn,
+  })
+  airHumidity!: number;
 
-  @Column({ type: 'numeric', precision: 5, scale: 2, name: 'temperature_min' })
-  temperatureMin!: number;
+  @Column({ type: 'integer', name: 'light_intensity' })
+  lightIntensity!: number;
 
-  @Column({ type: 'numeric', precision: 5, scale: 2, name: 'temperature_max' })
-  temperatureMax!: number;
+  // --- Hoạt động chăm sóc ---
+  @Column({ type: 'boolean' })
+  watered!: boolean;
 
-  @Column({ type: 'numeric', precision: 5, scale: 2, name: 'humidity_min' })
-  humidityMin!: number;
+  @Column({ type: 'integer', name: 'water_amount_ml', nullable: true })
+  waterAmountMl!: number | null;
 
-  @Column({ type: 'numeric', precision: 5, scale: 2, name: 'humidity_max' })
-  humidityMax!: number;
+  @Column({ type: 'boolean' })
+  fertilized!: boolean;
 
-  @Column({ type: 'varchar', length: 80, name: 'substrate_status' })
-  substrateStatus!: string;
+  @Column({
+    type: 'varchar',
+    length: 255,
+    name: 'fertilizer_type',
+    nullable: true,
+  })
+  fertilizerType!: string | null;
 
-  @Column({ type: 'varchar', length: 80, name: 'root_status' })
-  rootStatus!: string;
+  /** Cắt tỉa, vệ sinh, xử lý sâu bệnh... */
+  @Column({ type: 'text', name: 'other_care_note', nullable: true })
+  otherCareNote!: string | null;
 
-  @Column({ type: 'integer', name: 'root_affected_count', nullable: true })
-  rootAffectedCount!: number | null;
+  // --- Bổ sung: nước tưới (dùng chung cả vườn) ---
+  @Column({
+    type: 'numeric',
+    precision: 3,
+    scale: 1,
+    name: 'water_ph',
+    nullable: true,
+    transformer: numericColumn,
+  })
+  waterPh!: number | null;
 
-  @Column({ type: 'varchar', length: 80, name: 'leaf_status' })
-  leafStatus!: string;
+  /** mS/cm. */
+  @Column({
+    type: 'numeric',
+    precision: 6,
+    scale: 2,
+    name: 'water_ec',
+    nullable: true,
+    transformer: numericColumn,
+  })
+  waterEc!: number | null;
 
-  @Column({ type: 'varchar', length: 80, name: 'shoot_status' })
-  shootStatus!: string;
-
-  @Column({ type: 'integer', name: 'watering_count', default: 0 })
-  wateringCount!: number;
-
-  @Column({ type: 'text', name: 'nutrition_note', nullable: true })
-  nutritionNote!: string | null;
-
-  @Column({ type: 'varchar', length: 80, name: 'disease_prevention' })
-  diseasePrevention!: string;
-
-  @Column({ type: 'varchar', length: 30, default: 'SUBMITTED' })
-  status!: string;
-
-  @Column({ type: 'timestamptz', name: 'submitted_at', nullable: true })
-  submittedAt!: Date | null;
-
-  @OneToMany(() => CareReportEvidence, (evidence) => evidence.careReport, {
+  @OneToMany(() => CareReportPlant, (plant) => plant.careReport, {
     cascade: ['insert'],
   })
-  evidences!: CareReportEvidence[];
+  plants!: CareReportPlant[];
 }

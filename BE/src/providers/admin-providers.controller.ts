@@ -49,6 +49,12 @@ export class AdminProvidersController {
 
   @Post(':providerId/verify')
   @ApiOperation({ summary: 'Admin duyệt/từ chối hồ sơ provider' })
+  @ApiResponse({
+    status: 400,
+    description:
+      'PROVIDER_PROFILE_NOT_SUBMITTED (APPROVED khi thiếu Họ tên/SĐT/Địa chỉ/Ngày sinh/Quê quán) | PROVIDER_BANK_INFO_REQUIRED (APPROVED khi thiếu tài khoản ngân hàng)',
+  })
+  @ApiResponse({ status: 404, description: 'PROVIDER_NOT_FOUND' })
   verify(
     @Param('providerId') providerId: string,
     @Body() dto: VerifyProviderDto,

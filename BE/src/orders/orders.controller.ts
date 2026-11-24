@@ -9,17 +9,33 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { RATE_LIMIT_WINDOW_MS } from '../common/throttle';
 import { Roles } from '../auth/decorators/roles.decorator';
 import type { CurrentUserData } from '../auth/types/current-user.type';
 import { AddInitialPhotoDto } from './dto/add-initial-photo.dto';
 import { AssessPlantDto } from './dto/assess-plant.dto';
+import { AssessReturnPlantDto } from './dto/assess-return-plant.dto';
+import { CancelHandoverDto } from './dto/cancel-handover.dto';
+import { CancelOrderDto } from './dto/cancel-order.dto';
+import { CancelReturnDto } from './dto/cancel-return.dto';
 import { CompleteHandoverDto } from './dto/complete-handover.dto';
+import { ConfirmHandoverDto } from './dto/confirm-handover.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { DeclineHandoverDto } from './dto/decline-handover.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
+import { QueryPickupFeeQuoteDto } from './dto/query-pickup-fee-quote.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
+import { ContractTemplateService } from './contract-template.service';
 import { HandoverService } from './handover.service';
+import { OrderCancelService } from './order-cancel.service';
 import { OrdersService } from './orders.service';
 
 @ApiTags('orders')
@@ -29,11 +45,23 @@ export class OrdersController {
   constructor(
     private readonly ordersService: OrdersService,
     private readonly handoverService: HandoverService,
+    private readonly contractTemplate: ContractTemplateService,
+    private readonly orderCancel: OrderCancelService,
   ) {}
 
   @Roles('CUSTOMER')
   @Post()
   @ApiOperation({ summary: 'Khách tạo đơn nháp (DRAFT) — server tự tính phí' })
+  @ApiResponse({
+    status: 403,
+    description:
+      'PROFILE_NOT_APPROVED (khách chưa được duyệt hoặc chưa có SĐT)',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'REFUND_BANK_ACCOUNT_REQUIRED (khách chưa khai đủ tên ngân hàng, số tài khoản, chủ tài khoản)',
+  })
   createOrder(
     @CurrentUser() user: CurrentUserData,
     @Body() dto: CreateOrderDto,
@@ -79,6 +107,16 @@ export class OrdersController {
   @ApiOperation({
     summary: 'Vườn quyết đơn: ACCEPT → AGREEMENT_PENDING / REJECT → REJECTED',
   })
+  @ApiResponse({
+    status: 403,
+    description:
+      'PROFILE_NOT_APPROVED | PROVIDER_IDENTITY_INCOMPLETE (ACCEPT khi vườn chưa đủ SĐT/Địa chỉ/Ngày sinh/Quê quán)',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'PROVIDER_BANK_INFO_REQUIRED (ACCEPT khi vườn chưa khai đủ tên ngân hàng, số tài khoản, chủ tài khoản)',
+  })
   respondNegotiation(
     @CurrentUser() user: CurrentUserData,
     @Param('orderId', ParseUUIDPipe) orderId: string,
@@ -106,6 +144,34 @@ export class OrdersController {
     );
   }
 
+  @Roles('CUSTOMER', 'PROVIDER')
+  @Post(':orderId/cancel')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Khách hoặc vườn huỷ đơn khi vườn chưa mở phiên nhận cây (→ CANCELLED): server tự quyết mã lý do và tiền hoàn theo giờ hẹn',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Khách: { status, cancelCode, refundAmount, declaredDepositReturned }. Vườn: { status, cancelCode }. cancelCode: CUSTOMER_WITHDREW | CUSTOMER_CANCELLED_FREE | CUSTOMER_CANCELLED_LATE | PROVIDER_NO_SHOW | PROVIDER_CANCELLED',
+  })
+  @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'INVALID_STATE_TRANSITION (đơn Nháp / đã kết thúc / vườn đã mở phiên nhận cây; vườn huỷ đơn chưa nhận thì dùng nút Từ chối)',
+  })
+  @ApiResponse({ status: 500, description: 'ESCROW_BALANCE_INSUFFICIENT' })
+  cancelOrder(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: CancelOrderDto,
+  ) {
+    return this.orderCancel.cancel(user.accountId, user.role, orderId, dto);
+  }
+
   @Roles('PROVIDER')
   @Post(':orderId/handover/start')
   @ApiOperation({
@@ -122,7 +188,12 @@ export class OrdersController {
   @Post(':orderId/handover/plants/:plantId/assess')
   @ApiOperation({
     summary:
-      'Vườn thẩm định từng cây (ảnh bắt buộc, re-assess được trước complete)',
+      'Vườn thẩm định từng cây: ACCEPT | ACCEPT_HIGH_RISK | REJECT (ảnh bắt buộc, re-assess được trước complete)',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'HIGH_RISK_FLAG_MISMATCH | decision không hợp lệ (ADJUST đã bỏ) | thiếu ảnh',
   })
   assessPlant(
     @CurrentUser() user: CurrentUserData,
@@ -142,33 +213,248 @@ export class OrdersController {
   @Post(':orderId/handover/complete')
   @HttpCode(200)
   @ApiOperation({
-    summary: 'Vườn chốt thẩm định (→ HANDOVER_AWAITING_CONFIRM, hẹn khách 48h)',
+    summary:
+      'Vườn chốt thẩm định (→ HANDOVER_AWAITING_CONFIRM): giá công = giá gói × số cây nhận, trả kèm mức đền từng cây và tổng tiền bảo đảm',
   })
+  @ApiResponse({
+    status: 400,
+    description:
+      'UNASSESSED_PLANTS | ALL_PLANTS_REJECTED | body có field lạ (proposedFinalTotal đã bỏ)',
+  })
+  @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
   completeHandover(
     @CurrentUser() user: CurrentUserData,
     @Param('orderId', ParseUUIDPipe) orderId: string,
-    @Body() dto: CompleteHandoverDto,
+    // Body không còn field nào; giữ DTO rỗng để field lạ (proposedFinalTotal cũ) bị 400.
+    @Body() _dto: CompleteHandoverDto,
   ) {
-    return this.handoverService.completeHandover(user.accountId, orderId, dto);
+    return this.handoverService.completeHandover(user.accountId, orderId);
   }
 
   @Roles('CUSTOMER')
   @Post(':orderId/handover/confirm')
   @HttpCode(200)
   @ApiOperation({
-    summary: 'Khách xác nhận bàn giao (→ IN_CARE) — khóa giá chính thức',
+    summary:
+      'Khách đồng ý biên bản nhận cây (có thể kèm ý kiến phản đối + ảnh) → phiên chờ vườn nộp tiền bảo đảm trong 2 giờ; đơn chỉ sang IN_CARE khi tiền bảo đảm về',
+  })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description: 'INVALID_STATE_TRANSITION (sai chặng hoặc bấm lần 2)',
   })
   confirmHandover(
     @CurrentUser() user: CurrentUserData,
     @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: ConfirmHandoverDto,
     @Ip() ip: string,
   ) {
-    return this.handoverService.confirmHandover(user.accountId, orderId, ip);
+    return this.handoverService.confirmHandover(
+      user.accountId,
+      orderId,
+      dto,
+      ip,
+    );
+  }
+
+  @Roles('CUSTOMER')
+  @Post(':orderId/handover/decline')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Khách không giao cây sau khi xem biên bản (→ CANCELLED): hoàn giá gói + 6%, vườn giữ phí lấy cây',
+  })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'INVALID_STATE_TRANSITION (sai chặng, hoặc khách đã đồng ý biên bản và vườn đang chờ nộp tiền bảo đảm)',
+  })
+  @ApiResponse({ status: 500, description: 'ESCROW_BALANCE_INSUFFICIENT' })
+  declineHandover(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: DeclineHandoverDto,
+  ) {
+    return this.handoverService.declineHandover(user.accountId, orderId, dto);
+  }
+
+  @Roles('PROVIDER')
+  @Post(':orderId/handover/cancel')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Vườn huỷ vì không nộp tiền bảo đảm (→ CANCELLED): hoàn khách 100% kể cả phí lấy cây',
+  })
+  @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'SECURITY_DEPOSIT_NOT_PENDING (khách chưa đồng ý biên bản, khoản đã nộp hoặc đã huỷ)',
+  })
+  @ApiResponse({ status: 500, description: 'ESCROW_BALANCE_INSUFFICIENT' })
+  cancelHandover(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: CancelHandoverDto,
+  ) {
+    return this.handoverService.cancelHandover(user.accountId, orderId, dto);
+  }
+
+  // ---- Trả cây (IN_CARE → COMPLETED) ----
+
+  @Roles('PROVIDER')
+  @Post(':orderId/return/start')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Vườn bắt đầu trả cây khi đã hết hạn chăm (IN_CARE → RETURN_IN_PROGRESS)',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'CARE_NOT_DUE | INVALID_STATE_TRANSITION | ADDON_OPEN (còn add-on khách đã trả tiền mà vườn chưa báo xong hoặc trả lại) | ADDON_AWAITING_PAYMENT (còn add-on khách đã đồng ý, đang trong 24 giờ trả tiền)',
+  })
+  @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  startReturn(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ) {
+    return this.handoverService.startReturn(user.accountId, orderId);
+  }
+
+  @Roles('PROVIDER')
+  @Post(':orderId/return/plants/:plantId/assess')
+  @ApiOperation({
+    summary: 'Vườn ghi tình trạng từng cây lúc trả (ảnh bắt buộc)',
+  })
+  @ApiResponse({ status: 400, description: 'PLANT_NOT_IN_CARE' })
+  @ApiResponse({
+    status: 404,
+    description: 'ORDER_NOT_FOUND | PLANT_NOT_FOUND',
+  })
+  @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
+  assessReturnPlant(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Param('plantId', ParseUUIDPipe) plantId: string,
+    @Body() dto: AssessReturnPlantDto,
+  ) {
+    return this.handoverService.assessReturnPlant(
+      user.accountId,
+      orderId,
+      plantId,
+      dto,
+    );
+  }
+
+  @Roles('PROVIDER')
+  @Post(':orderId/return/complete')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Vườn chốt trả cây (→ RETURN_AWAITING_CONFIRM, hẹn khách 48h)',
+  })
+  @ApiResponse({ status: 400, description: 'UNASSESSED_PLANTS' })
+  @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
+  completeReturn(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ) {
+    return this.handoverService.completeReturn(user.accountId, orderId);
+  }
+
+  @Roles('PROVIDER')
+  @Post(':orderId/return/cancel')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Vườn huỷ phiên trả để hẹn lại (RETURN_IN_PROGRESS → IN_CARE)',
+  })
+  @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
+  cancelReturn(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Body() dto: CancelReturnDto,
+  ) {
+    return this.handoverService.cancelReturn(user.accountId, orderId, dto);
+  }
+
+  @Roles('CUSTOMER')
+  @Post(':orderId/return/confirm')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Khách xác nhận đã nhận lại cây (RETURN_AWAITING_CONFIRM → COMPLETED), chia tiền + tạo lệnh chi cho vườn; settlement trả về chỉ gồm phần của khách',
+  })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  @ApiResponse({ status: 409, description: 'INVALID_STATE_TRANSITION' })
+  @ApiResponse({ status: 500, description: 'ESCROW_BALANCE_INSUFFICIENT' })
+  confirmReturn(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ) {
+    return this.handoverService.confirmReturn(user.accountId, orderId);
+  }
+
+  @Roles('CUSTOMER', 'PROVIDER')
+  @Get(':orderId/agreement/contract')
+  @ApiOperation({
+    summary:
+      'Xem hợp đồng điện tử đầy đủ (điều khoản, cây, bồi thường 120%, chữ ký)',
+  })
+  getContract(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+  ) {
+    return this.ordersService.getContractDetail(
+      user.accountId,
+      user.role,
+      orderId,
+    );
+  }
+
+  // PHẢI đứng trước @Get(':orderId') — không thì 'pickup-fee-quote' bị hiểu là orderId (400 UUID).
+  @Roles('CUSTOMER')
+  @Get('pickup-fee-quote')
+  // Mỗi lần gọi = 1 request Google tính tiền → giới hạn chặt hơn mức chung 100/phút.
+  @Throttle({ default: { limit: 20, ttl: RATE_LIMIT_WINDOW_MS } })
+  @ApiOperation({
+    summary: 'Xem trước phí lấy cây (đo km đường bộ, tính 1 lần cho cả đơn)',
+    description:
+      'Chỉ để hiển thị trước khi đặt đơn, không giữ chỗ. POST /orders đo và tính lại rồi chụp vào đơn.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: '{ distanceKm: number, pickupFee: string (VNĐ) }',
+  })
+  @ApiResponse({ status: 400, description: 'Query sai (UUID, toạ độ)' })
+  @ApiResponse({ status: 404, description: 'SERVICE_PACKAGE_NOT_FOUND' })
+  @ApiResponse({ status: 422, description: 'PICKUP_ROUTE_NOT_FOUND' })
+  @ApiResponse({ status: 429, description: 'Quá 20 lần/phút' })
+  @ApiResponse({
+    status: 503,
+    description:
+      'DISTANCE_SERVICE_UNAVAILABLE | PROVIDER_GPS_MISSING | SHIPPING_RATE_NOT_CONFIGURED',
+  })
+  quotePickupFee(@Query() query: QueryPickupFeeQuoteDto) {
+    return this.ordersService.quotePickupFee(query);
   }
 
   @Roles('CUSTOMER', 'PROVIDER')
   @Get()
-  @ApiOperation({ summary: 'Danh sách đơn phía mình (khách/vườn tự lọc)' })
+  @ApiOperation({
+    summary:
+      'Danh sách đơn phía mình: tìm, lọc trạng thái, sắp xếp, phân trang',
+    description:
+      'q tìm không dấu trong mã đơn, tên khách, tên gói, tên cây. sort: newest (mặc định) | oldest | pickupSoon. ' +
+      'statusCounts đếm theo q, KHÔNG theo status (để hiện số trên các tab). Vườn không thấy đơn DRAFT.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ data: [{ ...đơn, customer, provider, servicePackageName, customerName, gardenName, plantNames, handoverStatus, deadlines }], total, page, limit, statusCounts: { PENDING_PROVIDER: 3, ... } }',
+  })
   listOrders(
     @CurrentUser() user: CurrentUserData,
     @Query() query: QueryOrderDto,

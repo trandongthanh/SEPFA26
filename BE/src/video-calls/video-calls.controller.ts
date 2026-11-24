@@ -1,11 +1,12 @@
-﻿import {
+import {
   Body,
   Controller,
   Get,
   HttpCode,
-  HttpStatus,
   Param,
+  ParseUUIDPipe,
   Post,
+  Query,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -13,84 +14,128 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { CurrentUserData } from '../auth/types/current-user.type';
-
+import { CreateVideoCallDto } from './dto/create-video-call.dto';
+import { OrderIdQueryDto } from './dto/order-id-query.dto';
+import {
+  ActiveVideoCallResponseDto,
+  VideoCallResponseDto,
+  VideoCallSessionResponseDto,
+} from './dto/video-call-response.dto';
 import { VideoCallsService } from './video-calls.service';
-import { CreateCallDto } from './dto/create-call.dto';
-import { TokenResponseDto } from './dto/token-response.dto';
-import { CreateCallResponseDto } from './dto/create-call-response.dto';
-import { CallInfoResponseDto } from './dto/call-info-response.dto';
-import { JoinCallResponseDto } from './dto/join-call-response.dto';
 
+// Bản chốt §5.1 — cuộc gọi video 1-1 giữa khách và provider của một đơn.
 @ApiTags('video-calls')
 @ApiBearerAuth()
 @Controller('video-calls')
 export class VideoCallsController {
-  constructor(private readonly videoCallsService: VideoCallsService) {}
-
-  @Post('token')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'Generate a GetStream user token for the current account.',
-  })
-  @ApiResponse({ status: HttpStatus.OK, type: TokenResponseDto })
-  async getToken(
-    @CurrentUser() user: CurrentUserData,
-  ): Promise<TokenResponseDto> {
-    return this.videoCallsService.generateToken(user.accountId);
-  }
+  constructor(private readonly videoCalls: VideoCallsService) {}
 
   @Post()
   @ApiOperation({
-    summary: 'Create a new video call owned by the current account.',
+    summary: 'Gọi video bên còn lại của đơn (bắt đầu đổ chuông)',
   })
-  @ApiResponse({ status: HttpStatus.CREATED, type: CreateCallResponseDto })
-  async createCall(
+  @ApiResponse({ status: 201, type: VideoCallSessionResponseDto })
+  @ApiResponse({ status: 400, description: 'orderId không phải uuid' })
+  @ApiResponse({
+    status: 404,
+    description: 'ORDER_NOT_FOUND (đơn không có hoặc không phải bên của đơn)',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'ORDER_NOT_CALLABLE | VIDEO_CALL_IN_PROGRESS | CALLER_BUSY | CALLEE_BUSY',
+  })
+  @ApiResponse({ status: 502, description: 'VIDEO_PROVIDER_UNAVAILABLE' })
+  create(
     @CurrentUser() user: CurrentUserData,
-    @Body() dto: CreateCallDto,
-  ): Promise<CreateCallResponseDto> {
-    return this.videoCallsService.createCall(user.accountId, dto);
+    @Body() dto: CreateVideoCallDto,
+  ): Promise<VideoCallSessionResponseDto> {
+    return this.videoCalls.create(user.accountId, dto.orderId);
   }
 
-  @Get('orders/:orderId/current')
-  @ApiOperation({ summary: 'Get the currently open video room for an order.' })
-  async getCurrentOrderCall(
-    @Param('orderId') orderId: string,
+  @Get('active')
+  @ApiOperation({
+    summary:
+      'Cuộc gọi đang diễn ra của đơn (mở lại app, lỡ sự kiện socket) — null nếu không có',
+  })
+  @ApiResponse({ status: 200, type: ActiveVideoCallResponseDto })
+  @ApiResponse({ status: 400, description: 'orderId không phải uuid' })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  getActive(
     @CurrentUser() user: CurrentUserData,
-  ) {
-    return this.videoCallsService.getCurrentOrderCall(orderId, user.accountId);
+    @Query() query: OrderIdQueryDto,
+  ): Promise<ActiveVideoCallResponseDto> {
+    return this.videoCalls.getActive(user.accountId, query.orderId);
   }
 
-  @Get(':callId')
-  @ApiOperation({ summary: 'Get call metadata (creator, current members).' })
-  @ApiResponse({ status: HttpStatus.OK, type: CallInfoResponseDto })
-  async getCall(
-    @Param('callId') callId: string,
+  @Get()
+  @ApiOperation({
+    summary: 'Lịch sử cuộc gọi của đơn (mới nhất trước, tối đa 50)',
+  })
+  @ApiResponse({ status: 200, type: [VideoCallResponseDto] })
+  @ApiResponse({ status: 400, description: 'orderId không phải uuid' })
+  @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
+  listHistory(
     @CurrentUser() user: CurrentUserData,
-  ): Promise<CallInfoResponseDto> {
-    return this.videoCallsService.getCallInfo(callId, user.accountId);
+    @Query() query: OrderIdQueryDto,
+  ): Promise<VideoCallResponseDto[]> {
+    return this.videoCalls.listHistory(user.accountId, query.orderId);
   }
 
-  @Post(':callId/join')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Join an existing call as the current account.' })
-  @ApiResponse({ status: HttpStatus.OK, type: JoinCallResponseDto })
-  async joinCall(
-    @Param('callId') callId: string,
+  @Post(':id/join')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Nghe cuộc gọi (đang đổ chuông) / vào lại, chuyển máy (đang nói) — máy vào sau giữ cuộc gọi',
+  })
+  @ApiResponse({ status: 200, type: VideoCallSessionResponseDto })
+  @ApiResponse({ status: 400, description: 'id không phải uuid' })
+  @ApiResponse({
+    status: 404,
+    description:
+      'VIDEO_CALL_NOT_FOUND (không có hoặc không phải bên của cuộc gọi)',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'VIDEO_CALL_ENDED | ORDER_NOT_CALLABLE',
+  })
+  join(
     @CurrentUser() user: CurrentUserData,
-  ): Promise<JoinCallResponseDto> {
-    return this.videoCallsService.joinCall(callId, user.accountId);
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<VideoCallSessionResponseDto> {
+    return this.videoCalls.join(user.accountId, id);
   }
 
-  @Post(':callId/leave')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Record that the current participant left a video room.' })
-  async leaveCall(
-    @Param('callId') callId: string,
+  @Post(':id/decline')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Người nhận từ chối cuộc gọi đang đổ chuông' })
+  @ApiResponse({ status: 200, type: VideoCallResponseDto })
+  @ApiResponse({ status: 400, description: 'id không phải uuid' })
+  @ApiResponse({ status: 403, description: 'ONLY_CALLEE_CAN_DECLINE' })
+  @ApiResponse({ status: 404, description: 'VIDEO_CALL_NOT_FOUND' })
+  @ApiResponse({ status: 409, description: 'VIDEO_CALL_NOT_RINGING' })
+  decline(
     @CurrentUser() user: CurrentUserData,
-  ) {
-    return this.videoCallsService.leaveCall(callId, user.accountId);
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<VideoCallResponseDto> {
+    return this.videoCalls.decline(user.accountId, id);
+  }
+
+  @Post(':id/end')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Hủy (đang đổ chuông) / cúp (đang nói); đã kết thúc thì trả nguyên trạng',
+  })
+  @ApiResponse({ status: 200, type: VideoCallResponseDto })
+  @ApiResponse({ status: 400, description: 'id không phải uuid' })
+  @ApiResponse({ status: 404, description: 'VIDEO_CALL_NOT_FOUND' })
+  end(
+    @CurrentUser() user: CurrentUserData,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<VideoCallResponseDto> {
+    return this.videoCalls.end(user.accountId, id);
   }
 }

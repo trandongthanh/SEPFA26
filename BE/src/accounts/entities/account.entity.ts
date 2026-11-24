@@ -23,6 +23,7 @@ export class Account extends BaseEntity {
 
   // Số điện thoại được mã hóa nên ciphertext không thể dùng để kiểm tra trùng.
   // Hash SHA-256 chỉ phục vụ ràng buộc duy nhất, không trả ra API.
+  @Exclude({ toPlainOnly: true })
   @Index({ unique: true })
   @Column({ type: 'varchar', length: 64, name: 'phone_hash', nullable: true })
   phoneHash!: string | null;
@@ -35,4 +36,8 @@ export class Account extends BaseEntity {
 
   @Column({ type: 'varchar', length: 20, default: 'ACTIVE' })
   status!: AccountStatus;
+
+  // Thời điểm xác thực quyền sở hữu email (qua OTP hoặc Google Sign-In).
+  @Column({ type: 'timestamptz', name: 'email_verified_at', nullable: true })
+  emailVerifiedAt!: Date | null;
 }

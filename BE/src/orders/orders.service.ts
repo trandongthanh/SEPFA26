@@ -7,30 +7,71 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
-import { DataSource, Repository } from 'typeorm';
+import { Brackets, DataSource, In, Not, Repository } from 'typeorm';
+import { CareReport } from '../care-reports/entities/care-report.entity';
+import { hasBankInfo } from '../common/bank-info';
+import { likePattern, unaccentSql } from '../common/search';
+import { CryptoService } from '../crypto/crypto.service';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
+import {
+  loadCustomerSettlement,
+  loadProviderSettlement,
+} from '../payments/customer-settlement';
 import { PaymentComponent } from '../payments/entities/payment-component.entity';
+import { SecurityDeposit } from '../payments/entities/security-deposit.entity';
+import { customerFeeFor } from '../payments/settlement';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { ServicePackage } from '../providers/entities/service-package.entity';
+import { ADDON_OPEN_STATUSES, overdueReason } from './addon-rules';
+import { sumCompensationCaps } from './compensation-cap';
+import {
+  declaredDepositFor,
+  type DeclaredDepositRule,
+} from './declared-deposit';
 import { DistanceService } from './distance.service';
 import { PlantRecognitionService } from './plant-recognition.service';
+import { ContractTemplateService } from './contract-template.service';
 import { AddInitialPhotoDto } from './dto/add-initial-photo.dto';
 import { CreateOrderDto, CreateOrderPlantDto } from './dto/create-order.dto';
 import { QueryOrderDto } from './dto/query-order.dto';
+import { QueryPickupFeeQuoteDto } from './dto/query-pickup-fee-quote.dto';
 import { RespondNegotiationDto } from './dto/respond-negotiation.dto';
 import { ShippingRateInputDto } from './dto/replace-shipping-rates.dto';
+import { computeCareReportSchedule } from './care-report-schedule';
+import { AddonProposal } from './entities/addon-proposal.entity';
 import { AgreementSignature } from './entities/agreement-signature.entity';
+import { AssessmentPhoto } from './entities/assessment-photo.entity';
+import { Dispute } from './entities/dispute.entity';
 import { Handover } from './entities/handover.entity';
 import { InitialPhoto } from './entities/initial-photo.entity';
 import { Negotiation } from './entities/negotiation.entity';
 import { Plant } from './entities/plant.entity';
+import { PlantAssessment } from './entities/plant-assessment.entity';
 import { ServiceAgreement } from './entities/service-agreement.entity';
 import { ServiceOrder } from './entities/service-order.entity';
 import { ShippingRate } from './entities/shipping-rate.entity';
 import { generateAgreementNo, generateOrderCode } from './order-code';
-import { assertTransition } from './order-status';
+import {
+  assertProviderIdentityComplete,
+  buildPartySnapshot,
+  readPartySnapshot,
+  safeDecrypt,
+  type PartySnapshotV3,
+} from './party-snapshot';
+import {
+  freeCancelUntil,
+  isPastDue,
+  isPickupTooSoon,
+  noShowFrom,
+  waitDueAt,
+} from './cancel-rules';
+import { OrderCancelService } from './order-cancel.service';
+import { OrderStateService } from './order-state.service';
+import { assertTransition, type OrderStatus } from './order-status';
 import { computeShippingFee, pickTier } from './shipping-fee';
 
 // Postgres unique_violation — bắt để retry orderCode trùng.
@@ -58,8 +99,43 @@ export class OrdersService {
     private readonly packageRepo: Repository<ServicePackage>,
     private readonly distanceService: DistanceService,
     private readonly plantRecognition: PlantRecognitionService,
+    private readonly contractTemplate: ContractTemplateService,
     private readonly dataSource: DataSource,
+    private readonly crypto: CryptoService,
+    private readonly orderState: OrderStateService,
+    private readonly config: ConfigService,
+    private readonly orderCancel: OrderCancelService,
   ) {}
+
+  // Luật tiền bảo đảm khai giá đọc từ env (mặc định 10%, ngưỡng 2 × giá gói; 0% = tắt).
+  private declaredDepositRule(): DeclaredDepositRule {
+    return {
+      percent: BigInt(
+        this.config.get<number>('DECLARED_DEPOSIT_PERCENT') ?? 10,
+      ),
+      minMultiplier: BigInt(
+        this.config.get<number>('DECLARED_DEPOSIT_MIN_MULTIPLIER') ?? 2,
+      ),
+    };
+  }
+
+  // Tổng tiền bảo đảm khai giá của đơn = Σ số đã chốt trên từng cây (đơn mẫu: 300.000 + 0).
+  private sumDeclaredDeposit(plants: Plant[]): string {
+    return plants
+      .reduce((sum, plant) => sum + BigInt(plant.declaredDeposit ?? '0'), 0n)
+      .toString();
+  }
+
+  // Giải mã cột nhạy cảm (phone/CCCD). Dữ liệu seed cũ có thể còn là bản rõ →
+  // decrypt ném lỗi authTag; khi đó trả nguyên giá trị thay vì làm hỏng cả hợp đồng.
+  private safeDecrypt(value: string | null | undefined): string | null {
+    if (!value) return null;
+    try {
+      return this.crypto.decrypt(value);
+    } catch {
+      return value;
+    }
+  }
 
   async listShippingRatesForAdmin(): Promise<ShippingRate[]> {
     return this.shippingRateRepo.find({ order: { minKm: 'ASC' } });
@@ -102,6 +178,64 @@ export class OrdersService {
   }
 
   /**
+   * GET /orders/pickup-fee-quote — xem trước phí lấy cây trước khi đặt đơn.
+   * Cùng gói/điều kiện/cách đo/bảng phí với `createOrder` nên số xem trước = số sẽ chụp vào đơn
+   * (trừ khi admin đổi bảng phí hoặc Google đổi tuyến giữa 2 lần gọi). Chỉ để xem, không giữ chỗ;
+   * không đòi khách đã eKYC.
+   */
+  async quotePickupFee(
+    dto: QueryPickupFeeQuoteDto,
+  ): Promise<{ distanceKm: number; pickupFee: string }> {
+    const pkg = await this.findOrderablePackage(dto.servicePackageId);
+    const distanceKm = await this.distanceService.getKm(
+      { lat: dto.pickupGpsLat, lng: dto.pickupGpsLng },
+      { lat: Number(pkg.provider.gpsLat), lng: Number(pkg.provider.gpsLng) },
+    );
+    const pickupFee = await this.computePickupFeeForKm(distanceKm);
+    return { distanceKm, pickupFee: String(pickupFee) };
+  }
+
+  /**
+   * Gói đặt được: tồn tại, đang bán, vườn đã APPROVED — với khách, gói chưa đạt các điều kiện
+   * này coi như không tồn tại (404, không lộ lý do). Vườn chưa ghim GPS → 503 (lỗi dữ liệu phía
+   * hệ thống, không phải lỗi khách).
+   */
+  private async findOrderablePackage(packageId: string) {
+    const pkg = await this.packageRepo.findOne({
+      where: { id: packageId, isActive: true },
+      relations: { provider: true },
+    });
+    if (!pkg || pkg.provider.verificationStatus !== 'APPROVED') {
+      throw new NotFoundException('SERVICE_PACKAGE_NOT_FOUND');
+    }
+    if (pkg.provider.gpsLat === null || pkg.provider.gpsLng === null) {
+      throw new ServiceUnavailableException('PROVIDER_GPS_MISSING');
+    }
+    return pkg;
+  }
+
+  /** Phí lấy cây (đồng) theo bảng bậc đang bật — một lần cho cả đơn, không nhân số cây. */
+  private async computePickupFeeForKm(km: number): Promise<number> {
+    const tiers = await this.shippingRateRepo.find({
+      where: { isActive: true },
+      order: { minKm: 'ASC' },
+    });
+    if (tiers.length === 0) {
+      // Chưa cấu hình bảng phí (dev/staging): không chặn khách, phí = 0 + cảnh báo.
+      // Production phải seed bảng phí (npm run seed:shipping-rates).
+      console.warn(
+        'No active shipping rates configured — defaulting pickup fee to 0.',
+      );
+      return 0;
+    }
+    const tier = pickTier(tiers, km);
+    if (!tier) {
+      throw new ServiceUnavailableException('SHIPPING_RATE_NOT_CONFIGURED');
+    }
+    return computeShippingFee(tier, km);
+  }
+
+  /**
    * POST /orders — tạo đơn DRAFT.
    * 9 bước theo docs/sequence-diagrams/orders-create.md: lỗi rẻ check trước,
    * gọi Google (tốn tiền/chậm) gần cuối, ghi DB trong 1 transaction sau cùng.
@@ -115,10 +249,14 @@ export class OrdersService {
     }
     if (
       customer.verificationStatus !== 'APPROVED' ||
-      !customer.cccdFrontUrl || !customer.cccdBackUrl || !customer.selfieWithIdUrl ||
       !customer.account?.phone
     ) {
-      throw new ForbiddenException('Vui lòng hoàn tất xác minh căn cước, ảnh selfie cùng căn cước và chờ admin duyệt trước khi đặt đơn.');
+      throw new ForbiddenException('PROFILE_NOT_APPROVED');
+    }
+    // Mọi khoản hoàn cho khách đều bắt nguồn từ một đơn → bắt khai tài khoản nhận tiền ngay lúc đặt,
+    // để lệnh chi tạo ra sau này luôn có sẵn tài khoản (chốt 21/11; cùng mã với lúc mở tranh chấp).
+    if (!hasBankInfo(customer)) {
+      throw new ConflictException('REFUND_BANK_ACCOUNT_REQUIRED');
     }
 
     // 2. Giờ hẹn lấy cây phải ở tương lai (mốc duy nhất của luật hủy).
@@ -127,20 +265,8 @@ export class OrdersService {
       throw new BadRequestException('PICKUP_TIME_IN_PAST');
     }
 
-    // 3+4. Gói tồn tại, đang bán, provider đã APPROVED — với khách, gói chưa đạt
-    // các điều kiện này coi như không tồn tại (404, không lộ lý do).
-    const pkg = await this.packageRepo.findOne({
-      where: { id: dto.servicePackageId, isActive: true },
-      relations: { provider: true },
-    });
-    if (!pkg || pkg.provider.verificationStatus !== 'APPROVED') {
-      throw new NotFoundException('SERVICE_PACKAGE_NOT_FOUND');
-    }
-
-    // 5. Provider phải đã ghim GPS — lỗi dữ liệu phía hệ thống, không phải lỗi khách.
-    if (pkg.provider.gpsLat === null || pkg.provider.gpsLng === null) {
-      throw new ServiceUnavailableException('PROVIDER_GPS_MISSING');
-    }
+    // 3+4+5. Gói đặt được + vườn đã ghim GPS (dùng chung với API xem trước phí).
+    const pkg = await this.findOrderablePackage(dto.servicePackageId);
 
     // 6. Số cây trong giới hạn gói.
     if (dto.plants.length > pkg.maxPlants) {
@@ -152,43 +278,25 @@ export class OrdersService {
       this.assertDeclaredValueInRange(plant, pkg);
     }
 
-    // 8. Đo km (Google, lỗi → 503) rồi tính phí theo bậc giá trong DB.
+    // 8. Đo km (Google, lỗi → 503) rồi tính phí theo bậc giá trong DB — 1 lần cho cả đơn.
     const km = await this.distanceService.getKm(
       { lat: dto.pickupGpsLat, lng: dto.pickupGpsLng },
       { lat: Number(pkg.provider.gpsLat), lng: Number(pkg.provider.gpsLng) },
     );
-    const tiers = await this.shippingRateRepo.find({
-      where: { isActive: true },
-      order: { minKm: 'ASC' },
-    });
-
-    let pickupFee: number;
-    if (tiers.length === 0) {
-      // Fallback: if no shipping rates configured in DB, avoid blocking customer
-      // flows in dev/staging. Default to zero pickup fee and log a warning.
-      // Production should seed shipping rates properly.
-      // TODO: consider returning a warning to FE so admins can be alerted.
-      console.warn(
-        'No active shipping rates configured — defaulting pickup fee to 0.',
-      );
-      pickupFee = 0;
-    } else {
-      const tier = pickTier(tiers, km);
-      if (!tier) {
-        throw new ServiceUnavailableException('SHIPPING_RATE_NOT_CONFIGURED');
-      }
-      pickupFee = computeShippingFee(tier, km, dto.plants.length);
-    }
+    const pickupFee = await this.computePickupFeeForKm(km);
 
     // 9. Tính tiền (BigInt — tiền bigint không đi qua number) + ghi trong 1 transaction.
     // provisionalTotal KHÔNG gồm ship — ship nằm riêng ở pickupFeeSnapshot (component PICKUP_FEE sau này).
     const provisionalTotal = BigInt(pkg.basePrice) * BigInt(dto.plants.length);
+    // Tiền bảo đảm khai giá chốt vào từng cây ngay lúc tạo đơn (không có route sửa đơn nháp):
+    // khách thấy số trước khi gửi đơn, đổi env về sau không ảnh hưởng đơn đã tạo.
+    const depositRule = this.declaredDepositRule();
 
     // D12: vòng retry NẰM NGOÀI transaction — mỗi lần thử là 1 transaction riêng.
     // (Trong 1 transaction, INSERT trùng làm transaction hỏng → lần thử sau cũng lỗi.)
     for (let attempt = 1; attempt <= ORDER_CODE_MAX_RETRY; attempt++) {
       try {
-        return await this.dataSource.transaction((manager) => {
+        return await this.dataSource.transaction(async (manager) => {
           const order = manager.create(ServiceOrder, {
             orderCode: generateOrderCode(),
             customerId: customer.id,
@@ -206,19 +314,30 @@ export class OrdersService {
             pickupGpsLat: String(dto.pickupGpsLat),
             pickupGpsLng: String(dto.pickupGpsLng),
             customerNote: dto.customerNote ?? null,
-            plants: dto.plants.map((plant) =>
-              manager.create(Plant, {
+            plants: dto.plants.map((plant) => {
+              // Khai giá mà quên set cờ → server tự hiểu là có khai.
+              const isValueDeclared =
+                plant.declaredValue !== undefined ||
+                (plant.isValueDeclared ?? false);
+              const declaredValue = plant.declaredValue ?? null;
+              return manager.create(Plant, {
                 name: plant.name,
                 speciesName: plant.speciesName ?? null,
-                // Khai giá mà quên set cờ → server tự hiểu là có khai.
-                isValueDeclared:
-                  plant.declaredValue !== undefined ||
-                  (plant.isValueDeclared ?? false),
-                declaredValue: plant.declaredValue ?? null,
-              }),
-            ),
+                isValueDeclared,
+                declaredValue,
+                declaredDeposit: declaredDepositFor(
+                  { isValueDeclared, declaredValue },
+                  BigInt(pkg.basePrice),
+                  depositRule,
+                ).toString(),
+              });
+            }),
           });
-          return manager.save(order); // cascade insert plants cùng transaction
+          const saved = await manager.save(order); // cascade insert plants cùng transaction
+          return {
+            ...saved,
+            declaredDepositTotal: this.sumDeclaredDeposit(saved.plants),
+          };
         });
       } catch (err) {
         if (
@@ -276,6 +395,11 @@ export class OrdersService {
   async submitOrder(accountId: string, orderId: string) {
     const order = await this.getOwnedOrderAsCustomer(accountId, orderId);
     assertTransition(order.status, 'PENDING_PROVIDER');
+    // Giờ hẹn phải còn HƠN 3 giờ: ba hạn chờ (vườn trả lời, ký, thanh toán) đều đóng ở mốc giờ hẹn − 3 giờ,
+    // hẹn gần hơn thì đơn hết hạn ngay lúc gửi.
+    if (isPickupTooSoon(order.scheduledPickupAt, new Date())) {
+      throw new BadRequestException('PICKUP_TOO_SOON');
+    }
 
     const plants = await this.plantRepo.find({
       where: { serviceOrderId: order.id },
@@ -301,15 +425,20 @@ export class OrdersService {
     // D5: khoá dòng đơn + kiểm lại trạng thái trong transaction — bấm "gửi đơn"
     // 2 lần cùng lúc chỉ 1 request đi tiếp (không lật trạng thái, không 500 vì unique).
     return this.dataSource.transaction(async (manager) => {
-      const locked = await manager.findOne(ServiceOrder, {
-        where: { id: order.id },
-        lock: { mode: 'pessimistic_write' },
-      });
+      const locked = await this.orderState.lock(manager, order.id);
       if (!locked || locked.status !== 'DRAFT') {
         throw new ConflictException('INVALID_STATE_TRANSITION');
       }
-      locked.status = 'PENDING_PROVIDER';
-      const saved = await manager.save(locked);
+      // Hạn vườn trả lời = sớm hơn trong (lúc gửi + 24 giờ) và (giờ hẹn − 3 giờ); quá hạn → EXPIRED.
+      locked.providerRespondDueAt = waitDueAt(
+        new Date(),
+        locked.scheduledPickupAt,
+      );
+      const saved = await this.orderState.apply(
+        manager,
+        locked,
+        'PENDING_PROVIDER',
+      );
       await manager.save(
         manager.create(Negotiation, {
           serviceOrderId: order.id,
@@ -325,7 +454,10 @@ export class OrdersService {
    * Không nhận id từ client — phía lọc suy từ JWT (role + accountId), chống IDOR tận gốc.
    */
   async listOrders(accountId: string, role: string, query: QueryOrderDto) {
-    const where: Record<string, unknown> = {};
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 10;
+    // Phạm vi theo JWT: khách → đơn mình đặt; vườn → đơn gửi tới mình (không thấy DRAFT).
+    let scope: { column: 'customer_id' | 'provider_id'; id: string };
     if (role === 'CUSTOMER') {
       const customer = await this.customerRepo.findOne({
         where: { accountId },
@@ -333,7 +465,7 @@ export class OrdersService {
       if (!customer) {
         throw new NotFoundException('CUSTOMER_PROFILE_NOT_FOUND');
       }
-      where.customerId = customer.id;
+      scope = { column: 'customer_id', id: customer.id };
     } else {
       const provider = await this.providerRepo.findOne({
         where: { accountId },
@@ -341,41 +473,146 @@ export class OrdersService {
       if (!provider) {
         throw new NotFoundException('PROVIDER_PROFILE_NOT_FOUND');
       }
-      where.providerId = provider.id;
-      // Vườn không thấy đơn nháp — DRAFT là không gian riêng của khách.
-      if (query.status === 'DRAFT') {
-        return { data: [], total: 0, page: query.page, limit: query.limit };
-      }
-    }
-    if (query.status) {
-      where.status = query.status;
+      scope = { column: 'provider_id', id: provider.id };
     }
 
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 10;
-    const [data, total] = await this.orderRepo.findAndCount({
-      where:
-        role === 'PROVIDER' && !query.status
-          ? // Loại DRAFT khỏi list của vườn bằng danh sách trạng thái thấy được.
-            ORDER_VISIBLE_TO_PROVIDER.map((status) => ({ ...where, status }))
-          : where,
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-      relations: {
-        servicePackage: true,
-        customer: { account: true },
-      },
-    });
+    // Câu gốc dùng chung cho danh sách và bộ đếm: đúng phạm vi + từ khoá `q` (không dấu) trên
+    // mã đơn, tên khách, tên gói, tên cây. withSelect = nạp kèm gói/khách/vườn cho danh sách.
+    const pattern = likePattern(query.q);
+    const scoped = (withSelect: boolean) => {
+      const qb = this.orderRepo.createQueryBuilder('o');
+      for (const [relation, alias] of [
+        ['o.servicePackage', 'servicePackage'],
+        ['o.customer', 'customer'],
+        ['customer.account', 'account'],
+        ['o.provider', 'provider'],
+      ] as const) {
+        if (withSelect) {
+          qb.leftJoinAndSelect(relation, alias);
+        } else {
+          qb.leftJoin(relation, alias);
+        }
+      }
+      qb.where(`o.${scope.column} = :scopeId`, { scopeId: scope.id });
+      if (role === 'PROVIDER') {
+        qb.andWhere('o.status <> :draft', { draft: 'DRAFT' });
+      }
+      if (pattern) {
+        qb.andWhere(
+          new Brackets((match) => {
+            match
+              .where(`${unaccentSql('o.orderCode')} LIKE :pattern`)
+              .orWhere(`${unaccentSql('account.fullName')} LIKE :pattern`)
+              .orWhere(`${unaccentSql('servicePackage.name')} LIKE :pattern`)
+              .orWhere(
+                `EXISTS (SELECT 1 FROM plants p WHERE p.service_order_id = o.id AND ${unaccentSql('p.name')} LIKE :pattern)`,
+              );
+          }),
+        );
+        qb.setParameter('pattern', pattern);
+      }
+      return qb;
+    };
+
+    // Số đơn mỗi trạng thái cho các tab — theo đúng kết quả tìm, KHÔNG lọc status.
+    const counted = await scoped(false)
+      .select('o.status', 'status')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('o.status')
+      .getRawMany<{ status: OrderStatus; count: string }>();
+    const statusCounts: Partial<Record<OrderStatus, number>> =
+      Object.fromEntries(counted.map((row) => [row.status, Number(row.count)]));
+
+    // Vườn không thấy đơn nháp — DRAFT là không gian riêng của khách.
+    if (role === 'PROVIDER' && query.status === 'DRAFT') {
+      return { data: [], total: 0, page, limit, statusCounts };
+    }
+
+    const listQuery = scoped(true);
+    if (query.status) {
+      listQuery.andWhere('o.status = :status', { status: query.status });
+    }
+    // Thêm id để thứ tự ổn định giữa các trang khi trùng giờ.
+    if (query.sort === 'oldest') {
+      listQuery.orderBy('o.createdAt', 'ASC').addOrderBy('o.id', 'ASC');
+    } else if (query.sort === 'pickupSoon') {
+      listQuery.orderBy('o.scheduledPickupAt', 'ASC').addOrderBy('o.id', 'ASC');
+    } else {
+      listQuery.orderBy('o.createdAt', 'DESC').addOrderBy('o.id', 'DESC');
+    }
+    // Chỉ join quan hệ nhiều-một nên offset/limit đếm đúng theo đơn.
+    const [data, total] = await listQuery
+      .offset((page - 1) * limit)
+      .limit(limit)
+      .getManyAndCount();
+
+    // Tên cây + phiên NHẬN cây mới nhất: nạp gộp một lần cho cả trang, không truy vấn từng đơn.
+    const ids = data.map((order) => order.id);
+    const [plants, handovers] =
+      ids.length > 0
+        ? await Promise.all([
+            this.plantRepo.find({
+              where: { serviceOrderId: In(ids) },
+              select: { serviceOrderId: true, name: true },
+              order: { createdAt: 'ASC' },
+            }),
+            this.dataSource
+              .getRepository(Handover)
+              .createQueryBuilder('h')
+              .select('h.service_order_id', 'serviceOrderId')
+              .addSelect('h.status', 'status')
+              .distinctOn(['h.service_order_id'])
+              .where('h.service_order_id IN (:...ids)', { ids })
+              .andWhere('h.handover_type = :type', { type: 'IN' })
+              .orderBy('h.service_order_id')
+              .addOrderBy('h.created_at', 'DESC')
+              .getRawMany<{
+                serviceOrderId: string;
+                status: Handover['status'];
+              }>(),
+          ])
+        : [[], []];
+    const handoverStatusOf = new Map(
+      handovers.map((row) => [row.serviceOrderId, row.status]),
+    );
+
     return {
-      data: data.map((order) => ({
+      // KHÔNG spread `customer`/`provider` nguyên entity sang bên kia của đơn:
+      // customer kèm Account (passwordHash, SĐT mã hoá...), provider kèm STK ngân hàng,
+      // ảnh CCCD, GPKD, ghi chú admin. Chỉ giữ field hiển thị:
+      // - FE provider đọc `customer.account.fullName`;
+      // - Mobile customer đọc `provider.gardenName` (= displayName của vườn).
+      data: data.map(({ customer, provider, ...order }) => ({
         ...order,
+        customer: customer
+          ? {
+              id: customer.id,
+              account: { fullName: customer.account?.fullName ?? null },
+            }
+          : null,
+        provider: provider
+          ? {
+              id: provider.id,
+              displayName: provider.displayName,
+              gardenName: provider.displayName,
+              address: provider.address,
+            }
+          : null,
         servicePackageName: order.servicePackage?.name ?? null,
-        customerName: order.customer?.account?.fullName ?? null,
+        customerName: customer?.account?.fullName ?? null,
+        gardenName: provider?.displayName ?? null,
+        // Tên các cây của đơn (thẻ đơn hiện được, ô tìm cũng tìm theo tên cây).
+        plantNames: plants
+          .filter((plant) => plant.serviceOrderId === order.id)
+          .map((plant) => plant.name),
+        // Trạng thái phiên NHẬN cây mới nhất (giống chi tiết đơn); chưa có → null.
+        handoverStatus: handoverStatusOf.get(order.id) ?? null,
+        deadlines: buildDeadlines(order),
       })),
       total,
       page,
       limit,
+      statusCounts,
     };
   }
 
@@ -427,9 +664,11 @@ export class OrdersService {
       this.dataSource
         .getRepository(ServiceAgreement)
         .findOne({ where: { serviceOrderId: order.id } }),
-      this.dataSource
-        .getRepository(Handover)
-        .findOne({ where: { serviceOrderId: order.id } }),
+      // Luôn là phiên NHẬN cây (IN) — trước đây không lọc chiều, có phiên trả thì trả nhầm.
+      this.dataSource.getRepository(Handover).findOne({
+        where: { serviceOrderId: order.id, handoverType: 'IN' },
+        order: { createdAt: 'DESC' },
+      }),
       this.customerRepo.findOne({
         where: { id: order.customerId },
         relations: { account: true },
@@ -446,12 +685,130 @@ export class OrdersService {
         })
       : [];
 
+    // Chặng trả cây + tiến độ báo cáo — chỉ THÊM field, không đổi field cũ.
+    const [returnHandover, submittedReports] = await Promise.all([
+      this.dataSource.getRepository(Handover).findOne({
+        where: {
+          serviceOrderId: order.id,
+          handoverType: 'OUT',
+          status: Not('CANCELLED'),
+        },
+        order: { createdAt: 'DESC' },
+      }),
+      order.careStartedAt
+        ? this.dataSource
+            .getRepository(CareReport)
+            .count({ where: { serviceOrderId: order.id } })
+        : Promise.resolve(0),
+    ]);
+    const assessmentsByHandover = await this.loadAssessments(
+      [handover?.id, returnHandover?.id].filter((id): id is string => !!id),
+    );
+    const settlement = await this.loadSettlement(order, role);
+    // Khoản tiền bảo đảm là việc giữa vườn và nền tảng → khách KHÔNG thấy field này.
+    // Lấy khoản mới nhất của đơn (PENDING / PAID / CANCELLED); khách chưa đồng ý biên bản thì null.
+    const securityDeposit =
+      role === 'CUSTOMER'
+        ? null
+        : await this.dataSource.getRepository(SecurityDeposit).findOne({
+            where: { serviceOrderId: order.id },
+            order: { createdAt: 'DESC' },
+          });
+    // Số đề xuất add-on còn đang mở (chờ khách trả lời / chờ trả tiền / chờ vườn làm) để app hiện chấm báo.
+    // Chỉ đọc: đề xuất đã quá hạn không tính, việc ghi EXPIRED để route add-on lo.
+    const now = new Date();
+    const openAddons = await this.dataSource.getRepository(AddonProposal).find({
+      where: {
+        serviceOrderId: order.id,
+        status: In([...ADDON_OPEN_STATUSES]),
+      },
+    });
+    const openAddonCount = openAddons.filter(
+      (proposal) => overdueReason(proposal, now) === null,
+    ).length;
+    // Tranh chấp của đơn (mỗi đơn tối đa một) — chỉ vài field để app biết có tranh chấp và các hạn;
+    // nội dung đầy đủ ở GET /orders/:orderId/dispute.
+    const dispute = await this.dataSource
+      .getRepository(Dispute)
+      .findOne({ where: { serviceOrderId: order.id } });
+
+    // Khách xem trước "huỷ bây giờ nhận lại bao nhiêu" — chỉ khi đơn đã thanh toán và vườn chưa mở phiên.
+    const cancelPreview =
+      role === 'CUSTOMER'
+        ? await this.orderCancel.previewCancel(order, now)
+        : null;
+    // Khách xem trước "không giao cây thì nhận lại bao nhiêu" — chỉ khi đang chờ khách trả lời biên bản nhận cây.
+    const declinePreview =
+      role === 'CUSTOMER'
+        ? await this.orderCancel.previewDecline(order, handover, now)
+        : null;
+
     return {
       ...order,
-      plants: order.plants.map((plant) => ({
-        ...plant,
-        initialPhotos: photos.filter((photo) => photo.plantId === plant.id),
-      })),
+      // Các mốc giờ để app hiện đồng hồ đếm. Ba hạn chờ rỗng với đơn tạo trước khi có luật hạn.
+      // freeCancelUntil: khách huỷ đơn đã thanh toán miễn phí tới mốc này (giờ hẹn − 3 giờ);
+      // noShowFrom: từ mốc này (giờ hẹn + 30 phút) mới báo được "vườn không tới" / "khách vắng nhà".
+      deadlines: buildDeadlines(order),
+      ...(role === 'CUSTOMER' ? { cancelPreview, declinePreview } : {}),
+      settlement,
+      // Tiền bảo đảm khai giá khách nộp cùng tiền đơn (từng cây ở plants[].declaredDeposit).
+      declaredDepositTotal: this.sumDeclaredDeposit(order.plants),
+      openAddonCount,
+      dispute: dispute
+        ? {
+            id: dispute.id,
+            status: dispute.status,
+            outcome: dispute.outcome,
+            negotiationDueAt: dispute.negotiationDueAt,
+            adminDueAt: dispute.adminDueAt,
+          }
+        : null,
+      // Trạng thái phiên NHẬN cây mới nhất (vd AWAITING_DEPOSIT = chờ vườn nộp tiền bảo đảm); chưa có → null.
+      handoverStatus: handover?.status ?? null,
+      ...(role === 'CUSTOMER'
+        ? {}
+        : {
+            securityDeposit: securityDeposit
+              ? {
+                  amount: securityDeposit.amount,
+                  status: securityDeposit.status,
+                  dueAt: securityDeposit.dueAt,
+                }
+              : null,
+          }),
+      plants: order.plants.map((plant) => {
+        const plantPhotos = photos.filter((photo) => photo.plantId === plant.id);
+        return {
+          ...plant,
+          // Mức đền của cây (có sau khi vườn chốt biên bản nhận cây; cây bị từ chối = null).
+          compensationCap: plant.protectionCap,
+          initialPhotos: plantPhotos,
+          photos: plantPhotos,
+        };
+      }),
+      customer: customer
+        ? {
+            id: customer.id,
+            accountId: customer.accountId,
+            account: customer.account
+              ? {
+                  id: customer.account.id,
+                  fullName: customer.account.fullName,
+                  phone: safeDecrypt(this.crypto, customer.account.phone),
+                  email: customer.account.email,
+                }
+              : null,
+          }
+        : null,
+      provider: provider
+        ? {
+            id: provider.id,
+            displayName: provider.displayName,
+            gardenName: provider.displayName,
+            phone: safeDecrypt(this.crypto, provider.account?.phone),
+            address: provider.address,
+          }
+        : null,
       negotiation,
       agreement: agreement
         ? {
@@ -460,9 +817,18 @@ export class OrdersService {
             status: agreement.status,
             termsSnapshot: {
               ...agreement.termsSnapshot,
+              // v3/v2 (SĐT mã hoá) → giải mã & bỏ CCCD/ảnh; snapshot cũ → trả nguyên;
+              // hợp đồng rất cũ chưa có parties → dựng từ hồ sơ hiện tại.
               parties:
+                readPartySnapshot(
+                  agreement.termsSnapshot.parties,
+                  this.crypto,
+                ) ??
                 agreement.termsSnapshot.parties ??
-                this.buildPartySnapshot(customer, provider),
+                readPartySnapshot(
+                  buildPartySnapshot({ customer, provider }, this.crypto),
+                  this.crypto,
+                ),
               clauses:
                 agreement.termsSnapshot.clauses ?? this.contractClauses(),
             },
@@ -477,9 +843,243 @@ export class OrdersService {
         ? {
             status: handover.status,
             customerConfirmDueAt: handover.customerConfirmDueAt,
+            assessments: assessmentsByHandover.get(handover.id) ?? [],
           }
         : null,
+      returnHandover: returnHandover
+        ? {
+            status: returnHandover.status,
+            customerConfirmDueAt: returnHandover.customerConfirmDueAt,
+            confirmedAt: returnHandover.confirmedAt,
+            assessments: assessmentsByHandover.get(returnHandover.id) ?? [],
+          }
+        : null,
+      isReturnOverdue:
+        order.status === 'IN_CARE' &&
+        !!order.careDueAt &&
+        Date.now() > order.careDueAt.getTime(),
+      careReportSchedule: computeCareReportSchedule({
+        status: order.status,
+        careStartedAt: order.careStartedAt,
+        careDueAt: order.careDueAt,
+        reportFrequencyDays: order.reportFrequencySnapshot,
+        submittedCount: submittedReports,
+      }),
     };
+  }
+
+  /**
+   * Khối tiền của đơn cho màn chi tiết — ĐỌC số đã lưu (hoá đơn, sổ ký quỹ, lệnh chi), không tính lại.
+   * Phần khách thấy: `loadCustomerSettlement` (chưa có hoá đơn → null).
+   * Phần của vườn chỉ vườn thấy, và chỉ khi đơn COMPLETED.
+   * Đơn mẫu 2 cây × 200.000, phí lấy cây 60.000: khách 484.000; vườn bị trừ 48.000, nhận 412.000.
+   * Thêm add-on 100.000 đã làm: khách 590.000; vườn bị trừ 60.000, nhận 500.000.
+   */
+  private async loadSettlement(order: ServiceOrder, role: string) {
+    const customerPart = await loadCustomerSettlement(
+      this.dataSource.manager,
+      order.id,
+    );
+    if (!customerPart || role !== 'PROVIDER' || order.status !== 'COMPLETED') {
+      return customerPart;
+    }
+
+    // Cùng hàm với response vườn bấm đồng ý đề nghị tranh chấp → hai chỗ luôn cùng hình dạng.
+    return loadProviderSettlement(this.dataSource.manager, order, customerPart);
+  }
+
+  /**
+   * Kết quả kiểm từng cây theo phiên bàn giao: mỗi cây lấy bản ghi MỚI NHẤT
+   * (kiểm lại thì thêm dòng mới), kèm ảnh — để khách so lúc nhận và lúc trả.
+   */
+  private async loadAssessments(handoverIds: string[]) {
+    const result = new Map<
+      string,
+      Array<{
+        plantId: string;
+        checklist: Record<string, unknown>;
+        note: string | null;
+        assessedAt: Date;
+        photos: Array<{ photoUrl: string; caption: string | null }>;
+      }>
+    >();
+    if (handoverIds.length === 0) return result;
+    const rows = await this.dataSource
+      .getRepository(PlantAssessment)
+      .createQueryBuilder('pa')
+      .where('pa.handover_id IN (:...handoverIds)', { handoverIds })
+      .orderBy('pa.created_at', 'DESC')
+      .getMany();
+    const latest = new Map<string, PlantAssessment>();
+    for (const row of rows) {
+      const key = `${row.handoverId}|${row.plantId}`;
+      if (!latest.has(key)) latest.set(key, row);
+    }
+    const ids = [...latest.values()].map((row) => row.id);
+    const photos = ids.length
+      ? await this.dataSource
+          .getRepository(AssessmentPhoto)
+          .createQueryBuilder('ap')
+          .where('ap.assessment_id IN (:...ids)', { ids })
+          .orderBy('ap.created_at', 'ASC')
+          .getMany()
+      : [];
+    for (const row of latest.values()) {
+      const list = result.get(row.handoverId!) ?? [];
+      list.push({
+        plantId: row.plantId,
+        checklist: row.checklist,
+        note: row.note,
+        assessedAt: row.createdAt,
+        photos: photos
+          .filter((photo) => photo.assessmentId === row.id)
+          .map((photo) => ({
+            photoUrl: photo.photoUrl,
+            caption: photo.caption,
+          })),
+      });
+      result.set(row.handoverId!, list);
+    }
+    return result;
+  }
+
+  /**
+   * GET /orders/:id/agreement/contract — hợp đồng điện tử đầy đủ.
+   * Trả về JSON gồm: thông tin hai bên, danh sách cây, mức bồi thường 120%,
+   * 9 điều khoản, chính sách bồi thường, chữ ký điện tử, và HTML hợp đồng.
+   */
+  async getContractDetail(accountId: string, role: string, orderId: string) {
+    // 1. Kiểm tra quyền truy cập (chỉ 2 bên trong đơn)
+    const order = await this.getOrderAsParty(accountId, role, orderId);
+
+    // 2. Load agreement
+    const agreement = await this.dataSource
+      .getRepository(ServiceAgreement)
+      .findOne({ where: { serviceOrderId: order.id } });
+    if (!agreement) {
+      throw new NotFoundException('AGREEMENT_NOT_FOUND');
+    }
+
+    // 3. Load plants, initial photos, customer, provider, signatures song song
+    const plants = await this.plantRepo.find({
+      where: { serviceOrderId: order.id },
+      order: { createdAt: 'ASC' },
+    });
+
+    const plantIds = plants.map((p) => p.id);
+    const photos =
+      plantIds.length > 0
+        ? await this.photoRepo.find({ where: { plantId: In(plantIds) } })
+        : [];
+
+    const photosByPlantId = new Map<string, string[]>();
+    for (const ph of photos) {
+      const list = photosByPlantId.get(ph.plantId) ?? [];
+      list.push(ph.photoUrl);
+      photosByPlantId.set(ph.plantId, list);
+    }
+
+    const ekycRepo = this.dataSource.getRepository(EkycRecord);
+    const [customer, provider, allSignatures, servicePackage] = await Promise.all([
+      this.customerRepo.findOne({
+        where: { id: order.customerId },
+        relations: { account: true },
+      }),
+      this.providerRepo.findOne({
+        where: { id: order.providerId },
+        relations: { account: true },
+      }),
+      this.agreementSignatureRepo.find({
+        where: { agreementId: agreement.id },
+        order: { signedAt: 'ASC' },
+      }),
+      this.packageRepo.findOne({ where: { id: order.servicePackageId } }),
+    ]);
+
+    if (!customer || !provider) {
+      throw new InternalServerErrorException('PARTY_PROFILE_NOT_FOUND');
+    }
+
+    // Hợp đồng mới (snapshot v3): thông tin 2 bên lấy từ bản ĐÓNG BĂNG lúc ACCEPT — hồ sơ đổi sau
+    // này không làm hợp đồng đã ký đổi theo. Hợp đồng cũ chưa có v2/v3: đọc hồ sơ hiện tại.
+    const frozenParties = readPartySnapshot(
+      agreement.termsSnapshot.parties,
+      this.crypto,
+    );
+
+    const [customerEkyc] = frozenParties
+      ? [null]
+      : await Promise.all([
+          ekycRepo.findOne({ where: { accountId: customer.accountId } }),
+        ]);
+
+    // Ưu tiên chữ ký giai đoạn bàn giao thực tế (HANDOVER) nếu có
+    const handoverSigs = allSignatures.filter((s) => s.signPhase === 'HANDOVER');
+    const effectiveSignatures =
+      handoverSigs.length > 0
+        ? handoverSigs
+        : allSignatures.filter((s) => s.signPhase === 'ONLINE');
+
+    // 4. Delegate cho ContractTemplateService build toàn bộ
+    return this.contractTemplate.buildContractData({
+      agreement: {
+        agreementNo: agreement.agreementNo,
+        status: agreement.status,
+        termsSnapshot: agreement.termsSnapshot,
+        createdAt: agreement.createdAt,
+      },
+      order: {
+        orderCode: order.orderCode,
+        basePriceSnapshot: order.basePriceSnapshot,
+        pickupFeeSnapshot: order.pickupFeeSnapshot,
+        plantCount: order.plantCount,
+        provisionalTotal: order.provisionalTotal,
+        durationDaysSnapshot: order.durationDaysSnapshot,
+        reportFrequencySnapshot: order.reportFrequencySnapshot,
+        scheduledPickupAt: order.scheduledPickupAt,
+        pickupAddress: order.pickupAddress,
+      },
+      plants: plants.map((p) => ({
+        name: p.name,
+        speciesName: p.speciesName,
+        declaredValue: p.declaredValue,
+        isValueDeclared: p.isValueDeclared,
+        initialPhotos: photosByPlantId.get(p.id) ?? [],
+      })),
+      servicePackageName: servicePackage?.name ?? 'N/A',
+      customerParty: frozenParties?.customer ?? {
+        fullName:
+          customer.account?.fullName ??
+          customerEkyc?.fullNameExtracted ??
+          'Chưa cung cấp',
+        dateOfBirth:
+          customer.dateOfBirth ?? customerEkyc?.dateOfBirth ?? 'Chưa cung cấp',
+        placeOfOrigin:
+          customer.placeOfOrigin ??
+          customerEkyc?.placeOfOrigin ??
+          'Chưa cung cấp',
+        address:
+          customer.address ??
+          customer.defaultPickupAddress ??
+          customerEkyc?.placeOfResidence ??
+          'Chưa cung cấp',
+        phone: this.safeDecrypt(customer.account?.phone) ?? 'Chưa cung cấp',
+      },
+      providerParty: frozenParties?.provider ?? {
+        fullName:
+          provider.account?.fullName ?? provider.displayName ?? 'Chưa cung cấp',
+        dateOfBirth: provider.dateOfBirth ?? 'Chưa cung cấp',
+        placeOfOrigin: provider.placeOfOrigin ?? 'Chưa cung cấp',
+        address: provider.address ?? 'Chưa cung cấp',
+        phone: this.safeDecrypt(provider.account?.phone) ?? 'Chưa cung cấp',
+      },
+      signatures: effectiveSignatures.map((s) => ({
+        signerRole: s.signerRole,
+        signedAt: s.signedAt,
+        signatureHash: s.signatureHash,
+        ipAddress: s.ipAddress,
+      })),
+    });
   }
 
   /**
@@ -504,6 +1104,15 @@ export class OrdersService {
     if (provider.verificationStatus !== 'APPROVED') {
       throw new ForbiddenException('PROFILE_NOT_APPROVED');
     }
+    // ACCEPT tạo hợp đồng ngay → Bên B phải có SĐT + số CCCD (REJECT thì không cần).
+    if (dto.response === 'ACCEPT') {
+      assertProviderIdentityComplete(provider);
+      // Nhận đơn → sẽ có tiền công / tiền bảo đảm phải chi về vườn. Vườn duyệt từ trước luật 21/11
+      // có thể chưa khai ngân hàng → chặn ở đây (REJECT thì không cần).
+      if (!hasBankInfo(provider)) {
+        throw new ConflictException('PROVIDER_BANK_INFO_REQUIRED');
+      }
+    }
     const order = await this.orderRepo.findOne({
       where: { id: orderId, providerId: provider.id },
       relations: { plants: true },
@@ -516,6 +1125,13 @@ export class OrdersService {
       relations: { account: true },
     });
     if (!customer) throw new InternalServerErrorException('CUSTOMER_PROFILE_NOT_FOUND');
+    // Khách cũ có thể chưa khai số CCCD trong hồ sơ → snapshot fallback bản đọc từ eKYC.
+    const customerEkyc =
+      dto.response === 'ACCEPT'
+        ? await this.dataSource
+            .getRepository(EkycRecord)
+            .findOne({ where: { accountId: customer.accountId } })
+        : null;
 
     // D5: khoá dòng + kiểm lại trạng thái trong transaction — vườn bấm 2 lần
     // (hoặc ACCEPT+REJECT chồng nhau) chỉ 1 request thắng, không lật trạng thái terminal.
@@ -523,12 +1139,14 @@ export class OrdersService {
     assertTransition(order.status, target);
 
     return this.dataSource.transaction(async (manager) => {
-      const locked = await manager.findOne(ServiceOrder, {
-        where: { id: order.id },
-        lock: { mode: 'pessimistic_write' },
-      });
+      const locked = await this.orderState.lock(manager, order.id);
       if (!locked || locked.status !== 'PENDING_PROVIDER') {
         throw new ConflictException('INVALID_STATE_TRANSITION');
+      }
+      // Quá hạn trả lời (bộ quét 5 phút chưa kịp chuyển EXPIRED) → không nhận, không từ chối được nữa.
+      const now = new Date();
+      if (isPastDue(locked.providerRespondDueAt, now)) {
+        throw new ConflictException('ORDER_DEADLINE_PASSED');
       }
 
       if (dto.response === 'REJECT') {
@@ -537,8 +1155,7 @@ export class OrdersService {
           { serviceOrderId: order.id },
           { providerResponse: 'REJECT' },
         );
-        locked.status = 'REJECTED';
-        await manager.save(locked);
+        await this.orderState.apply(manager, locked, 'REJECTED');
         return { status: locked.status };
       }
 
@@ -579,14 +1196,33 @@ export class OrdersService {
           termsSnapshot: this.buildTermsSnapshot(
             locked,
             dto,
-            this.buildPartySnapshot(customer, provider),
+            buildPartySnapshot(
+              {
+                customer,
+                provider,
+                customerEkyc,
+              },
+              this.crypto,
+            ),
           ),
           status: 'PENDING',
         }),
       );
-      locked.status = 'AGREEMENT_PENDING';
-      await manager.save(locked);
-      return { status: locked.status, agreementId: agreement.id };
+      // Hạn hai bên ký = sớm hơn trong (lúc vườn nhận + 24 giờ) và (giờ hẹn − 3 giờ); quá hạn → CANCELLED.
+      locked.agreementDueAt = waitDueAt(now, locked.scheduledPickupAt);
+      // apply lưu luôn provisionalTotal (nếu vườn đề xuất giá) + hạn ký cùng lần đổi trạng thái.
+      await this.orderState.apply(manager, locked, 'AGREEMENT_PENDING');
+      return {
+        status: locked.status,
+        agreementId: agreement.id,
+        // Tiền bảo đảm DỰ KIẾN vườn phải nộp lúc nhận cây nếu nhận hết mọi cây, để vườn chuẩn bị tiền:
+        // Σ mức đền (giá khai nếu có khai, không thì 2 × giá gói). Đơn mẫu 3.000.000 + 400.000 = 3.400.000.
+        // Số thật chốt lúc vườn chốt biên bản (cây bị từ chối không tính).
+        estimatedSecurityDeposit: sumCompensationCaps(
+          plants,
+          BigInt(locked.basePriceSnapshot),
+        ).toString(),
+      };
     });
   }
 
@@ -594,7 +1230,7 @@ export class OrdersService {
    * POST /orders/:id/agreement/sign — 1 endpoint cho cả 2 vai, signerRole lấy
    * từ JWT (không ký hộ được). Idempotent nhờ UNIQUE(agreement, role, phase).
    * Chữ ký thứ 2 (1 transaction): hợp đồng SIGNED + sinh payment components
-   * (PACKAGE_PRICE + PICKUP_FEE nếu > 0) + khóa giá tạm + đơn → AWAITING_PAYMENT.
+   * (PACKAGE_PRICE + PICKUP_FEE nếu > 0 + DECLARED_DEPOSIT nếu > 0) + khóa giá tạm + đơn → AWAITING_PAYMENT.
    */
   async signAgreement(
     accountId: string,
@@ -605,6 +1241,10 @@ export class OrdersService {
     const order = await this.getOrderAsParty(accountId, role, orderId);
     if (order.status !== 'AGREEMENT_PENDING') {
       throw new ConflictException('INVALID_STATE_TRANSITION');
+    }
+    // Quá hạn ký (bộ quét 5 phút chưa kịp huỷ đơn) → không ký được nữa.
+    if (isPastDue(order.agreementDueAt, new Date())) {
+      throw new ConflictException('ORDER_DEADLINE_PASSED');
     }
     const signerRole = role as 'CUSTOMER' | 'PROVIDER';
 
@@ -654,39 +1294,79 @@ export class OrdersService {
       }
 
       // Đủ 2 chữ ký — chốt: hợp đồng SIGNED, sinh khoản phải trả, khóa giá tạm.
-      assertTransition(order.status, 'AWAITING_PAYMENT');
+      // Khóa dòng đơn + kiểm lại: đơn đã rời AGREEMENT_PENDING (bị hủy...) trong lúc ký
+      // → 409, rollback cả chữ ký vừa ghi, không ghi đè trạng thái từ bản đọc cũ.
+      const locked = await this.orderState.transition(
+        manager,
+        order.id,
+        'AGREEMENT_PENDING',
+        'AWAITING_PAYMENT',
+      );
       agreement.status = 'SIGNED';
       await manager.save(agreement);
 
+      // Phí dịch vụ 6% khách trả thêm, chỉ tính trên giá gói (không trên phí lấy cây).
+      // Chốt vào component lúc ký → QR/webhook đọc lại đúng số này, đổi tỷ lệ sau không ảnh hưởng đơn đã ký.
+      const customerFee = customerFeeFor(BigInt(locked.provisionalTotal));
       const components = [
         manager.create(PaymentComponent, {
-          serviceOrderId: order.id,
+          serviceOrderId: locked.id,
           componentType: 'PACKAGE_PRICE' as const,
-          amount: order.provisionalTotal,
+          amount: locked.provisionalTotal,
+          customerFee: customerFee.toString(),
           status: 'PENDING' as const,
         }),
       ];
       // Phí ship = 0 thì không tạo dòng component thừa.
-      if (BigInt(order.pickupFeeSnapshot) > 0n) {
+      if (BigInt(locked.pickupFeeSnapshot) > 0n) {
         components.push(
           manager.create(PaymentComponent, {
-            serviceOrderId: order.id,
+            serviceOrderId: locked.id,
             componentType: 'PICKUP_FEE' as const,
-            amount: order.pickupFeeSnapshot,
+            amount: locked.pickupFeeSnapshot,
+            status: 'PENDING' as const,
+          }),
+        );
+      }
+      // Tiền bảo đảm khai giá (đã chốt trên từng cây lúc tạo đơn): tổng > 0 mới có dòng, không phí 6%.
+      // Đơn mẫu: cây A khai 3.000.000 → 300.000, QR 484.000 + 300.000 = 784.000.
+      const declaredDeposit = BigInt(
+        this.sumDeclaredDeposit(
+          await manager.find(Plant, { where: { serviceOrderId: locked.id } }),
+        ),
+      );
+      if (declaredDeposit > 0n) {
+        components.push(
+          manager.create(PaymentComponent, {
+            serviceOrderId: locked.id,
+            componentType: 'DECLARED_DEPOSIT' as const,
+            amount: declaredDeposit.toString(),
             status: 'PENDING' as const,
           }),
         );
       }
       await manager.save(components);
 
-      order.provisionalLockedAt = new Date();
-      order.status = 'AWAITING_PAYMENT';
-      await manager.save(order);
+      locked.provisionalLockedAt = new Date();
+      // Hạn khách thanh toán = sớm hơn trong (lúc đủ 2 chữ ký + 24 giờ) và (giờ hẹn − 3 giờ); quá hạn → CANCELLED.
+      locked.paymentDueAt = waitDueAt(
+        locked.provisionalLockedAt,
+        locked.scheduledPickupAt,
+      );
+      await manager.save(locked);
 
       const amountDue = (
-        BigInt(order.provisionalTotal) + BigInt(order.pickupFeeSnapshot)
+        BigInt(locked.provisionalTotal) +
+        customerFee +
+        BigInt(locked.pickupFeeSnapshot) +
+        declaredDeposit
       ).toString();
-      return { status: order.status, amountDue };
+      return {
+        status: locked.status,
+        amountDue,
+        customerFee: customerFee.toString(),
+        declaredDeposit: declaredDeposit.toString(),
+      };
     });
   }
 
@@ -696,7 +1376,7 @@ export class OrdersService {
   private buildTermsSnapshot(
     order: ServiceOrder,
     negotiation?: RespondNegotiationDto,
-    parties?: Record<string, unknown>,
+    parties?: PartySnapshotV3,
   ) {
     return {
       orderCode: order.orderCode,
@@ -725,38 +1405,8 @@ export class OrdersService {
     };
   }
 
-  private buildPartySnapshot(
-    customer: CustomerProfile | null,
-    provider: ProviderProfile | null,
-  ) {
-    return {
-      customer: {
-        fullName: customer?.account?.fullName ?? 'Chưa cung cấp',
-        address:
-          customer?.address ?? customer?.defaultPickupAddress ?? 'Chưa cung cấp',
-        identityNumber: 'Chưa cung cấp',
-        identityDocuments: [],
-      },
-      provider: {
-        fullName: provider?.account?.fullName ?? provider?.displayName ?? 'Chưa cung cấp',
-        address: provider?.address ?? 'Chưa cung cấp',
-        identityNumber: 'Chưa cung cấp',
-        identityDocuments: [provider?.cccdFrontUrl, provider?.cccdBackUrl].filter(
-          (url): url is string => Boolean(url),
-        ),
-      },
-    };
-  }
-
   private contractClauses() {
-    return [
-      'Nhà vườn thực hiện chăm sóc theo thông tin đơn và tình trạng cây được hai bên xác nhận tại thời điểm ký.',
-      'Khách cam kết cây, chủng loại, số lượng, giá trị khai báo, ảnh ban đầu và tình trạng thực tế khi bàn giao là trung thực.',
-      'Nếu cây hoặc tình trạng thực tế khác đáng kể với ảnh ban đầu, thông tin mô tả hoặc nội dung đã cung cấp cho Nhà vườn, Nhà vườn có quyền từ chối nhận cây và hủy đơn.',
-      'Khi Nhà vườn từ chối nhận vì thông tin hoặc tình trạng cây không đúng như đã cung cấp, phí dịch vụ đã thanh toán sẽ được hoàn lại cho Khách; phí vận chuyển/lấy cây theo đơn do Khách chịu.',
-      'Mọi thay đổi về giá, địa điểm nhận cây hoặc ghi chú chỉ có hiệu lực khi được ghi nhận trong đơn và snapshot hợp đồng trước khi hai bên ký.',
-      'Hai bên ưu tiên trao đổi và cung cấp bằng chứng qua hệ thống; tranh chấp được xử lý theo quy trình tranh chấp của LanCare.',
-    ];
+    return this.contractTemplate.generateClauses();
   }
 
   private waitingFor(signedRoles: string[]) {
@@ -799,7 +1449,7 @@ export class OrdersService {
     pkg: ServicePackage,
   ) {
     // D3: khai giá (isValueDeclared=true) thì BẮT BUỘC có declaredValue —
-    // chặn mở khoá ADJUST khống + trần đền bù null ở bàn giao.
+    // không thì lúc nhận cây mức đền của cây khai giá không có số để lấy.
     if (plant.isValueDeclared === true && plant.declaredValue === undefined) {
       throw new BadRequestException('DECLARED_VALUE_REQUIRED');
     }
@@ -835,15 +1485,26 @@ export class OrdersService {
   }
 }
 
-// Vườn chỉ thấy đơn từ PENDING_PROVIDER trở đi (DRAFT là của riêng khách).
-const ORDER_VISIBLE_TO_PROVIDER = [
-  'PENDING_PROVIDER',
-  'AGREEMENT_PENDING',
-  'AWAITING_PAYMENT',
-  'PAID',
-  'HANDOVER_IN_PROGRESS',
-  'HANDOVER_AWAITING_CONFIRM',
-  'IN_CARE',
-  'REJECTED',
-  'CANCELLED',
-] as const;
+/**
+ * Các mốc giờ để app hiện đồng hồ đếm — dùng chung cho chi tiết đơn và từng đơn trong danh sách.
+ * Ba hạn chờ rỗng với đơn tạo trước khi có luật hạn. freeCancelUntil = giờ hẹn − 3 giờ (khách huỷ
+ * đơn đã thanh toán miễn phí tới mốc này); noShowFrom = giờ hẹn + 30 phút (từ đây mới báo được
+ * "vườn không tới" / "khách vắng nhà").
+ */
+function buildDeadlines(
+  order: Pick<
+    ServiceOrder,
+    | 'providerRespondDueAt'
+    | 'agreementDueAt'
+    | 'paymentDueAt'
+    | 'scheduledPickupAt'
+  >,
+) {
+  return {
+    providerRespondDueAt: order.providerRespondDueAt,
+    agreementDueAt: order.agreementDueAt,
+    paymentDueAt: order.paymentDueAt,
+    freeCancelUntil: freeCancelUntil(order.scheduledPickupAt),
+    noShowFrom: noShowFrom(order.scheduledPickupAt),
+  };
+}

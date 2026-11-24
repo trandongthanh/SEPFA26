@@ -15,10 +15,21 @@ import { ServiceOrder } from '../../orders/entities/service-order.entity';
  * (trước đó đơn có thể REJECT/hủy, chưa có nghĩa vụ trả tiền).
  * Tách PACKAGE_PRICE / PICKUP_FEE vì vòng đời tiền độc lập: luật hủy 1 mốc
  * hoàn dịch vụ nhưng có thể mất ship; payout Phase 2 chỉ tính phí 18% trên dịch vụ.
+ * DECLARED_DEPOSIT = tiền bảo đảm khai giá của khách (Σ plants.declared_deposit, không phí 6%):
+ * sinh cùng lúc nếu tổng > 0, tiền vào sổ DECLARED chứ không vào sổ đơn; cuối đơn trả đủ → REFUNDED,
+ * có phần sang vườn (khách khiếu nại sai) → RELEASED.
  */
 @Entity({ name: 'payment_components' })
-@Check(`"component_type" IN ('PACKAGE_PRICE','PICKUP_FEE','ADD_ON')`)
-@Check(`"status" IN ('PENDING','PAID','REFUNDED','RELEASED')`)
+// Đặt tên cố định (trước đây TypeORM tự sinh tên theo biểu thức) để SQL tay đổi được danh sách về sau.
+@Check(
+  'CHK_payment_components_component_type',
+  `"component_type" IN ('PACKAGE_PRICE','PICKUP_FEE','ADD_ON','DECLARED_DEPOSIT')`,
+)
+// CANCELLED = dòng chưa trả của đơn bị huỷ trước khi thanh toán (không còn là khoản "chờ trả").
+@Check(
+  'CHK_payment_components_status',
+  `"status" IN ('PENDING','PAID','REFUNDED','RELEASED','CANCELLED')`,
+)
 @Check(`"amount" >= 0`)
 export class PaymentComponent extends BaseEntity {
   @PrimaryGeneratedColumn('uuid')
@@ -37,7 +48,8 @@ export class PaymentComponent extends BaseEntity {
   addonId!: string | null;
 
   @Column({ type: 'varchar', length: 20, name: 'component_type' })
-  componentType!: 'PACKAGE_PRICE' | 'PICKUP_FEE' | 'ADD_ON';
+  componentType!:
+    'PACKAGE_PRICE' | 'PICKUP_FEE' | 'ADD_ON' | 'DECLARED_DEPOSIT';
 
   @Column({ type: 'bigint' })
   amount!: string;
@@ -50,7 +62,7 @@ export class PaymentComponent extends BaseEntity {
   providerFee!: string;
 
   @Column({ type: 'varchar', length: 20, default: 'PENDING' })
-  status!: 'PENDING' | 'PAID' | 'REFUNDED' | 'RELEASED';
+  status!: 'PENDING' | 'PAID' | 'REFUNDED' | 'RELEASED' | 'CANCELLED';
 
   @Column({
     type: 'timestamptz',

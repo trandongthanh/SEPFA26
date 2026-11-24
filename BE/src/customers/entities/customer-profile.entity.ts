@@ -11,7 +11,7 @@ import { BaseEntity } from '../../common/entities/base.entity';
 import { Account } from '../../accounts/entities/account.entity';
 
 @Entity({ name: 'customer_profiles' })
-@Check(`"verification_status" IN ('PENDING','APPROVED','REJECTED')`)
+@Check(`"verification_status" IN ('NOT_SUBMITTED','PENDING','APPROVED','REJECTED')`)
 export class CustomerProfile extends BaseEntity {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -54,27 +54,36 @@ export class CustomerProfile extends BaseEntity {
   })
   gpsLng!: string | null;
 
-  // Số căn cước công dân — mã hóa AES, chỉ admin/chủ tài khoản thấy bản gốc.
-  @Column({ type: 'varchar', length: 500, name: 'cccd_number', nullable: true })
-  cccdNumber!: string | null;
+  // Ngày tháng năm sinh và Quê quán (trích xuất từ eKYC tức thời hoặc do khách khai) —
+  // KHÔNG thu giữ/lưu trữ số CCCD hay hình ảnh giấy tờ/chân dung.
+  @Column({ type: 'varchar', length: 20, name: 'date_of_birth', nullable: true })
+  dateOfBirth!: string | null;
 
-  // Hash SHA-256 của số CCCD gốc → ràng buộc unique, không thể trùng giữa các customer.
-  @Index({ unique: true })
-  @Column({ type: 'varchar', length: 64, name: 'cccd_number_hash', nullable: true })
-  cccdNumberHash!: string | null;
+  @Column({ type: 'varchar', length: 255, name: 'place_of_origin', nullable: true })
+  placeOfOrigin!: string | null;
 
-  @Column({ type: 'varchar', length: 20, name: 'verification_status', default: 'PENDING' })
-  verificationStatus!: 'PENDING' | 'APPROVED' | 'REJECTED';
+  @Column({ type: 'varchar', length: 20, name: 'verification_status', default: 'NOT_SUBMITTED' })
+  verificationStatus!: 'NOT_SUBMITTED' | 'PENDING' | 'APPROVED' | 'REJECTED';
 
   @Column({ type: 'text', name: 'verification_note', nullable: true })
   verificationNote!: string | null;
 
-  @Column({ type: 'varchar', length: 500, name: 'cccd_front_url', nullable: true })
-  cccdFrontUrl!: string | null;
+  // Tài khoản nhận tiền hoàn / tiền đền — lệnh chi cho khách chụp lại 3 cột này lúc tạo.
+  // Admin đối chiếu tên chủ tài khoản với họ tên eKYC trước khi chuyển.
+  @Column({ type: 'varchar', length: 100, name: 'bank_name', nullable: true })
+  bankName!: string | null;
 
-  @Column({ type: 'varchar', length: 500, name: 'cccd_back_url', nullable: true })
-  cccdBackUrl!: string | null;
+  @Column({ type: 'varchar', length: 50, name: 'bank_account', nullable: true })
+  bankAccount!: string | null;
 
-  @Column({ type: 'varchar', length: 500, name: 'selfie_with_id_url', nullable: true })
-  selfieWithIdUrl!: string | null;
+  @Column({ type: 'varchar', length: 100, name: 'bank_holder', nullable: true })
+  bankHolder!: string | null;
+
+  // Mã BIN 6 số của ngân hàng (không bắt buộc, đi kèm bộ 3 trường trên).
+  @Column({ type: 'varchar', length: 6, name: 'bank_bin', nullable: true })
+  bankBin!: string | null;
+
+  // Số lần khách thua tranh chấp (admin kết luận mọi cây bị khiếu nại đều không lỗi). Không phạt tiền.
+  @Column({ type: 'int', name: 'lost_dispute_count', default: 0 })
+  lostDisputeCount!: number;
 }

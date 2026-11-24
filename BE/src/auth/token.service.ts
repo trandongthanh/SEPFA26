@@ -21,6 +21,17 @@ export interface JwtPayload {
   exp?: number;
 }
 
+export interface EmailVerificationPayload {
+  sub: string;
+  email: string;
+  type: 'email_verify';
+  jti: string;
+  iat?: number;
+  exp?: number;
+}
+
+const EMAIL_VERIFY_EXPIRES: ExpiresIn = '15m';
+
 type SignInput = Pick<JwtPayload, 'sub' | 'role'>;
 
 // Access và refresh dùng 2 secret KHÁC nhau → secret/expiry truyền theo từng lần ký/xác minh.
@@ -67,6 +78,23 @@ export class TokenService {
 
   verifyRefresh(token: string): JwtPayload {
     return this.jwt.verify<JwtPayload>(token, { secret: this.refreshSecret });
+  }
+
+  signEmailVerification(email: string): string {
+    return this.jwt.sign(
+      { sub: email, email, type: 'email_verify', jti: randomUUID() },
+      { secret: this.accessSecret, expiresIn: EMAIL_VERIFY_EXPIRES },
+    );
+  }
+
+  verifyEmailVerification(token: string): EmailVerificationPayload {
+    const payload = this.jwt.verify<EmailVerificationPayload>(token, {
+      secret: this.accessSecret,
+    });
+    if (payload.type !== 'email_verify' || !payload.email) {
+      throw new Error('INVALID_EMAIL_VERIFICATION_TOKEN');
+    }
+    return payload;
   }
 
   // Băm refresh token bằng SHA-256 (toàn bộ chuỗi) trước khi lưu/so khớp DB.

@@ -1,5 +1,10 @@
 import { Body, Controller, Get, Param, Post, Put } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { CurrentUserData } from '../auth/types/current-user.type';
@@ -26,6 +31,11 @@ export class CustomersController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: 'Khách cập nhật hồ sơ + ghim GPS (tiền đề tính phí đi lấy cây)',
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'BANK_INFO_INCOMPLETE (gửi thiếu 1 trong 3 trường ngân hàng hoặc bankBin một mình) | BANK_INFO_CANNOT_BE_CLEARED (gửi rỗng/null để xoá)',
   })
   updateMyProfile(
     @CurrentUser() user: CurrentUserData,
