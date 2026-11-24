@@ -195,6 +195,21 @@ export interface CareReportPlantItem {
   photos: CareReportPhotoItem[];
 }
 
+export interface CareReportListParams {
+  serviceOrderId?: string;
+  q?: string;
+  late?: boolean;
+  page?: number;
+  limit?: number; // BE tối đa 50
+}
+
+export interface CareReportPage {
+  data: CareReportItem[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
 export interface CareReportItem {
   id: string;
   serviceOrderId: string;
@@ -360,11 +375,23 @@ export const providerApi = {
     await api.delete(`/api/v1/providers/me/packages/${packageId}`);
   },
 
-  // Danh sách báo cáo chăm sóc
-  listCareReports: async (serviceOrderId?: string) => {
-    const params = serviceOrderId ? { serviceOrderId } : undefined;
-    const res = await api.get<CareReportItem[] | { items?: CareReportItem[] }>('/api/v1/care-reports', { params });
-    return Array.isArray(res.data) ? res.data : res.data?.items ?? [];
+  // Danh sách báo cáo chăm sóc — BE luôn phân trang, trả { data, total, page, limit }.
+  // Có serviceOrderId → xếp theo kỳ 1→n; không có → mới nộp trước. q tìm không dấu, late=true chỉ lấy nộp trễ.
+  listCareReports: async (params: CareReportListParams = {}): Promise<CareReportPage> => {
+    const query: Record<string, string | number | boolean> = {};
+    if (params.serviceOrderId) query.serviceOrderId = params.serviceOrderId;
+    if (params.q?.trim()) query.q = params.q.trim();
+    if (params.late) query.late = true;
+    if (params.page) query.page = params.page;
+    if (params.limit) query.limit = params.limit;
+    const res = await api.get<CareReportPage>('/api/v1/care-reports', { params: query });
+    const body = res.data;
+    return {
+      data: Array.isArray(body?.data) ? body.data : [],
+      total: Number(body?.total ?? 0),
+      page: Number(body?.page ?? params.page ?? 1),
+      limit: Number(body?.limit ?? params.limit ?? 10),
+    };
   },
 
   // Chi tiết báo cáo chăm sóc
@@ -570,7 +597,8 @@ export type AddonStatus =
   | 'PAID'
   | 'DONE'
   | 'REJECTED'
-  | 'EXPIRED';
+  | 'EXPIRED'
+  | 'REFUNDED'; // vườn trả lại add-on khách đã trả tiền → khách được hoàn giá + 6%
 
 export interface AddonItem {
   id: string;
@@ -595,6 +623,8 @@ export interface AddonItem {
   donePlantHealth?: 'GOOD' | 'AVERAGE' | 'POOR' | null;
   expiredReason: 'NO_RESPONSE' | 'NOT_PAID' | 'ORDER_RETURNING' | null;
   expiredAt: string | null;
+  refundedAt?: string | null;
+  refundReason?: string | null;
   createdAt: string;
 }
 

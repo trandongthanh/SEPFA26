@@ -2936,6 +2936,7 @@ function OrdersPageContent() {
                     DONE: { color: 'green', label: 'Đã hoàn thành' },
                     REJECTED: { color: 'red', label: 'Khách từ chối' },
                     EXPIRED: { color: 'default', label: 'Đã hết hạn' },
+                    REFUNDED: { color: 'blue', label: 'Đã trả lại khách' },
                   };
                   const st = statusMap[ad.status] || { color: 'default', label: ad.status };
 
@@ -3001,6 +3002,20 @@ function OrdersPageContent() {
                       {ad.customerNote && (
                         <div className="p-2 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800">
                           <strong>Ghi chú từ khách hàng:</strong> {ad.customerNote}
+                        </div>
+                      )}
+
+                      {/* Vườn đã trả lại add-on: khách được hoàn giá + 6% */}
+                      {ad.status === 'REFUNDED' && (
+                        <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-900 space-y-1">
+                          <p className="font-bold">
+                            Đã trả lại khách · hoàn {Number(ad.amountDue || 0).toLocaleString('vi-VN')} đ
+                          </p>
+                          {ad.refundReason && (
+                            <p>
+                              <strong>Lý do:</strong> {ad.refundReason}
+                            </p>
+                          )}
                         </div>
                       )}
 

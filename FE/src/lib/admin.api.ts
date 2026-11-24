@@ -179,11 +179,12 @@ export const adminApi = {
   },
 
   // --- Bằng chứng của đơn: báo cáo chăm sóc + add-on (admin được xem mọi đơn) ---
-  listOrderCareReports: async (serviceOrderId: string) => {
-    const res = await api.get<CareReportItem[]>('/api/v1/care-reports', {
-      params: { serviceOrderId },
+  // BE trả { data, total, page, limit }; xem theo 1 đơn thì xếp kỳ 1→n. limit 50 (tối đa của BE) đủ mọi kỳ của một đơn.
+  listOrderCareReports: async (serviceOrderId: string): Promise<CareReportItem[]> => {
+    const res = await api.get<{ data?: CareReportItem[] }>('/api/v1/care-reports', {
+      params: { serviceOrderId, limit: 50 },
     });
-    return res.data;
+    return Array.isArray(res.data?.data) ? res.data.data : [];
   },
 
   listOrderAddons: async (orderId: string) => {
@@ -456,7 +457,7 @@ export interface ShippingRateInput {
 
 // ===== Add-on của đơn — GET /orders/:orderId/addons (khớp BE addons.service toViews) =====
 
-export type AddonStatus = 'PENDING' | 'ACCEPTED' | 'PAID' | 'DONE' | 'REJECTED' | 'EXPIRED';
+export type AddonStatus = 'PENDING' | 'ACCEPTED' | 'PAID' | 'DONE' | 'REJECTED' | 'EXPIRED' | 'REFUNDED';
 
 export interface OrderAddonItem {
   id: string;
@@ -481,5 +482,7 @@ export interface OrderAddonItem {
   donePlantHealth: 'GOOD' | 'AVERAGE' | 'POOR' | null;
   expiredReason: 'NO_RESPONSE' | 'NOT_PAID' | 'ORDER_RETURNING' | null;
   expiredAt: string | null;
+  refundedAt?: string | null;
+  refundReason?: string | null;
   createdAt: string;
 }

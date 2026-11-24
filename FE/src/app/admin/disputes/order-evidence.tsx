@@ -27,6 +27,7 @@ const ADDON_STATUS: Record<AddonStatus, { label: string; color: string }> = {
   DONE: { label: 'Đã làm xong', color: 'success' },
   REJECTED: { label: 'Khách từ chối', color: 'default' },
   EXPIRED: { label: 'Hết hạn', color: 'default' },
+  REFUNDED: { label: 'Vườn trả lại, đã hoàn khách', color: 'blue' },
 };
 const EXPIRED_REASON: Record<string, string> = {
   NO_RESPONSE: 'khách không trả lời',
@@ -258,6 +259,11 @@ export function AddonsSection({ orderId }: { orderId: string }) {
                 </div>
                 {a.reason && <p className="text-[#4B4764] m-0">Lý do vườn đề xuất: “{a.reason}”</p>}
                 {a.customerNote && <p className="text-[#4B4764] m-0">Khách ghi: “{a.customerNote}”</p>}
+                {a.status === 'REFUNDED' && a.refundReason && (
+                  <p className="text-[#4B4764] m-0">
+                    Vườn trả lại{a.refundedAt ? ` lúc ${fmtDateTime(a.refundedAt)}` : ''}: “{a.refundReason}”
+                  </p>
+                )}
                 <Thumbs items={(a.photoUrls ?? []).map((url) => ({ url, caption: 'Lúc đề xuất' }))} />
                 {a.status === 'DONE' && (
                   <div className="rounded-lg bg-[#F6F4FC] p-2 space-y-1">

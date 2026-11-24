@@ -1484,7 +1484,9 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                             ? { label: 'Đã hoàn tất', color: '#059669', bg: '#ECFDF5' }
                             : ad.status === 'REJECTED'
                               ? { label: 'Bạn đã từ chối', color: '#DC2626', bg: '#FEF2F2' }
-                              : { label: 'Đã hết hạn', color: '#6B7280', bg: '#F3F4F6' };
+                              : ad.status === 'REFUNDED'
+                                ? { label: 'Vườn đã trả lại', color: '#2563EB', bg: '#EFF6FF' }
+                                : { label: 'Đã hết hạn', color: '#6B7280', bg: '#F3F4F6' };
 
                   const isResponding = respondingAddonId === ad.id;
 
@@ -1572,6 +1574,31 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
                           </Text>
                         </View>
                       ) : null}
+
+                      {/* Vườn trả lại add-on đã thu tiền: lý do + số tiền hoàn (giá + 6%, BE tạo lệnh chi ngay) */}
+                      {ad.status === 'REFUNDED' && (
+                        <View style={{ marginTop: 10, padding: 10, borderRadius: 8, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE' }}>
+                          <Text style={{ fontSize: 12, fontWeight: '700', color: '#1E40AF', marginBottom: 4 }}>
+                            Vườn đã trả lại dịch vụ này
+                            {ad.refundedAt ? ` (${new Date(ad.refundedAt).toLocaleDateString('vi-VN')})` : ''}
+                          </Text>
+                          {ad.refundReason ? (
+                            <Text style={{ fontSize: 12, color: '#1E3A8A', lineHeight: 18 }}>
+                              <Text style={{ fontWeight: '700' }}>Lý do: </Text>
+                              {ad.refundReason}
+                            </Text>
+                          ) : null}
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 }}>
+                            <Text style={{ fontSize: 12, color: '#1E3A8A' }}>Bạn được hoàn:</Text>
+                            <Text style={{ fontSize: 13, fontWeight: '800', color: '#1E40AF' }}>
+                              {Number(ad.amountDue || 0).toLocaleString('vi-VN')} VNĐ
+                            </Text>
+                          </View>
+                          <Text style={{ fontSize: 11, color: '#64748B', marginTop: 4 }}>
+                            LanCare sẽ chuyển khoản vào tài khoản ngân hàng trong hồ sơ của bạn.
+                          </Text>
+                        </View>
+                      )}
 
                       {/* Completed Result Photos & Note */}
                       {ad.status === 'DONE' && (

@@ -475,7 +475,8 @@ export type AddonStatus =
   | 'PAID'
   | 'DONE'
   | 'REJECTED'
-  | 'EXPIRED';
+  | 'EXPIRED'
+  | 'REFUNDED'; // vườn trả lại add-on bạn đã trả tiền → được hoàn giá + 6%
 
 export interface AddonItem {
   id: string;
@@ -500,6 +501,8 @@ export interface AddonItem {
   donePlantHealth?: 'GOOD' | 'AVERAGE' | 'POOR' | null;
   expiredReason: 'NO_RESPONSE' | 'NOT_PAID' | 'ORDER_RETURNING' | null;
   expiredAt: string | null;
+  refundedAt?: string | null;
+  refundReason?: string | null;
   createdAt: string;
 }
 

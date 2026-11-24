@@ -1235,6 +1235,7 @@ export default function ProviderOrderDetailPage() {
                     DONE: { color: 'green', label: 'Đã hoàn thành' },
                     REJECTED: { color: 'red', label: 'Khách từ chối' },
                     EXPIRED: { color: 'default', label: 'Đã hết hạn' },
+                    REFUNDED: { color: 'blue', label: 'Đã trả lại khách' },
                   };
                   const st = statusMap[ad.status] || { color: 'default', label: ad.status };
 
@@ -1307,6 +1308,25 @@ export default function ProviderOrderDetailPage() {
                           </div>
                         )}
                       </div>
+
+                      {/* Vườn đã trả lại add-on: khách được hoàn giá + 6% */}
+                      {ad.status === 'REFUNDED' && (
+                        <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-900 space-y-1.5">
+                          <p className="font-bold">
+                            Đã trả lại khách
+                            {ad.refundedAt ? ` · ${new Date(ad.refundedAt).toLocaleString('vi-VN')}` : ''}
+                          </p>
+                          {ad.refundReason && (
+                            <p>
+                              <strong>Lý do:</strong> {ad.refundReason}
+                            </p>
+                          )}
+                          <p>
+                            Khách được hoàn <strong>{Number(ad.amountDue || 0).toLocaleString('vi-VN')} đ</strong>{' '}
+                            (giá + phí 6%). Add-on này không tính vào tiền vườn nhận.
+                          </p>
+                        </div>
+                      )}
 
                       {/* Completed result banner if DONE */}
                       {ad.status === 'DONE' && (

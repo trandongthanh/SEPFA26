@@ -59,10 +59,11 @@ export interface CareReportItem {
 
 export const careReportService = {
   async listByOrder(serviceOrderId: string): Promise<CareReportItem[]> {
-    const response = await apiClient.get<CareReportItem[]>('/care-reports', {
-      params: { serviceOrderId },
+    // BE trả { data, total, page, limit }; theo 1 đơn thì xếp kỳ 1→n. limit 50 (tối đa của BE) đủ mọi kỳ của một đơn.
+    const response = await apiClient.get<{ data?: CareReportItem[] }>('/care-reports', {
+      params: { serviceOrderId, limit: 50 },
     });
-    return Array.isArray(response.data) ? response.data : [];
+    return Array.isArray(response.data?.data) ? response.data.data : [];
   },
 
   async getDetail(id: string): Promise<CareReportItem> {
