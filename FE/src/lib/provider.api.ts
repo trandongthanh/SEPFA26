@@ -195,6 +195,24 @@ export interface CareReportPlantItem {
   photos: CareReportPhotoItem[];
 }
 
+// GET /orders — sort: newest (mặc định) | oldest | pickupSoon (giờ hẹn lấy cây gần nhất trước).
+export type OrderListSort = 'newest' | 'oldest' | 'pickupSoon';
+
+export interface OrderSearchParams {
+  status?: string;
+  q?: string; // tìm không dấu trong mã đơn, tên khách, tên gói, tên cây
+  sort?: OrderListSort;
+  page?: number;
+  limit?: number; // BE tối đa 50
+}
+
+export interface OrderSearchResult {
+  data: OrderItem[];
+  total: number;
+  // Số đơn theo từng trạng thái (đã lọc theo q, không lọc theo status).
+  statusCounts: Record<string, number>;
+}
+
 export interface CareReportListParams {
   serviceOrderId?: string;
   q?: string;
@@ -307,8 +325,33 @@ export const providerApi = {
     };
   },
 
-  // Tải HẾT đơn (mỗi lần 50 — mức tối đa BE cho) để FE tự tìm/lọc/phân trang.
-  // BE chưa có tham số tìm theo từ khoá nên không lọc phía server được.
+  // Danh sách đơn có tìm / lọc / sắp xếp / phân trang làm ở BE (GET /orders?q&status&sort&page&limit).
+  // statusCounts đếm theo q nhưng KHÔNG theo status → dùng thẳng cho số trên các tab.
+  searchOrders: async (params: OrderSearchParams): Promise<OrderSearchResult> => {
+    const query: Record<string, string | number> = {
+      page: params.page ?? 1,
+      limit: params.limit ?? 10,
+    };
+    if (params.status) query.status = params.status;
+    if (params.q?.trim()) query.q = params.q.trim();
+    if (params.sort) query.sort = params.sort;
+    const res = await api.get<{
+      data?: OrderItem[];
+      total?: number;
+      page?: number;
+      limit?: number;
+      statusCounts?: Record<string, number>;
+    }>('/api/v1/orders', { params: query });
+    const body = res.data;
+    return {
+      data: Array.isArray(body?.data) ? body.data : [],
+      total: Number(body?.total ?? 0),
+      statusCounts: body?.statusCounts ?? {},
+    };
+  },
+
+  // Tải HẾT đơn (mỗi lần 50 — mức tối đa BE cho). Chỉ dùng khi cần tra mã đơn / tên khách theo id
+  // (trang báo cáo); danh sách đơn thì dùng searchOrders để BE tìm và chia trang.
   listAllOrders: async (status?: string) => {
     const PAGE_SIZE = 50;
     const MAX_PAGES = 40; // chặn vòng lặp vô hạn nếu BE trả total sai (tối đa 2.000 đơn)

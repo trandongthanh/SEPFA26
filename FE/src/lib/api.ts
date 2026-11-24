@@ -178,6 +178,17 @@ const FE_ERROR_CODE_MAP: Record<string, string> = {
   SERVICE_ORDER_NOT_FOUND: 'Không tìm thấy thông tin đơn hàng.',
   ORDER_NOT_IN_CARE: 'Chỉ có thể gửi báo cáo cho đơn hàng đang trong giai đoạn chăm sóc.',
   CARE_NOT_DUE: 'Gói chăm sóc chưa đến hạn trả cây.',
+  // Add-on chặn bắt đầu trả cây / vườn trả lại add-on
+  ADDON_OPEN: 'Còn add-on khách đã thanh toán. Hãy báo hoàn tất hoặc trả lại tiền add-on đó trước khi trả cây.',
+  ADDON_AWAITING_PAYMENT: 'Còn add-on khách đã đồng ý và đang trong 24 giờ thanh toán. Chờ khách thanh toán hoặc hết hạn rồi mới trả cây.',
+  ADDON_INVALID_STATE: 'Add-on này không còn ở trạng thái thực hiện được thao tác này. Vui lòng tải lại trang.',
+  ADDON_NOT_FOUND: 'Không tìm thấy add-on này. Vui lòng tải lại trang.',
+  // Admin hoàn tiền chưa khớp (POST /admin/unmatched-transactions/:id/refund)
+  REFUND_BANK_INFO_REQUIRED: 'Chưa có tài khoản nhận tiền. Hãy nhập ngân hàng, số tài khoản và chủ tài khoản.',
+  RESOLUTION_NOTE_REQUIRED: 'Cần ghi chú bằng chứng khi hoàn khoản không gắn đơn hoặc khi đổi tài khoản nhận.',
+  TRANSACTION_ALREADY_RESOLVED: 'Khoản tiền này đã được hoàn trước đó.',
+  TRANSACTION_NOT_REFUNDABLE: 'Khoản tiền này đã được ghi vào đơn nên không hoàn ở đây.',
+  UNMATCHED_TRANSACTION_NOT_FOUND: 'Không tìm thấy khoản tiền chưa khớp này.',
   PLANT_NOT_IN_CARE: 'Chậu cây này không thuộc danh sách đang chăm sóc.',
   REPORT_PLANTS_MISMATCH: 'Danh sách cây trong báo cáo không khớp với các cây đang chăm sóc của đơn hàng.',
   PLANT_PHOTO_REQUIRED: 'Mỗi cây cần ảnh toàn cảnh (OVERVIEW); bộ phận đánh giá Kém hoặc có sâu bệnh cần thêm ảnh cận tương ứng.',

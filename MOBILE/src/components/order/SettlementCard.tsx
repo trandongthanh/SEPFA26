@@ -40,6 +40,9 @@ export const SettlementCard: React.FC<Props> = ({ order }) => {
     backRows.push(['Tiền bảo đảm khai giá đã trả lại', s.declaredDepositReturned]);
   const backTotal = backRows.reduce((sum, [, v]) => sum + toNumber(v), 0);
   const forfeited = toNumber(s.declaredDepositForfeited);
+  // Chuyển dư: tiền thừa so với số phải trả, LanCare trả lại ngay khi tiền về (không chờ hết đơn).
+  // Không nằm trong "Tổng đã trả" nên hiện riêng, không cộng vào "Tổng nhận lại".
+  const overpay = toNumber(s.overpayReturned);
 
   return (
     <View style={styles.card}>
@@ -59,6 +62,18 @@ export const SettlementCard: React.FC<Props> = ({ order }) => {
         <Text style={styles.totalLabel}>{awaitingPayment ? 'Tổng cần thanh toán' : 'Tổng đã trả'}</Text>
         <Text style={styles.totalValue}>{formatVnd(s.customerTotal)}</Text>
       </View>
+
+      {overpay > 0 && (
+        <View style={styles.overpayBox}>
+          <View style={styles.row}>
+            <Text style={[styles.label, { color: '#1E40AF', flex: 1 }]}>Tiền chuyển dư đã trả lại</Text>
+            <Text style={[styles.value, { color: '#1E40AF' }]}>{formatVnd(overpay)}</Text>
+          </View>
+          <Text style={styles.overpayNote}>
+            Bạn đã chuyển nhiều hơn số cần trả. LanCare trả lại phần dư vào tài khoản ngân hàng trong hồ sơ của bạn.
+          </Text>
+        </View>
+      )}
 
       {!awaitingPayment &&
         (backRows.length > 0 ? (
@@ -118,4 +133,13 @@ const styles = StyleSheet.create({
   totalLabel: { fontSize: 14, fontWeight: '700', color: '#1A202C' },
   totalValue: { fontSize: 14, fontWeight: '700', color: '#6027D2' },
   note: { fontSize: 11, color: '#718096', marginTop: 8, lineHeight: 16 },
+  overpayBox: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  overpayNote: { fontSize: 11, color: '#1E3A8A', lineHeight: 16, marginTop: 2 },
 });

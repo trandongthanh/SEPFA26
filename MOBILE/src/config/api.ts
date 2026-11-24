@@ -159,6 +159,9 @@ const ERROR_CODE_MAP: Record<string, string> = {
   ORDER_NOT_EDITABLE: 'Đơn hàng đã gửi nên không thể chỉnh sửa thêm.',
   ORDER_NOT_IN_CARE: 'Chỉ có thể thực hiện thao tác này khi đơn hàng đang trong giai đoạn chăm sóc.',
   CARE_NOT_DUE: 'Gói chăm sóc chưa đến hạn trả cây.',
+  // Add-on vừa đổi trạng thái (vd vườn đã trả lại, đã hết hạn trả tiền) trong lúc bạn đang thao tác.
+  ADDON_INVALID_STATE: 'Dịch vụ thêm này vừa thay đổi trạng thái. Vui lòng tải lại đơn hàng.',
+  ADDON_NOT_FOUND: 'Không tìm thấy dịch vụ thêm này. Vui lòng tải lại đơn hàng.',
   CARE_REPORT_NOT_FOUND: 'Không tìm thấy báo cáo chăm sóc.',
   CUSTOMER_NOT_ALLOWED: 'Bạn không có quyền xem báo cáo này.',
   ORDER_NOT_CALLABLE: 'Đơn hàng ở trạng thái hiện tại không hỗ trợ gọi video.',

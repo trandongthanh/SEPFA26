@@ -192,6 +192,9 @@ export interface CustomerSettlement {
   declaredDeposit: string;
   declaredDepositReturned: string;
   declaredDepositForfeited: string;
+  // Tiền bạn chuyển DƯ (đơn / add-on) đã được trả lại ngay lúc tiền về; không nằm trong customerTotal.
+  // BE cũ không có field này → coi như "0".
+  overpayReturned?: string;
 }
 
 export interface PaginatedOrdersResponse {
