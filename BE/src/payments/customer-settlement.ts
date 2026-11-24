@@ -21,6 +21,8 @@ export interface CustomerSettlement {
   // Phần đã trả lại khách / đã chuyển sang vườn (khách khiếu nại sai) — ghi lúc đơn kết thúc, trước đó "0".
   declaredDepositReturned: string;
   declaredDepositForfeited: string;
+  // Tiền khách chuyển DƯ (đơn hoặc add-on) đã được thối lại — lệnh chi OVERPAY_RETURN chi ngay; không có → "0".
+  overpayReturned: string;
 }
 
 // Phần vườn thấy thêm khi đơn đã chia tiền (COMPLETED).
@@ -30,6 +32,8 @@ export interface ProviderSettlement extends CustomerSettlement {
   providerReceives: string;
   // Tiền bảo đảm khai giá của khách chuyển sang vườn (lệnh chi riêng, không nằm trong providerReceives).
   declaredForfeitReceived: string;
+  // Tiền bảo đảm vườn nộp DƯ đã được trả lại ngay lúc tiền về; không có → "0".
+  securityOverpayReturned: string;
   payout: {
     status: Disbursement['status'];
     eligibleAt: Date;
@@ -114,6 +118,12 @@ export async function loadCustomerSettlement(
     'DECLARED',
     'DECLARED_FORFEIT',
   );
+  const overpayReturned = await sumLedgerOut(
+    manager,
+    orderId,
+    'ORDER',
+    'OVERPAY_RETURN',
+  );
   return {
     packageAmount: packageAmount.toString(),
     customerFee: customerFee.toString(),
@@ -131,6 +141,7 @@ export async function loadCustomerSettlement(
     declaredDeposit: declaredDeposit.toString(),
     declaredDepositReturned: declaredDepositReturned.toString(),
     declaredDepositForfeited: declaredDepositForfeited.toString(),
+    overpayReturned: overpayReturned.toString(),
   };
 }
 
@@ -151,18 +162,32 @@ export async function loadProviderSettlement(
   const payout = await manager.findOne(Disbursement, {
     where: { serviceOrderId: order.id, type: 'PAYOUT' },
   });
+  // Add-on vườn đã trả lại (REFUNDED) không phải việc đã làm → không cộng vào giá dịch vụ của vườn.
+  // (Phần khách vẫn tính: khách đã trả rồi được hoàn, refundAmount có khoản đó.)
+  const doneAddonAmount = components
+    .filter(
+      (component) =>
+        component.componentType === 'ADD_ON' && component.status !== 'REFUNDED',
+    )
+    .reduce((sum, component) => sum + BigInt(component.amount), 0n);
+  const securityOverpayReturned = await sumLedgerOut(
+    manager,
+    order.id,
+    'SECURITY',
+    'OVERPAY_RETURN',
+  );
   return {
     ...customerPart,
     // Giá dịch vụ đã làm = giá gói chốt + các add-on đã làm; phí 12% cộng từ từng dòng hoá đơn.
     serviceAmount: (
-      BigInt(order.finalTotal ?? order.provisionalTotal) +
-      BigInt(customerPart.addonAmount)
+      BigInt(order.finalTotal ?? order.provisionalTotal) + doneAddonAmount
     ).toString(),
     providerFee: components
       .reduce((sum, component) => sum + BigInt(component.providerFee), 0n)
       .toString(),
     providerReceives: payout?.amount ?? '0',
     declaredForfeitReceived: customerPart.declaredDepositForfeited,
+    securityOverpayReturned: securityOverpayReturned.toString(),
     payout: payout
       ? {
           status: payout.status,

@@ -14,7 +14,7 @@
 -- Kiểm sau khi chạy (phải ra 0 dòng — đơn đã có tiền mà chưa có paid_at):
 --   SELECT o.id, o.status FROM service_orders o
 --   WHERE o.paid_at IS NULL
---     AND EXISTS (SELECT 1 FROM escrow_ledgers l WHERE l.service_order_id = o.id
+--     AND EXISTS (SELECT 1 FROM escrow_ledger l WHERE l.service_order_id = o.id
 --                 AND l.book = 'ORDER' AND l.entry_type = 'DEPOSIT');
 -- =====================================================================================
 
@@ -26,7 +26,7 @@ UPDATE "service_orders" o
 SET "paid_at" = first_deposit.created_at
 FROM (
   SELECT "service_order_id", MIN("created_at") AS created_at
-  FROM "escrow_ledgers"
+  FROM "escrow_ledger"
   WHERE "book" = 'ORDER' AND "entry_type" = 'DEPOSIT'
   GROUP BY "service_order_id"
 ) AS first_deposit

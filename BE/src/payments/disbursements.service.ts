@@ -92,15 +92,19 @@ export class DisbursementsService {
             throw new ConflictException('DISBURSEMENT_BANK_INFO_MISSING');
           }
           Object.assign(disbursement, bank);
-        } else {
+        } else if (disbursement.providerId) {
           const provider = await manager.findOne(ProviderProfile, {
-            where: { id: disbursement.providerId ?? undefined },
+            where: { id: disbursement.providerId },
           });
           const bank = provider ? pickBank(provider) : null;
           if (!bank) {
             throw new ConflictException('PROVIDER_BANK_INFO_MISSING');
           }
           Object.assign(disbursement, bank);
+        } else {
+          // Lệnh không gắn người nhận (UNMATCHED_REFUND, admin nhập TK đích) mà thiếu tài khoản — không đoán hộ.
+          // Trước đây nhánh này lấy vườn theo id undefined → có thể chụp nhầm tài khoản người khác.
+          throw new ConflictException('DISBURSEMENT_BANK_INFO_MISSING');
         }
       }
 
@@ -127,13 +131,21 @@ export class DisbursementsService {
   // Một hình dạng cho cả danh sách lẫn kết quả mark-paid.
   private toView(row: Disbursement, now: Date) {
     const toCustomer = row.customerId !== null;
+    const toProvider = row.providerId !== null;
     // Hồ sơ hiện tại của người nhận — gợi ý tài khoản khi lệnh chi chưa có bản chụp.
     const profile = toCustomer ? row.customer : row.provider;
     return {
       id: row.id,
+      // Null với UNMATCHED_REFUND của tiền không khớp đơn nào.
       orderId: row.serviceOrderId,
-      orderCode: row.serviceOrder.orderCode,
-      recipient: toCustomer ? ('CUSTOMER' as const) : ('PROVIDER' as const),
+      orderCode: row.serviceOrder?.orderCode ?? null,
+      // OTHER = không gắn khách/vườn (UNMATCHED_REFUND, admin nhập tài khoản đích).
+      recipient: toCustomer
+        ? ('CUSTOMER' as const)
+        : toProvider
+          ? ('PROVIDER' as const)
+          : ('OTHER' as const),
+      sourceTransactionId: row.sourceTransactionId,
       // Tên người nhận đúng bên: tên vườn hoặc họ tên tài khoản khách.
       recipientName: toCustomer
         ? (row.customer?.account?.fullName ?? null)

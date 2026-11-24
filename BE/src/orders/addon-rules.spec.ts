@@ -21,6 +21,8 @@ describe('addon-rules', () => {
       ['ACCEPTED', 'PAID'],
       ['ACCEPTED', 'EXPIRED'],
       ['PAID', 'DONE'],
+      // Vườn không làm được → trả lại khách đủ tiền.
+      ['PAID', 'REFUNDED'],
     ];
 
     it.each(ALLOWED)('cho phép %s → %s', (from, to) => {
@@ -39,13 +41,14 @@ describe('addon-rules', () => {
       }
     });
 
-    it('khai đủ 6 trạng thái; DONE / REJECTED / EXPIRED là trạng thái cuối', () => {
+    it('khai đủ 7 trạng thái; DONE / REJECTED / EXPIRED / REFUNDED là trạng thái cuối', () => {
       expect(Object.keys(ADDON_TRANSITIONS).sort()).toEqual(
         [...ADDON_STATUSES].sort(),
       );
       expect(ADDON_TRANSITIONS.DONE).toHaveLength(0);
       expect(ADDON_TRANSITIONS.REJECTED).toHaveLength(0);
       expect(ADDON_TRANSITIONS.EXPIRED).toHaveLength(0);
+      expect(ADDON_TRANSITIONS.REFUNDED).toHaveLength(0);
     });
   });
 
