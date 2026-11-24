@@ -6,6 +6,7 @@ import {
   AuditOutlined,
   InteractionOutlined,
   LogoutOutlined,
+  RollbackOutlined,
   SettingOutlined,
   ShoppingOutlined,
   TeamOutlined,
@@ -93,6 +94,12 @@ export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' 
       icon: <ShoppingOutlined />,
       label: 'Giải ngân',
       onClick: () => router.push('/admin/disbursements'),
+    },
+    {
+      key: '/admin/unmatched-transactions',
+      icon: <RollbackOutlined />,
+      label: 'Tiền chưa khớp',
+      onClick: () => router.push('/admin/unmatched-transactions'),
     },
     {
       key: '/admin/shipping-rates',

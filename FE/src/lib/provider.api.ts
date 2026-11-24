@@ -574,6 +574,15 @@ export const providerApi = {
   },
 
   // Vườn báo đã làm xong add-on (POST /api/v1/orders/:orderId/addons/:addonId/complete)
+  // Vườn trả lại add-on khách đã trả tiền mà vườn không làm được (chỉ khi add-on PAID và đơn IN_CARE).
+  // Khách nhận lại đủ giá + 6%, BE tạo lệnh chi ngay. Lý do 5–500 ký tự, khách đọc được.
+  refundAddon: async (orderId: string, addonId: string, reason: string) => {
+    const res = await api.post<AddonItem>(`/api/v1/orders/${orderId}/addons/${addonId}/refund`, {
+      reason: reason.trim(),
+    });
+    return res.data;
+  },
+
   completeAddon: async (
     orderId: string,
     addonId: string,

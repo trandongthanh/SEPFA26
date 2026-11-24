@@ -42,6 +42,7 @@ import HandoverCancelModal, { HANDOVER_CANCEL_ORDER_STATUSES } from '../componen
 import OrderDeadline from '../components/OrderDeadline';
 import OrderCancelModal, { PROVIDER_CANCELLABLE_STATUSES } from '../components/OrderCancelModal';
 import { matchesQuery, useUrlParam } from '@/lib/search';
+import RefundAddonModal from '../components/RefundAddonModal';
 
 const ORDERS_PAGE_SIZE = 10;
 const ORDER_TABS = [
@@ -238,6 +239,8 @@ function OrdersPageContent() {
   const [addonModalOpen, setAddonModalOpen] = useState(false);
   const [addonOrder, setAddonOrder] = useState<OrderItem | null>(null);
   const [addons, setAddons] = useState<AddonItem[]>([]);
+  // Add-on đang mở hộp thoại "Trả lại tiền" (null = đóng).
+  const [refundAddon, setRefundAddon] = useState<AddonItem | null>(null);
   const [addonsLoading, setAddonsLoading] = useState(false);
   const [addonSubmitting, setAddonSubmitting] = useState(false);
   const [addonUploading, setAddonUploading] = useState(false);
@@ -1698,6 +1701,22 @@ function OrdersPageContent() {
         )}
       </Modal>
 
+      {/* Trả lại add-on đã thanh toán */}
+      <RefundAddonModal
+        orderId={addonOrder?.id ?? null}
+        addon={refundAddon}
+        onClose={() => setRefundAddon(null)}
+        onRefunded={async () => {
+          setRefundAddon(null);
+          if (!addonOrder) return;
+          try {
+            setAddons(await providerApi.listAddons(addonOrder.id));
+          } catch {
+            /* danh sách cũ vẫn hiện; mở lại hộp thoại sẽ đúng */
+          }
+        }}
+      />
+
       {/* Contract Detail Modal */}
       <Modal
         title={
@@ -3069,7 +3088,17 @@ function OrdersPageContent() {
 
                       {/* Action for PAID status: Mark Complete */}
                       {ad.status === 'PAID' && (
-                        <div className="flex justify-end pt-1">
+                        <div className="flex justify-end gap-2 pt-1">
+                          {/* Trả lại chỉ được khi đơn còn đang chăm (BE chặn ở trạng thái khác). */}
+                          {addonOrder?.status === 'IN_CARE' && (
+                            <Button
+                              danger
+                              onClick={() => setRefundAddon(ad)}
+                              className="!h-8 !px-3.5 !rounded-xl !font-semibold text-xs"
+                            >
+                              Trả lại tiền
+                            </Button>
+                          )}
                           <Button
                             type="primary"
                             icon={<CheckCircleOutlined />}
