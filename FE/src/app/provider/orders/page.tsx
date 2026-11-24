@@ -30,7 +30,7 @@ import {
   UserOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Checkbox, Image, Input, Modal, Pagination, Radio, Select, Spin, Tag, message } from 'antd';
+import { Avatar, Button, Checkbox, Empty, Image, Input, Modal, Pagination, Radio, Select, Spin, Tag, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { AddonItem, AddonStatus, DisputeDetail, DisputeReason, OrderDisputeItem, OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
 import { videoCallApi } from '@/lib/video-call.api';
@@ -75,6 +75,8 @@ function OrdersPageContent() {
   const [handoverModalOpen, setHandoverModalOpen] = useState(false);
   const [handoverLoading, setHandoverLoading] = useState(false);
   const [handoverOrder, setHandoverOrder] = useState<any | null>(null);
+  const [handoverTargetOrderId, setHandoverTargetOrderId] = useState<string | null>(null);
+  const [handoverError, setHandoverError] = useState<string | null>(null);
   const [plantForms, setPlantForms] = useState<
     Record<
       string,
@@ -586,8 +588,10 @@ function OrdersPageContent() {
 
   // Mở modal thẩm định bàn giao
   const handleOpenHandoverModal = async (orderId: string) => {
+    setHandoverTargetOrderId(orderId);
     setHandoverModalOpen(true);
     setHandoverLoading(true);
+    setHandoverError(null);
     try {
       const detail = await providerApi.getOrderDetail(orderId);
       setHandoverOrder(detail);
@@ -604,7 +608,10 @@ function OrdersPageContent() {
       });
       setPlantForms(forms);
     } catch (err: any) {
-      message.error('Không thể tải chi tiết đơn hàng để thẩm định.');
+      const errMsg = err?.response?.data?.message || err?.message || 'Không thể tải chi tiết đơn hàng để thẩm định.';
+      const msgStr = Array.isArray(errMsg) ? errMsg.join(', ') : String(errMsg);
+      setHandoverError(msgStr);
+      message.error(msgStr);
     } finally {
       setHandoverLoading(false);
     }
@@ -1458,7 +1465,8 @@ function OrdersPageContent() {
                 type="primary"
                 onClick={handleCompleteHandover}
                 loading={completingHandover}
-                className="!rounded-xl !bg-[#2563EB] hover:!bg-[#1D4ED8] !font-bold"
+                disabled={!handoverOrder || !handoverOrder.plants?.length}
+                className="!rounded-xl !bg-[#2563EB] hover:!bg-[#1D4ED8] !font-bold disabled:!opacity-50"
               >
                 Hoàn tất thẩm định & Chốt bàn giao
               </Button>
@@ -1471,7 +1479,31 @@ function OrdersPageContent() {
             <Spin size="large" />
             <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải danh sách cây cần bàn giao...</p>
           </div>
-        ) : handoverOrder ? (
+        ) : !handoverOrder ? (
+          <div className="py-12 text-center space-y-4">
+            <Empty
+              description={
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-[#1E1B2E]">
+                    {handoverError || 'Không thể tải chi tiết chậu cây của đơn hàng.'}
+                  </p>
+                  <p className="text-xs text-[#6E6A8A]">
+                    Vui lòng kiểm tra lại kết nối mạng hoặc thử tải lại.
+                  </p>
+                </div>
+              }
+            />
+            {handoverTargetOrderId && (
+              <Button
+                type="primary"
+                onClick={() => handleOpenHandoverModal(handoverTargetOrderId)}
+                className="!rounded-xl !bg-[#2563EB]"
+              >
+                Thử tải lại
+              </Button>
+            )}
+          </div>
+        ) : (
           <div className="space-y-5 max-h-[72vh] overflow-y-auto pr-1">
             {/* Guide Banner */}
             <div className="bg-[#EFF6FF] border border-[#BFDBFE] rounded-2xl p-4">
@@ -1663,7 +1695,7 @@ function OrdersPageContent() {
               })}
             </div>
           </div>
-        ) : null}
+        )}
       </Modal>
 
       {/* Contract Detail Modal */}
