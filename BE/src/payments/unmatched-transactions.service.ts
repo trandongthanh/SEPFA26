@@ -15,7 +15,9 @@ import { ServiceOrder } from '../orders/entities/service-order.entity';
 import { QueryUnmatchedTransactionDto } from './dto/query-unmatched-transaction.dto';
 import { RefundUnmatchedTransactionDto } from './dto/refund-unmatched-transaction.dto';
 import { Disbursement } from './entities/disbursement.entity';
+import { PaymentClaim } from './entities/payment-claim.entity';
 import { PaymentTransaction } from './entities/payment-transaction.entity';
+import { assertClaimUsableForTransaction } from './payment-claim-rules';
 import {
   RecipientType,
   resolveRefundTarget,
@@ -29,6 +31,12 @@ export interface SuggestedRecipient {
   name: string | null;
   bank: BankInfo | null;
 }
+
+// Nạp sẵn để dựng người nhận gợi ý (tên khách nằm ở account, tên vườn ở profile).
+const ORDER_RECIPIENT_RELATIONS = {
+  customer: { account: true },
+  provider: true,
+};
 
 /**
  * "Hộp tiền chưa khớp" cho admin: tiền thật đã vào tài khoản nền tảng nhưng không ghi nhận được vào đơn
@@ -89,13 +97,43 @@ export class UnmatchedTransactionsService {
         // SUCCESS = tiền đã vào đơn, hoàn đi đường chia tiền / huỷ đơn, không đi đường này.
         throw new ConflictException('TRANSACTION_NOT_REFUNDABLE');
       }
+      // Hoàn kèm phiếu: khoá phiếu để không bị từ chối / gắn vào khoản khác cùng lúc.
+      // findOne không relations: Postgres không cho FOR UPDATE trên LEFT JOIN phía nullable.
+      let claim: PaymentClaim | null = null;
+      if (dto.claimId) {
+        claim = await manager.findOne(PaymentClaim, {
+          where: { id: dto.claimId },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!claim) {
+          throw new NotFoundException('PAYMENT_CLAIM_NOT_FOUND');
+        }
+        assertClaimUsableForTransaction({
+          claim,
+          transaction: {
+            serviceOrderId: txn.serviceOrderId,
+            unmatchedReason: txn.unmatchedReason,
+          },
+        });
+      }
       const order = txn.serviceOrderId
         ? await manager.findOne(ServiceOrder, {
             where: { id: txn.serviceOrderId },
-            relations: { customer: { account: true }, provider: true },
+            relations: ORDER_RECIPIENT_RELATIONS,
           })
         : null;
-      const suggested = this.suggest(txn.unmatchedReason, order);
+      let suggested = this.suggest(txn.unmatchedReason, order);
+      if (!order && claim) {
+        // Tiền không gắn đơn + phiếu: người nhận gợi ý = người nộp phiếu, TK trong hồ sơ của họ.
+        // hasOrder vẫn false (bên dưới) → ghi chú bằng chứng vẫn bắt buộc. Lệnh chi KHÔNG gắn đơn của phiếu.
+        const claimOrder = await manager.findOne(ServiceOrder, {
+          where: { id: claim.serviceOrderId },
+          relations: ORDER_RECIPIENT_RELATIONS,
+        });
+        suggested = claimOrder
+          ? this.recipientOf(claim.party, claimOrder)
+          : null;
+      }
       const note = dto.note || null;
       const target = resolveRefundTarget({
         hasOrder: order !== null,
@@ -126,6 +164,14 @@ export class UnmatchedTransactionsService {
       txn.resolvedAt = now;
       txn.resolutionNote = note;
       await manager.save(txn);
+
+      if (claim) {
+        claim.status = 'RESOLVED';
+        claim.transactionId = txn.id;
+        claim.handledByAccountId = adminAccountId;
+        claim.handledAt = now;
+        await manager.save(claim);
+      }
     });
 
     const saved = await this.withRelations()
@@ -169,6 +215,14 @@ export class UnmatchedTransactionsService {
   ): SuggestedRecipient | null {
     const type = suggestedRecipientType(reason, order !== null);
     if (!order || !type) return null;
+    return this.recipientOf(type, order);
+  }
+
+  // Bên `type` của đơn + tài khoản trong hồ sơ của họ (dùng cho gợi ý theo luật và người nộp phiếu).
+  private recipientOf(
+    type: RecipientType,
+    order: ServiceOrder,
+  ): SuggestedRecipient {
     if (type === 'PROVIDER') {
       return {
         type,

@@ -55,11 +55,15 @@ export class AdminUnmatchedTransactionsController {
     description:
       'REFUND_BANK_INFO_REQUIRED (không có tài khoản gợi ý và không nhập) | RESOLUTION_NOTE_REQUIRED (không gắn đơn hoặc đổi tài khoản mà thiếu ghi chú) | BANK_INFO_INCOMPLETE | BANK_INFO_CANNOT_BE_CLEARED',
   })
-  @ApiResponse({ status: 404, description: 'UNMATCHED_TRANSACTION_NOT_FOUND' })
+  @ApiResponse({
+    status: 404,
+    description:
+      'UNMATCHED_TRANSACTION_NOT_FOUND | PAYMENT_CLAIM_NOT_FOUND (gửi claimId không có phiếu)',
+  })
   @ApiResponse({
     status: 409,
     description:
-      'TRANSACTION_ALREADY_RESOLVED (đã hoàn) | TRANSACTION_NOT_REFUNDABLE (tiền đã vào đơn)',
+      'TRANSACTION_ALREADY_RESOLVED (đã hoàn) | TRANSACTION_NOT_REFUNDABLE (tiền đã vào đơn) | PAYMENT_CLAIM_NOT_OPEN (phiếu đã hoàn / bị từ chối) | PAYMENT_CLAIM_MISMATCH (tiền gắn đơn mà phiếu khác đơn hoặc sai bên)',
   })
   refund(
     @CurrentUser() user: CurrentUserData,

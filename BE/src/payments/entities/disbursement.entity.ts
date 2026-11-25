@@ -140,4 +140,8 @@ export class Disbursement extends BaseEntity {
 
   @Column({ type: 'text', nullable: true })
   note!: string | null;
+
+  // Ảnh biên lai admin đính lúc bấm "Đã chuyển" (không bắt buộc) — người nhận xem lại được.
+  @Column({ type: 'varchar', length: 500, name: 'receipt_url', nullable: true })
+  receiptUrl!: string | null;
 }

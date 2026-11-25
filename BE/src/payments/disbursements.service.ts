@@ -114,6 +114,8 @@ export class DisbursementsService {
       disbursement.transferCode = dto.transferCode;
       // Ghi chú toàn khoảng trắng (sau trim còn rỗng) coi như không ghi.
       disbursement.note = dto.note || null;
+      // Ảnh biên lai không bắt buộc; mã giao dịch vẫn là bằng chứng chính.
+      disbursement.receiptUrl = dto.receiptUrl || null;
       await manager.save(disbursement);
     });
 
@@ -163,6 +165,7 @@ export class DisbursementsService {
       transferCode: row.transferCode,
       paidAt: row.paidAt,
       note: row.note,
+      receiptUrl: row.receiptUrl,
     };
   }
 }
