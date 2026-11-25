@@ -19,6 +19,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { CareReportsModule } from './care-reports/care-reports.module';
 import { UploadsModule } from './uploads/uploads.module';
 import { EkycModule } from './ekyc/ekyc.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { EkycModule } from './ekyc/ekyc.module';
       skipIf: throttlerSkipIf,
     }),
     CryptoModule,
+    NotificationsModule,
     AccountsModule,
     AuthModule,
     ProvidersModule,

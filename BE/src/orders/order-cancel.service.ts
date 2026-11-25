@@ -3,10 +3,12 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   type CancelRefundMode,
   computeCancelRefund,
@@ -54,6 +56,7 @@ export class OrderCancelService {
     private readonly providerRepo: Repository<ProviderProfile>,
     private readonly dataSource: DataSource,
     private readonly orderState: OrderStateService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -79,7 +82,7 @@ export class OrderCancelService {
         ? await this.getOrderAsCustomer(accountId, orderId)
         : await this.getOrderAsProvider(accountId, orderId);
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const locked = await this.orderState.lock(manager, order.id);
       if (!locked) {
         throw new ConflictException('INVALID_STATE_TRANSITION');
@@ -106,6 +109,31 @@ export class OrderCancelService {
           }
         : { status: locked.status, cancelCode: decision.code };
     });
+
+    const cancelPayload = {
+      type: 'ORDER_CANCELLED' as const,
+      title: `Đơn ${order.orderCode} đã bị huỷ`,
+      body:
+        actor === 'CUSTOMER'
+          ? `Khách hàng đã huỷ đơn ${order.orderCode}. Lý do: ${dto.reason}.`
+          : `Nhà vườn đã huỷ đơn ${order.orderCode}. Lý do: ${dto.reason}.`,
+      refEntity: 'ORDER' as const,
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        cancelCode: result.cancelCode,
+        cancelledBy: actor,
+        reason: dto.reason,
+      },
+    };
+    if (actor === 'CUSTOMER') {
+      await this.notifications?.notifyOrderProviderSafe(order, cancelPayload);
+    } else {
+      await this.notifications?.notifyOrderCustomerSafe(order, cancelPayload);
+    }
+
+    return result;
   }
 
   /**

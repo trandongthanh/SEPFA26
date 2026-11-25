@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
@@ -15,6 +16,7 @@ import {
   normalizePhone,
   sha256Hex,
 } from '../common/identity';
+import { NotificationsService } from '../notifications/notifications.service';
 import { ProviderProfile } from './entities/provider-profile.entity';
 import { ServicePackage } from './entities/service-package.entity';
 import { Account } from '../accounts/entities/account.entity';
@@ -59,6 +61,7 @@ export class ProvidersService {
     private readonly crypto: CryptoService,
     private readonly passwords: PasswordService,
     private readonly dataSource: DataSource,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   // Lấy hồ sơ của provider đang đăng nhập (GET /providers/me) — chủ hồ sơ thấy đủ field của mình
@@ -104,6 +107,7 @@ export class ProvidersService {
     accountId: string,
     dto: UpsertProfileDto,
   ): Promise<void> {
+    let pendingProfile: { id: string; displayName: string } | null = null;
     await this.dataSource.transaction(async (manager) => {
       const existing = await manager.findOne(ProviderProfile, {
         where: { accountId },
@@ -135,6 +139,7 @@ export class ProvidersService {
           verificationStatus: 'PENDING',
         });
 
+      let movedToPending = !existing;
       if (existing) {
         // C1: MERGE — so field nhạy cảm dựa trên GIÁ TRỊ MỚI SẼ CÓ (đã merge) so với giá trị cũ.
         const nextProviderType = dto.providerType ?? existing.providerType;
@@ -157,16 +162,24 @@ export class ProvidersService {
           // để admin thấy ở tab "Chờ duyệt" và không dính note cũ khi duyệt lại.
           existing.verificationStatus = 'PENDING';
           existing.verificationNote = null;
+          movedToPending = true;
         } else if (
           sensitiveChanged &&
           existing.verificationStatus === 'APPROVED'
         ) {
           existing.verificationStatus = 'PENDING';
+          movedToPending = true;
         }
       }
 
       this.applyProfileFields(profile, dto);
-      await manager.save(profile);
+      const savedProfile = await manager.save(profile);
+      if (movedToPending) {
+        pendingProfile = {
+          id: savedProfile.id,
+          displayName: savedProfile.displayName,
+        };
+      }
 
       // SĐT KHÔNG thuộc bộ KYC → không đụng verificationStatus (cố ý — đừng thêm luật về PENDING).
       const accountPatch: Partial<Account> = {};
@@ -181,6 +194,18 @@ export class ProvidersService {
         await manager.update(Account, { id: accountId }, accountPatch);
       }
     });
+
+    if (pendingProfile) {
+      const target = pendingProfile as { id: string; displayName: string };
+      await this.notifications?.notifyAdminsSafe({
+        type: 'PROFILE_SUBMITTED_FOR_REVIEW',
+        title: 'Có hồ sơ nhà vườn chờ duyệt',
+        body: `Nhà vườn "${target.displayName}" vừa nộp/cập nhật hồ sơ chờ duyệt.`,
+        refEntity: 'PROVIDER_PROFILE',
+        refId: target.id,
+        metadata: { providerId: target.id, accountId },
+      });
+    }
   }
 
   // Dạng trả ra cho chủ hồ sơ + admin: SĐT giải mã ở cấp ngoài,
@@ -407,7 +432,27 @@ export class ProvidersService {
       await this.accountRepo.save(profile.account);
     }
 
-    return this.toProfileView(await this.profileRepo.save(profile));
+    const saved = await this.profileRepo.save(profile);
+    await this.notifications?.sendSafe({
+      accountId: profile.accountId,
+      type: 'PROVIDER_VERIFIED',
+      title:
+        dto.decision === 'APPROVED'
+          ? 'Hồ sơ nhà vườn đã được duyệt'
+          : 'Hồ sơ nhà vườn bị từ chối',
+      body:
+        dto.decision === 'APPROVED'
+          ? 'Chúc mừng! Hồ sơ nhà vườn của bạn đã được phê duyệt và sẵn sàng nhận đơn.'
+          : `Hồ sơ nhà vườn bị từ chối${dto.note ? `: ${dto.note}` : '.'}`,
+      refEntity: 'PROVIDER_PROFILE',
+      refId: profile.id,
+      metadata: {
+        providerId: profile.id,
+        decision: dto.decision,
+        note: dto.note ?? null,
+      },
+    });
+    return this.toProfileView(saved);
   }
 
   async resetProviderPassword(
@@ -615,7 +660,34 @@ export class ProvidersService {
     pkg.approvalStatus = nextDecision;
     pkg.rejectionReason = nextDecision === 'REJECTED' ? (note ?? null) : null;
     pkg.isActive = nextDecision === 'APPROVED' && isActive !== false;
-    return this.packageRepo.save(pkg);
+    const saved = await this.packageRepo.save(pkg);
+    const provider = await this.profileRepo.findOne({
+      where: { id: saved.providerId },
+      select: { id: true, accountId: true },
+    });
+    if (provider?.accountId) {
+      await this.notifications?.sendSafe({
+        accountId: provider.accountId,
+        type: 'PACKAGE_VERIFIED',
+        title:
+          nextDecision === 'APPROVED'
+            ? 'Gói dịch vụ đã được duyệt'
+            : 'Gói dịch vụ bị từ chối / tạm ngưng',
+        body:
+          nextDecision === 'APPROVED'
+            ? `Gói dịch vụ "${saved.name}" đã được phê duyệt.`
+            : `Gói dịch vụ "${saved.name}" không được duyệt hoặc đã tạm ngưng${note ? `: ${note}` : '.'}`,
+        refEntity: 'SERVICE_PACKAGE',
+        refId: saved.id,
+        metadata: {
+          packageId: saved.id,
+          decision: nextDecision,
+          isActive: saved.isActive,
+          note: note ?? null,
+        },
+      });
+    }
+    return saved;
   }
 
   // Public: khách chỉ xem gói đang bán của provider đã được duyệt.

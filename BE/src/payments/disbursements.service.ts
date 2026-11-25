@@ -2,11 +2,14 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { pickBank } from '../common/bank-info';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { formatVnd } from '../notifications/notification.constants';
+import { NotificationsService } from '../notifications/notifications.service';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { MarkDisbursementPaidDto } from './dto/mark-disbursement-paid.dto';
 import { QueryDisbursementDto } from './dto/query-disbursement.dto';
@@ -24,6 +27,7 @@ export class DisbursementsService {
     @InjectRepository(Disbursement)
     private readonly disbursementRepo: Repository<Disbursement>,
     private readonly dataSource: DataSource,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /** GET /admin/disbursements — lệnh tới hạn sớm nhất lên đầu. */
@@ -127,6 +131,29 @@ export class DisbursementsService {
         customer: { account: true },
       },
     });
+    const recipientAccountId =
+      saved.customer?.accountId ?? saved.provider?.accountId;
+    if (recipientAccountId) {
+      const orderCode = saved.serviceOrder?.orderCode ?? null;
+      const body = orderCode
+        ? `Quản trị viên đã chuyển khoản ${formatVnd(saved.amount)}đ cho đơn ${orderCode} (mã GD: ${saved.transferCode}).`
+        : `Quản trị viên đã chuyển khoản ${formatVnd(saved.amount)}đ (mã GD: ${saved.transferCode}).`;
+      await this.notifications?.sendSafe({
+        accountId: recipientAccountId,
+        type: 'DISBURSEMENT_PAID',
+        title: `Đã giải ngân ${formatVnd(saved.amount)}đ`,
+        body,
+        refEntity: 'DISBURSEMENT',
+        refId: saved.id,
+        metadata: {
+          disbursementId: saved.id,
+          orderId: saved.serviceOrderId,
+          orderCode,
+          amount: saved.amount,
+          transferCode: saved.transferCode,
+        },
+      });
+    }
     return this.toView(saved, new Date());
   }
 

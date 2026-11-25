@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, type EntityManager, Repository } from 'typeorm';
+import { NotificationsService } from '../notifications/notifications.service';
 import { SecurityDeposit } from '../payments/entities/security-deposit.entity';
 import { settleOrder } from '../payments/settle-order';
 import {
@@ -72,6 +73,7 @@ export class OrderDeadlinesService {
     @InjectRepository(ServiceOrder)
     private readonly orderRepo: Repository<ServiceOrder>,
     private readonly orderCancel: OrderCancelService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -157,7 +159,7 @@ export class OrderDeadlinesService {
               lock: { mode: 'pessimistic_write' },
             })
           : null;
-        if (!deposit || deposit.dueAt.getTime() > now.getTime()) {
+        if (!order || !deposit || deposit.dueAt.getTime() > now.getTime()) {
           return false;
         }
         await this.handovers.cancelForUnpaidDeposit(
@@ -166,7 +168,12 @@ export class OrderDeadlinesService {
           UNPAID_DEPOSIT_EXPIRED_REASON,
           'SYSTEM',
         );
-        return true;
+        return () =>
+          this.notifyOrderSystemCancelled(
+            order,
+            'DEPOSIT_UNPAID',
+            UNPAID_DEPOSIT_EXPIRED_REASON,
+          );
       },
     );
   }
@@ -224,7 +231,34 @@ export class OrderDeadlinesService {
         );
         // Không tranh chấp → không hoàn công, không đền; cả hai sổ chia hết về 0.
         await settleOrder(manager, order, now);
-        return true;
+        return async () => {
+          await this.notifications?.notifyOrderPartiesSafe(order, {
+            customer: {
+              type: 'ORDER_COMPLETED',
+              title: `Đơn ${order.orderCode} đã tự động hoàn tất`,
+              body: `Đã hết 48 giờ xác nhận trả cây cho đơn ${order.orderCode}. Đơn hàng đã tự động hoàn tất.`,
+              refEntity: 'ORDER',
+              refId: order.id,
+              metadata: {
+                orderId: order.id,
+                orderCode: order.orderCode,
+                autoConfirmed: true,
+              },
+            },
+            provider: {
+              type: 'ORDER_COMPLETED',
+              title: `Đơn ${order.orderCode} đã tự động hoàn tất`,
+              body: `Đã hết 48 giờ xác nhận trả cây cho đơn ${order.orderCode}. Đơn hàng đã hoàn tất và tạo lệnh chi theo lịch đối soát.`,
+              refEntity: 'ORDER',
+              refId: order.id,
+              metadata: {
+                orderId: order.id,
+                orderCode: order.orderCode,
+                autoConfirmed: true,
+              },
+            },
+          });
+        };
       },
     );
   }
@@ -250,7 +284,42 @@ export class OrderDeadlinesService {
         id: dispute.id,
         orderId: dispute.serviceOrderId,
       })),
-      (manager, { id }) => this.disputes.escalateDispute(manager, id, now),
+      async (manager, { id, orderId }) => {
+        const escalated = await this.disputes.escalateDispute(manager, id, now);
+        if (!escalated) {
+          return false;
+        }
+        const order = await manager.findOne(ServiceOrder, {
+          where: { id: orderId },
+          select: { id: true, orderCode: true, customerId: true, providerId: true },
+        });
+        return async () => {
+          const orderLabel = order?.orderCode ?? orderId;
+          const payload = {
+            type: 'DISPUTE_ESCALATED' as const,
+            title: `Tranh chấp đơn ${orderLabel} đã chuyển quản trị viên`,
+            body: `Đã hết hạn 3 ngày thương lượng cho tranh chấp đơn ${orderLabel}. Hồ sơ đã được chuyển tới quản trị viên xem xét.`,
+            refEntity: 'DISPUTE' as const,
+            refId: id,
+            metadata: {
+              disputeId: id,
+              orderId,
+              orderCode: order?.orderCode,
+            },
+          };
+          if (order) {
+            await this.notifications?.notifyOrderPartiesSafe(order, {
+              customer: payload,
+              provider: payload,
+            });
+          }
+          await this.notifications?.notifyAdminsSafe({
+            ...payload,
+            title: `Có tranh chấp cần phân xử (${orderLabel})`,
+            body: `Tranh chấp đơn ${orderLabel} đã quá 3 ngày thương lượng và được chuyển sang hàng chờ Admin.`,
+          });
+        };
+      },
     );
   }
 
@@ -279,7 +348,20 @@ export class OrderDeadlinesService {
           return false;
         }
         await this.orderState.apply(manager, order, 'EXPIRED');
-        return true;
+        return async () => {
+          const payload = {
+            type: 'ORDER_EXPIRED' as const,
+            title: `Đơn ${order.orderCode} đã hết hạn phản hồi`,
+            body: `Đơn ${order.orderCode} đã hết hạn do nhà vườn không phản hồi đúng thời gian quy định.`,
+            refEntity: 'ORDER' as const,
+            refId: order.id,
+            metadata: { orderId: order.id, orderCode: order.orderCode },
+          };
+          await this.notifications?.notifyOrderPartiesSafe(order, {
+            customer: payload,
+            provider: payload,
+          });
+        };
       },
     );
   }
@@ -348,7 +430,12 @@ export class OrderDeadlinesService {
           countsAgainstProvider: true,
           now,
         });
-        return true;
+        return () =>
+          this.notifyOrderSystemCancelled(
+            order,
+            'PROVIDER_NO_SHOW',
+            SYSTEM_CANCEL_REASONS.PROVIDER_NO_SHOW,
+          );
       },
     );
   }
@@ -405,7 +492,12 @@ export class OrderDeadlinesService {
           countsAgainstProvider: false,
           now,
         });
-        return true;
+        return () =>
+          this.notifyOrderSystemCancelled(
+            order,
+            'CONFIRM_TIMEOUT',
+            SYSTEM_CANCEL_REASONS.CONFIRM_TIMEOUT,
+          );
       },
     );
   }
@@ -457,7 +549,12 @@ export class OrderDeadlinesService {
           countsAgainstProvider: false,
           now,
         });
-        return true;
+        return () =>
+          this.notifyOrderSystemCancelled(
+            order,
+            code,
+            SYSTEM_CANCEL_REASONS[code],
+          );
       },
     );
   }
@@ -483,22 +580,55 @@ export class OrderDeadlinesService {
    * Ném lỗi → transaction của RIÊNG dòng đó huỷ, ghi log kèm id rồi đi tiếp dòng sau; lượt quét 5 phút
    * sau sẽ thử lại dòng lỗi (ví dụ sổ lệch tiền → ESCROW_BALANCE_INSUFFICIENT, chờ admin xử tay).
    */
+  private async notifyOrderSystemCancelled(
+    order: { id: string; orderCode: string; customerId: string; providerId: string },
+    cancelCode: CancelCode,
+    reason: string,
+  ): Promise<void> {
+    const payload = {
+      type: 'ORDER_CANCELLED' as const,
+      title: `Đơn ${order.orderCode} đã tự động huỷ`,
+      body: reason,
+      refEntity: 'ORDER' as const,
+      refId: order.id,
+      metadata: {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        cancelCode,
+        cancelledBy: 'SYSTEM',
+      },
+    };
+    await this.notifications?.notifyOrderPartiesSafe(order, {
+      customer: payload,
+      provider: payload,
+    });
+  }
+
   private async processEach(
     label: string,
     rows: { id: string; orderId: string }[],
     work: (
       manager: EntityManager,
       row: { id: string; orderId: string },
-    ) => Promise<boolean>,
+    ) => Promise<boolean | (() => Promise<void>)>,
   ): Promise<number> {
     let done = 0;
     for (const row of rows) {
       try {
-        const handled = await this.dataSource.transaction((manager) =>
+        const result = await this.dataSource.transaction((manager) =>
           work(manager, row),
         );
-        if (handled) {
+        if (result) {
           done += 1;
+          if (typeof result === 'function') {
+            try {
+              await result();
+            } catch (notifyError) {
+              this.logger.warn(
+                `${label} — lỗi gửi thông báo ở dòng ${row.id} (đơn ${row.orderId}): ${String(notifyError)}`,
+              );
+            }
+          }
         }
       } catch (error) {
         this.logger.error(

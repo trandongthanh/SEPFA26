@@ -4,12 +4,15 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Not, Repository } from 'typeorm';
 import { CareReport } from '../care-reports/entities/care-report.entity';
 import { hasBankInfo } from '../common/bank-info';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { formatVnd } from '../notifications/notification.constants';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   loadCustomerSettlement,
   loadProviderSettlement,
@@ -87,6 +90,7 @@ export class DisputesService {
     private readonly providerRepo: Repository<ProviderProfile>,
     private readonly dataSource: DataSource,
     private readonly orderState: OrderStateService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -119,7 +123,7 @@ export class DisputesService {
       throw new BadRequestException('PLANT_NOT_IN_CARE');
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       await this.orderState.transition(
         manager,
         order.id,
@@ -183,6 +187,21 @@ export class DisputesService {
         negotiationDueAt: dispute.negotiationDueAt,
       };
     });
+
+    await this.notifications?.notifyOrderProviderSafe(order, {
+      type: 'DISPUTE_OPENED',
+      title: `Khách hàng mở tranh chấp đơn ${order.orderCode}`,
+      body: `Khách hàng đã mở tranh chấp cho đơn ${order.orderCode}. Hai bên có 3 ngày thương lượng trước khi chuyển admin.`,
+      refEntity: 'DISPUTE',
+      refId: result.disputeId,
+      metadata: {
+        disputeId: result.disputeId,
+        orderId: order.id,
+        orderCode: order.orderCode,
+        negotiationDueAt: result.negotiationDueAt.toISOString(),
+      },
+    });
+    return result;
   }
 
   /**
@@ -225,7 +244,7 @@ export class DisputesService {
       }
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       // Khoá dòng tranh chấp: nộp đúng lúc admin bấm phân xử thì hoặc vào trước, hoặc nhận 409.
       const dispute = await manager.findOne(Dispute, {
         where: { serviceOrderId: order.id },
@@ -256,6 +275,29 @@ export class DisputesService {
         evidence: saved.map((row) => this.toEvidenceView(row)),
       };
     });
+
+    const evidencePayload = {
+      type: 'DISPUTE_EVIDENCE_ADDED' as const,
+      title: `Có bằng chứng mới cho tranh chấp đơn ${order.orderCode}`,
+      body:
+        party === 'CUSTOMER'
+          ? `Khách hàng vừa bổ sung ${result.evidence.length} ảnh bằng chứng cho tranh chấp đơn ${order.orderCode}.`
+          : `Nhà vườn vừa bổ sung ${result.evidence.length} ảnh bằng chứng cho tranh chấp đơn ${order.orderCode}.`,
+      refEntity: 'DISPUTE' as const,
+      refId: result.disputeId,
+      metadata: {
+        disputeId: result.disputeId,
+        orderId: order.id,
+        orderCode: order.orderCode,
+        addedBy: party,
+      },
+    };
+    if (party === 'CUSTOMER') {
+      await this.notifications?.notifyOrderProviderSafe(order, evidencePayload);
+    } else {
+      await this.notifications?.notifyOrderCustomerSafe(order, evidencePayload);
+    }
+    return result;
   }
 
   /**
@@ -277,7 +319,8 @@ export class DisputesService {
     const refund = BigInt(dto.refundAmount);
     const compensation = BigInt(dto.compensationAmount);
 
-    return this.dataSource.transaction(async (manager) => {
+    let disputeId = '';
+    const result = await this.dataSource.transaction(async (manager) => {
       const dispute = await manager.findOne(Dispute, {
         where: { serviceOrderId: order.id },
         lock: { mode: 'pessimistic_write' },
@@ -285,6 +328,7 @@ export class DisputesService {
       if (!dispute) {
         throw new NotFoundException('DISPUTE_NOT_FOUND');
       }
+      disputeId = dispute.id;
       const now = new Date();
       if (
         dispute.status !== 'NEGOTIATING' ||
@@ -317,6 +361,30 @@ export class DisputesService {
         customerReceives: customerReceives(refund, compensation).toString(),
       };
     });
+
+    const offerPayload = {
+      type: 'DISPUTE_OFFER_CREATED' as const,
+      title: `Có đề nghị thương lượng mới cho đơn ${order.orderCode}`,
+      body:
+        party === 'CUSTOMER'
+          ? `Khách hàng vừa gửi đề nghị thương lượng mới (${formatVnd(result.customerReceives)}đ) cho tranh chấp đơn ${order.orderCode}.`
+          : `Nhà vườn vừa gửi đề nghị thương lượng mới (${formatVnd(result.customerReceives)}đ) cho tranh chấp đơn ${order.orderCode}.`,
+      refEntity: 'DISPUTE' as const,
+      refId: disputeId,
+      metadata: {
+        disputeId,
+        offerId: result.offerId,
+        orderId: order.id,
+        orderCode: order.orderCode,
+        proposedBy: party,
+      },
+    };
+    if (party === 'CUSTOMER') {
+      await this.notifications?.notifyOrderProviderSafe(order, offerPayload);
+    } else {
+      await this.notifications?.notifyOrderCustomerSafe(order, offerPayload);
+    }
+    return result;
   }
 
   /**
@@ -336,11 +404,13 @@ export class DisputesService {
       orderId,
     );
 
-    return this.dataSource.transaction(async (manager) => {
+    let disputeId = '';
+    const result = await this.dataSource.transaction(async (manager) => {
       const { locked, dispute } = await this.lockOrderAndDispute(
         manager,
         order.id,
       );
+      disputeId = dispute.id;
       const offer = await manager.findOne(DisputeOffer, {
         where: { id: offerId, disputeId: dispute.id },
       });
@@ -376,6 +446,30 @@ export class DisputesService {
           : customerPart;
       return { status: dispute.status, outcome: dispute.outcome, settlement };
     });
+
+    const acceptedPayload = {
+      type: 'DISPUTE_OFFER_ACCEPTED' as const,
+      title: `Tranh chấp đơn ${order.orderCode} đã đạt thoả thuận`,
+      body:
+        party === 'CUSTOMER'
+          ? `Khách hàng đã đồng ý đề nghị thương lượng. Tranh chấp đơn ${order.orderCode} đã khép lại.`
+          : `Nhà vườn đã đồng ý đề nghị thương lượng. Tranh chấp đơn ${order.orderCode} đã khép lại.`,
+      refEntity: 'DISPUTE' as const,
+      refId: disputeId,
+      metadata: {
+        disputeId,
+        offerId,
+        orderId: order.id,
+        orderCode: order.orderCode,
+        acceptedBy: party,
+      },
+    };
+    if (party === 'CUSTOMER') {
+      await this.notifications?.notifyOrderProviderSafe(order, acceptedPayload);
+    } else {
+      await this.notifications?.notifyOrderCustomerSafe(order, acceptedPayload);
+    }
+    return result;
   }
 
   /**
@@ -388,11 +482,13 @@ export class DisputesService {
       'CUSTOMER',
       orderId,
     );
-    return this.dataSource.transaction(async (manager) => {
+    let disputeId = '';
+    const result = await this.dataSource.transaction(async (manager) => {
       const { locked, dispute } = await this.lockOrderAndDispute(
         manager,
         order.id,
       );
+      disputeId = dispute.id;
       if (dispute.status !== 'NEGOTIATING') {
         throw new ConflictException('DISPUTE_NOT_NEGOTIATING');
       }
@@ -403,6 +499,20 @@ export class DisputesService {
       });
       return { status: dispute.status, outcome: dispute.outcome };
     });
+
+    await this.notifications?.notifyOrderProviderSafe(order, {
+      type: 'DISPUTE_WITHDRAWN',
+      title: `Khách hàng đã rút khiếu nại đơn ${order.orderCode}`,
+      body: `Khách hàng đã rút khiếu nại cho đơn ${order.orderCode}. Đơn hàng đã hoàn tất.`,
+      refEntity: 'DISPUTE',
+      refId: disputeId,
+      metadata: {
+        disputeId,
+        orderId: order.id,
+        orderCode: order.orderCode,
+      },
+    });
+    return result;
   }
 
   /**
@@ -624,11 +734,23 @@ export class DisputesService {
       throw new NotFoundException('DISPUTE_NOT_FOUND');
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    let orderInfo: {
+      id: string;
+      orderCode: string;
+      customerId: string;
+      providerId: string;
+    } | null = null;
+    const result = await this.dataSource.transaction(async (manager) => {
       const { locked, dispute } = await this.lockOrderAndDispute(
         manager,
         found.serviceOrderId,
       );
+      orderInfo = {
+        id: locked.id,
+        orderCode: locked.orderCode,
+        customerId: locked.customerId,
+        providerId: locked.providerId,
+      };
       if (dispute.status !== 'ADMIN_REVIEW') {
         throw new ConflictException('DISPUTE_NOT_IN_REVIEW');
       }
@@ -708,6 +830,35 @@ export class DisputesService {
         declaredForfeitAmount: dispute.declaredForfeitAmount,
       };
     });
+
+    if (orderInfo) {
+      const targetOrder = orderInfo as {
+        id: string;
+        orderCode: string;
+        customerId: string;
+        providerId: string;
+      };
+      const payload = {
+        type: 'DISPUTE_RESOLVED' as const,
+        title: `Admin đã phân xử tranh chấp đơn ${targetOrder.orderCode}`,
+        body: `Tranh chấp đơn ${targetOrder.orderCode} đã có kết quả phân xử từ quản trị viên. Đơn hàng đã hoàn tất.`,
+        refEntity: 'DISPUTE' as const,
+        refId: disputeId,
+        metadata: {
+          disputeId,
+          orderId: targetOrder.id,
+          orderCode: targetOrder.orderCode,
+          outcome: result.outcome,
+          refundAmount: result.refundAmount,
+          compensationAmount: result.compensationAmount,
+        },
+      };
+      await this.notifications?.notifyOrderPartiesSafe(targetOrder, {
+        customer: payload,
+        provider: payload,
+      });
+    }
+    return result;
   }
 
   // ---- helpers ----

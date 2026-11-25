@@ -6,12 +6,14 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { Account } from '../accounts/entities/account.entity';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import { ServiceOrder } from '../orders/entities/service-order.entity';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import type {
@@ -108,6 +110,7 @@ export class VideoCallsService {
     private readonly stream: StreamVideoClient,
     private readonly gateway: VideoCallsGateway,
     config: ConfigService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {
     this.t = {
       ringSeconds: Number(config.getOrThrow('VIDEO_CALL_RING_TIMEOUT_SECONDS')),
@@ -644,6 +647,21 @@ export class VideoCallsService {
           endedAt: (call.endedAt as Date).toISOString(),
         },
       );
+      if (call.endReason === 'MISSED') {
+        await this.notifications?.sendSafe({
+          accountId: call.calleeAccountId,
+          type: 'VIDEO_CALL_MISSED',
+          title: 'Cuộc gọi video nhỡ',
+          body: 'Bạn có một cuộc gọi video nhỡ liên quan đến đơn chăm sóc.',
+          refEntity: 'VIDEO_CALL',
+          refId: call.id,
+          metadata: {
+            callId: call.id,
+            orderId: call.orderId,
+            callerAccountId: call.callerAccountId,
+          },
+        });
+      }
     }
   }
 

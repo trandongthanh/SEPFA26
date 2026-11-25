@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, Optional } from '@nestjs/common';
 import {
   OnGatewayInit,
   WebSocketGateway,
@@ -7,6 +7,7 @@ import {
 import type { Namespace, Socket } from 'socket.io';
 import { AccountsService } from '../accounts/accounts.service';
 import { TokenService } from '../auth/token.service';
+import { RealtimeEmitter } from '../notifications/realtime-emitter.service';
 import type {
   VideoCallEndReason,
   VideoCallEventName,
@@ -78,11 +79,13 @@ export class VideoCallsGateway implements OnGatewayInit {
   constructor(
     private readonly tokens: TokenService,
     private readonly accounts: AccountsService,
+    @Optional() private readonly realtime?: RealtimeEmitter,
   ) {}
 
   // P2: xác thực bằng middleware — bị từ chối trước khi vào room; được nhận thì lúc client thấy
   // `connect` socket đã ở trong room, không lỡ `ringing` gửi ngay sau đó.
   afterInit(server: Namespace): void {
+    this.realtime?.attachServer(server);
     server.use((socket, next) => {
       this.authenticate(socket)
         .then((ok) => next(ok ? undefined : new Error(SOCKET_UNAUTHORIZED)))

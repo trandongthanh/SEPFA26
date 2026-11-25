@@ -4,11 +4,14 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import type { Role } from '../common/constants/roles';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
+import { formatVnd } from '../notifications/notification.constants';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PaymentComponent } from '../payments/entities/payment-component.entity';
 import { escrowBalance } from '../payments/escrow-balance';
 import {
@@ -62,6 +65,7 @@ export class AddonsService {
     private readonly providerRepo: Repository<ProviderProfile>,
     private readonly dataSource: DataSource,
     private readonly orderState: OrderStateService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /** POST /orders/:orderId/addons — vườn đề xuất add-on cho đơn đang chăm. */
@@ -90,7 +94,22 @@ export class AddonsService {
         const saved = await this.dataSource.transaction((manager) =>
           this.insertProposal(manager, order.id, accountId, price, dto),
         );
-        return (await this.toViews([saved]))[0];
+        const view = (await this.toViews([saved]))[0];
+        await this.notifications?.notifyOrderCustomerSafe(order, {
+          type: 'ADDON_PROPOSED',
+          title: 'Nhà vườn đề xuất dịch vụ phát sinh',
+          body: `Đơn ${order.orderCode} có đề xuất "${saved.title}" (${formatVnd(saved.price)}đ). Vui lòng phản hồi trong 48 giờ.`,
+          refEntity: 'ADDON',
+          refId: saved.id,
+          metadata: {
+            addonId: saved.id,
+            addonCode: saved.addonCode,
+            orderId: order.id,
+            orderCode: order.orderCode,
+            price: saved.price,
+          },
+        });
+        return view;
       } catch (err) {
         const isDuplicateCode =
           (err as { code?: string }).code === PG_UNIQUE_VIOLATION;
@@ -181,6 +200,25 @@ export class AddonsService {
         return manager.save(proposal);
       },
     );
+    await this.notifications?.notifyOrderProviderSafe(order, {
+      type: dto.decision === 'ACCEPT' ? 'ADDON_ACCEPTED' : 'ADDON_REJECTED',
+      title:
+        dto.decision === 'ACCEPT'
+          ? 'Khách đã đồng ý dịch vụ phát sinh'
+          : 'Khách đã từ chối dịch vụ phát sinh',
+      body:
+        dto.decision === 'ACCEPT'
+          ? `Khách hàng đã đồng ý đề xuất "${saved.title}" thuộc đơn ${order.orderCode} và đang chờ thanh toán.`
+          : `Khách hàng đã từ chối đề xuất "${saved.title}" thuộc đơn ${order.orderCode}.`,
+      refEntity: 'ADDON',
+      refId: saved.id,
+      metadata: {
+        addonId: saved.id,
+        addonCode: saved.addonCode,
+        orderId: order.id,
+        orderCode: order.orderCode,
+      },
+    });
     return (await this.toViews([saved]))[0];
   }
 
@@ -215,6 +253,19 @@ export class AddonsService {
         return manager.save(proposal);
       },
     );
+    await this.notifications?.notifyOrderCustomerSafe(order, {
+      type: 'ADDON_COMPLETED',
+      title: 'Dịch vụ phát sinh đã hoàn thành',
+      body: `Nhà vườn đã hoàn thành "${saved.title}" cho đơn ${order.orderCode}.`,
+      refEntity: 'ADDON',
+      refId: saved.id,
+      metadata: {
+        addonId: saved.id,
+        addonCode: saved.addonCode,
+        orderId: order.id,
+        orderCode: order.orderCode,
+      },
+    });
     return (await this.toViews([saved]))[0];
   }
 
