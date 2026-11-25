@@ -121,6 +121,94 @@ describe('unmatched-refund-rules', () => {
       ).toThrow(new BadRequestException('REFUND_BANK_INFO_REQUIRED'));
     });
 
+    // Tiền không gắn đơn + phiếu báo đã chuyển tiền: service đưa người nộp phiếu vào `suggested`,
+    // hasOrder vẫn false — luật không đổi, chỉ đầu vào khác.
+    describe('tiền không gắn đơn, gợi ý = người nộp phiếu', () => {
+      it('có TK hồ sơ, admin không nhập, có ghi chú → gắn người nộp, TK hồ sơ', () => {
+        expect(
+          resolveRefundTarget({
+            hasOrder: false,
+            suggested,
+            requestedBank: null,
+            note: 'Sao kê MB 10:15, 530.000đ, NGUYEN THI LAN',
+          }),
+        ).toEqual({
+          bank: customerBank,
+          customerId: 'cust-1',
+          providerId: null,
+          overridden: false,
+        });
+      });
+
+      it('phiếu của vườn → gắn providerId', () => {
+        const target = resolveRefundTarget({
+          hasOrder: false,
+          suggested: { type: 'PROVIDER', id: 'prov-1', bank: otherBank },
+          requestedBank: null,
+          note: 'Sao kê tiền bảo đảm của vườn',
+        });
+        expect(target).toMatchObject({
+          bank: otherBank,
+          customerId: null,
+          providerId: 'prov-1',
+        });
+      });
+
+      it('thiếu ghi chú → 400 RESOLUTION_NOTE_REQUIRED dù đã có phiếu', () => {
+        expect(() =>
+          resolveRefundTarget({
+            hasOrder: false,
+            suggested,
+            requestedBank: null,
+            note: null,
+          }),
+        ).toThrow(new BadRequestException('RESOLUTION_NOTE_REQUIRED'));
+      });
+
+      it('hồ sơ người nộp chưa có TK, admin không nhập → 400 REFUND_BANK_INFO_REQUIRED', () => {
+        expect(() =>
+          resolveRefundTarget({
+            hasOrder: false,
+            suggested: { ...suggested, bank: null },
+            requestedBank: null,
+            note: 'Có ảnh sao kê',
+          }),
+        ).toThrow(new BadRequestException('REFUND_BANK_INFO_REQUIRED'));
+      });
+
+      it('hồ sơ chưa có TK, admin nhập TK + ghi chú → overridden, lệnh không gắn người nhận', () => {
+        expect(
+          resolveRefundTarget({
+            hasOrder: false,
+            suggested: { ...suggested, bank: null },
+            requestedBank: otherBank,
+            note: 'Khách gửi TK qua hotline, có ảnh sao kê',
+          }),
+        ).toEqual({
+          bank: otherBank,
+          customerId: null,
+          providerId: null,
+          overridden: true,
+        });
+      });
+
+      it('admin nhập TK khác TK hồ sơ → overridden, lệnh không gắn người nhận', () => {
+        expect(
+          resolveRefundTarget({
+            hasOrder: false,
+            suggested,
+            requestedBank: otherBank,
+            note: 'Người nhà chuyển hộ, trả về TK người nhà',
+          }),
+        ).toEqual({
+          bank: otherBank,
+          customerId: null,
+          providerId: null,
+          overridden: true,
+        });
+      });
+    });
+
     it('gợi ý là vườn → gắn providerId', () => {
       const target = resolveRefundTarget({
         hasOrder: true,

@@ -38,6 +38,8 @@ export interface ProviderSettlement extends CustomerSettlement {
     status: Disbursement['status'];
     eligibleAt: Date;
     paidAt: Date | null;
+    // Ảnh biên lai admin đính lúc bấm "Đã chuyển" (null nếu không đính).
+    receiptUrl: string | null;
   } | null;
 }
 
@@ -193,6 +195,7 @@ export async function loadProviderSettlement(
           status: payout.status,
           eligibleAt: payout.eligibleAt,
           paidAt: payout.paidAt,
+          receiptUrl: payout.receiptUrl,
         }
       : null,
   };
