@@ -56,6 +56,7 @@ describe('CustomersService — trạng thái NOT_SUBMITTED và nộp lại hồ 
       bankName: null,
       bankAccount: null,
       bankHolder: null,
+      bankBin: null,
       lostDisputeCount: 0,
       ...patch,
     });
@@ -264,5 +265,35 @@ describe('CustomersService — trạng thái NOT_SUBMITTED và nộp lại hồ 
     await expect(updateMe({ phone: '+84909123456' })).rejects.toThrow(
       new ConflictException('PHONE_EXISTS'),
     );
+  });
+
+  describe('tài khoản nhận tiền hoàn — cho sửa, cấm xoá (21/11)', () => {
+    const BANK = {
+      bankName: 'MBBank',
+      bankAccount: '0123456789',
+      bankHolder: 'NGUYEN VAN MINH',
+    };
+
+    it('gửi đủ bộ 3 + BIN → lưu; đổi ngân hàng không kèm BIN → BIN về null', async () => {
+      const first = await updateMe({ ...BANK, bankBin: '970422' });
+      expect(first).toMatchObject({ ...BANK, bankBin: '970422' });
+
+      const changed = await updateMe({ ...BANK, bankName: 'Vietcombank' });
+      expect(changed).toMatchObject({ bankName: 'Vietcombank', bankBin: null });
+    });
+
+    it('gửi rỗng để xoá → 400 BANK_INFO_CANNOT_BE_CLEARED, hồ sơ giữ nguyên', async () => {
+      await updateMe(BANK);
+      await expect(updateMe({ ...BANK, bankHolder: '' })).rejects.toThrow(
+        new BadRequestException('BANK_INFO_CANNOT_BE_CLEARED'),
+      );
+      expect(stored).toMatchObject(BANK);
+    });
+
+    it('gửi 1 trường → 400 BANK_INFO_INCOMPLETE', async () => {
+      await expect(updateMe({ bankAccount: '0123456789' })).rejects.toThrow(
+        new BadRequestException('BANK_INFO_INCOMPLETE'),
+      );
+    });
   });
 });

@@ -3,7 +3,8 @@ import { randomBytes } from 'crypto';
 
 /**
  * Luật của đề xuất add-on (dịch vụ phát sinh lúc đang chăm) — toán thuần, không chạm DB.
- * Vòng đời: PENDING → ACCEPTED → PAID → DONE; PENDING → REJECTED; PENDING / ACCEPTED → EXPIRED.
+ * Vòng đời: PENDING → ACCEPTED → PAID → DONE; PENDING → REJECTED; PENDING / ACCEPTED → EXPIRED;
+ * PAID → REFUNDED (vườn không làm được, trả lại khách đủ giá + 6%).
  * Ví dụ đơn mẫu: vườn đề xuất "Thay giá thể" 100.000 → khách đồng ý trong 48 giờ → chuyển 106.000
  * (thêm 6%) trong 24 giờ → vườn làm, báo xong → tiền chia cùng đơn khi COMPLETED.
  */
@@ -14,6 +15,7 @@ export const ADDON_STATUSES = [
   'DONE',
   'REJECTED',
   'EXPIRED',
+  'REFUNDED',
 ] as const;
 export type AddonStatus = (typeof ADDON_STATUSES)[number];
 
@@ -44,10 +46,11 @@ export const ADDON_MAX_PHOTOS = 5;
 export const ADDON_TRANSITIONS: Record<AddonStatus, readonly AddonStatus[]> = {
   PENDING: ['ACCEPTED', 'REJECTED', 'EXPIRED'],
   ACCEPTED: ['PAID', 'EXPIRED'],
-  PAID: ['DONE'],
+  PAID: ['DONE', 'REFUNDED'],
   DONE: [],
   REJECTED: [],
   EXPIRED: [],
+  REFUNDED: [],
 };
 
 // Mọi lần đổi trạng thái đề xuất phải qua hàm này; ngoài bảng → 409.

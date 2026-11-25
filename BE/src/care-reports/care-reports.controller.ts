@@ -74,7 +74,18 @@ export class CareReportsController {
 
   @Roles('PROVIDER', 'ADMIN', 'CUSTOMER')
   @Get()
-  @ApiOperation({ summary: 'Danh sách báo cáo chăm sóc theo đơn, xếp theo kỳ' })
+  @ApiOperation({
+    summary: 'Danh sách báo cáo chăm sóc: phân trang, tìm, lọc nộp trễ',
+    description:
+      'Luôn trả { data, total, page, limit }. Có serviceOrderId → theo kỳ 1→n, limit mặc định 50; ' +
+      'không có → mới nộp trước, limit mặc định 10 (tối đa 50). q tìm không dấu trong mã đơn, tên khách, ' +
+      'ghi chú báo cáo, tên cây, ghi chú từng cây. late=true → chỉ báo cáo nộp trễ.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ data: [{ id, serviceOrderId, periodIndex, isLate, submittedAt, ..., plants: [{ plant, ..., photos }] }], total, page, limit }',
+  })
   @ApiResponse({
     status: 403,
     description: 'PROVIDER_NOT_ALLOWED | CUSTOMER_NOT_ALLOWED',

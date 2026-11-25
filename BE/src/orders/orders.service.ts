@@ -11,8 +11,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHash } from 'crypto';
-import { DataSource, In, Not, Repository } from 'typeorm';
+import { Brackets, DataSource, In, Not, Repository } from 'typeorm';
 import { CareReport } from '../care-reports/entities/care-report.entity';
+import { hasBankInfo } from '../common/bank-info';
+import { likePattern, unaccentSql } from '../common/search';
 import { CryptoService } from '../crypto/crypto.service';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
@@ -60,6 +62,7 @@ import {
   assertProviderIdentityComplete,
   buildPartySnapshot,
   readPartySnapshot,
+  safeDecrypt,
   type PartySnapshotV3,
 } from './party-snapshot';
 import {
@@ -71,7 +74,7 @@ import {
 } from './cancel-rules';
 import { OrderCancelService } from './order-cancel.service';
 import { OrderStateService } from './order-state.service';
-import { assertTransition } from './order-status';
+import { assertTransition, type OrderStatus } from './order-status';
 import { computeShippingFee, pickTier } from './shipping-fee';
 
 // Postgres unique_violation — bắt để retry orderCode trùng.
@@ -252,9 +255,12 @@ export class OrdersService {
       customer.verificationStatus !== 'APPROVED' ||
       !customer.account?.phone
     ) {
-      throw new ForbiddenException(
-        'Vui lòng hoàn tất xác thực tài khoản và cập nhật số điện thoại trước khi đặt đơn.',
-      );
+      throw new ForbiddenException('PROFILE_NOT_APPROVED');
+    }
+    // Mọi khoản hoàn cho khách đều bắt nguồn từ một đơn → bắt khai tài khoản nhận tiền ngay lúc đặt,
+    // để lệnh chi tạo ra sau này luôn có sẵn tài khoản (chốt 21/11; cùng mã với lúc mở tranh chấp).
+    if (!hasBankInfo(customer)) {
+      throw new ConflictException('REFUND_BANK_ACCOUNT_REQUIRED');
     }
 
     // 2. Giờ hẹn lấy cây phải ở tương lai (mốc duy nhất của luật hủy).
@@ -466,7 +472,10 @@ export class OrdersService {
    * Không nhận id từ client — phía lọc suy từ JWT (role + accountId), chống IDOR tận gốc.
    */
   async listOrders(accountId: string, role: string, query: QueryOrderDto) {
-    const where: Record<string, unknown> = {};
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 10;
+    // Phạm vi theo JWT: khách → đơn mình đặt; vườn → đơn gửi tới mình (không thấy DRAFT).
+    let scope: { column: 'customer_id' | 'provider_id'; id: string };
     if (role === 'CUSTOMER') {
       const customer = await this.customerRepo.findOne({
         where: { accountId },
@@ -474,7 +483,7 @@ export class OrdersService {
       if (!customer) {
         throw new NotFoundException('CUSTOMER_PROFILE_NOT_FOUND');
       }
-      where.customerId = customer.id;
+      scope = { column: 'customer_id', id: customer.id };
     } else {
       const provider = await this.providerRepo.findOne({
         where: { accountId },
@@ -482,33 +491,109 @@ export class OrdersService {
       if (!provider) {
         throw new NotFoundException('PROVIDER_PROFILE_NOT_FOUND');
       }
-      where.providerId = provider.id;
-      // Vườn không thấy đơn nháp — DRAFT là không gian riêng của khách.
-      if (query.status === 'DRAFT') {
-        return { data: [], total: 0, page: query.page, limit: query.limit };
-      }
-    }
-    if (query.status) {
-      where.status = query.status;
+      scope = { column: 'provider_id', id: provider.id };
     }
 
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 10;
-    const [data, total] = await this.orderRepo.findAndCount({
-      where:
-        role === 'PROVIDER' && !query.status
-          ? // Loại DRAFT khỏi list của vườn bằng danh sách trạng thái thấy được.
-            ORDER_VISIBLE_TO_PROVIDER.map((status) => ({ ...where, status }))
-          : where,
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-      relations: {
-        servicePackage: true,
-        customer: { account: true },
-        provider: true,
-      },
-    });
+    // Câu gốc dùng chung cho danh sách và bộ đếm: đúng phạm vi + từ khoá `q` (không dấu) trên
+    // mã đơn, tên khách, tên gói, tên cây. withSelect = nạp kèm gói/khách/vườn cho danh sách.
+    const pattern = likePattern(query.q);
+    const scoped = (withSelect: boolean) => {
+      const qb = this.orderRepo.createQueryBuilder('o');
+      for (const [relation, alias] of [
+        ['o.servicePackage', 'servicePackage'],
+        ['o.customer', 'customer'],
+        ['customer.account', 'account'],
+        ['o.provider', 'provider'],
+      ] as const) {
+        if (withSelect) {
+          qb.leftJoinAndSelect(relation, alias);
+        } else {
+          qb.leftJoin(relation, alias);
+        }
+      }
+      qb.where(`o.${scope.column} = :scopeId`, { scopeId: scope.id });
+      if (role === 'PROVIDER') {
+        qb.andWhere('o.status <> :draft', { draft: 'DRAFT' });
+      }
+      if (pattern) {
+        qb.andWhere(
+          new Brackets((match) => {
+            match
+              .where(`${unaccentSql('o.orderCode')} LIKE :pattern`)
+              .orWhere(`${unaccentSql('account.fullName')} LIKE :pattern`)
+              .orWhere(`${unaccentSql('servicePackage.name')} LIKE :pattern`)
+              .orWhere(
+                `EXISTS (SELECT 1 FROM plants p WHERE p.service_order_id = o.id AND ${unaccentSql('p.name')} LIKE :pattern)`,
+              );
+          }),
+        );
+        qb.setParameter('pattern', pattern);
+      }
+      return qb;
+    };
+
+    // Số đơn mỗi trạng thái cho các tab — theo đúng kết quả tìm, KHÔNG lọc status.
+    const counted = await scoped(false)
+      .select('o.status', 'status')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('o.status')
+      .getRawMany<{ status: OrderStatus; count: string }>();
+    const statusCounts: Partial<Record<OrderStatus, number>> =
+      Object.fromEntries(counted.map((row) => [row.status, Number(row.count)]));
+
+    // Vườn không thấy đơn nháp — DRAFT là không gian riêng của khách.
+    if (role === 'PROVIDER' && query.status === 'DRAFT') {
+      return { data: [], total: 0, page, limit, statusCounts };
+    }
+
+    const listQuery = scoped(true);
+    if (query.status) {
+      listQuery.andWhere('o.status = :status', { status: query.status });
+    }
+    // Thêm id để thứ tự ổn định giữa các trang khi trùng giờ.
+    if (query.sort === 'oldest') {
+      listQuery.orderBy('o.createdAt', 'ASC').addOrderBy('o.id', 'ASC');
+    } else if (query.sort === 'pickupSoon') {
+      listQuery.orderBy('o.scheduledPickupAt', 'ASC').addOrderBy('o.id', 'ASC');
+    } else {
+      listQuery.orderBy('o.createdAt', 'DESC').addOrderBy('o.id', 'DESC');
+    }
+    // Chỉ join quan hệ nhiều-một nên offset/limit đếm đúng theo đơn.
+    const [data, total] = await listQuery
+      .offset((page - 1) * limit)
+      .limit(limit)
+      .getManyAndCount();
+
+    // Tên cây + phiên NHẬN cây mới nhất: nạp gộp một lần cho cả trang, không truy vấn từng đơn.
+    const ids = data.map((order) => order.id);
+    const [plants, handovers] =
+      ids.length > 0
+        ? await Promise.all([
+            this.plantRepo.find({
+              where: { serviceOrderId: In(ids) },
+              select: { serviceOrderId: true, name: true },
+              order: { createdAt: 'ASC' },
+            }),
+            this.dataSource
+              .getRepository(Handover)
+              .createQueryBuilder('h')
+              .select('h.service_order_id', 'serviceOrderId')
+              .addSelect('h.status', 'status')
+              .distinctOn(['h.service_order_id'])
+              .where('h.service_order_id IN (:...ids)', { ids })
+              .andWhere('h.handover_type = :type', { type: 'IN' })
+              .orderBy('h.service_order_id')
+              .addOrderBy('h.created_at', 'DESC')
+              .getRawMany<{
+                serviceOrderId: string;
+                status: Handover['status'];
+              }>(),
+          ])
+        : [[], []];
+    const handoverStatusOf = new Map(
+      handovers.map((row) => [row.serviceOrderId, row.status]),
+    );
+
     return {
       // KHÔNG spread `customer`/`provider` nguyên entity sang bên kia của đơn:
       // customer kèm Account (passwordHash, SĐT mã hoá...), provider kèm STK ngân hàng,
@@ -534,10 +619,18 @@ export class OrdersService {
         servicePackageName: order.servicePackage?.name ?? null,
         customerName: customer?.account?.fullName ?? null,
         gardenName: provider?.displayName ?? null,
+        // Tên các cây của đơn (thẻ đơn hiện được, ô tìm cũng tìm theo tên cây).
+        plantNames: plants
+          .filter((plant) => plant.serviceOrderId === order.id)
+          .map((plant) => plant.name),
+        // Trạng thái phiên NHẬN cây mới nhất (giống chi tiết đơn); chưa có → null.
+        handoverStatus: handoverStatusOf.get(order.id) ?? null,
+        deadlines: buildDeadlines(order),
       })),
       total,
       page,
       limit,
+      statusCounts,
     };
   }
 
@@ -662,20 +755,19 @@ export class OrdersService {
       role === 'CUSTOMER'
         ? await this.orderCancel.previewCancel(order, now)
         : null;
+    // Khách xem trước "không giao cây thì nhận lại bao nhiêu" — chỉ khi đang chờ khách trả lời biên bản nhận cây.
+    const declinePreview =
+      role === 'CUSTOMER'
+        ? await this.orderCancel.previewDecline(order, handover, now)
+        : null;
 
     return {
       ...order,
       // Các mốc giờ để app hiện đồng hồ đếm. Ba hạn chờ rỗng với đơn tạo trước khi có luật hạn.
       // freeCancelUntil: khách huỷ đơn đã thanh toán miễn phí tới mốc này (giờ hẹn − 3 giờ);
       // noShowFrom: từ mốc này (giờ hẹn + 30 phút) mới báo được "vườn không tới" / "khách vắng nhà".
-      deadlines: {
-        providerRespondDueAt: order.providerRespondDueAt,
-        agreementDueAt: order.agreementDueAt,
-        paymentDueAt: order.paymentDueAt,
-        freeCancelUntil: freeCancelUntil(order.scheduledPickupAt),
-        noShowFrom: noShowFrom(order.scheduledPickupAt),
-      },
-      ...(role === 'CUSTOMER' ? { cancelPreview } : {}),
+      deadlines: buildDeadlines(order),
+      ...(role === 'CUSTOMER' ? { cancelPreview, declinePreview } : {}),
       settlement,
       // Tiền bảo đảm khai giá khách nộp cùng tiền đơn (từng cây ở plants[].declaredDeposit).
       declaredDepositTotal: this.sumDeclaredDeposit(order.plants),
@@ -712,6 +804,29 @@ export class OrdersService {
           photos: plantPhotos,
         };
       }),
+      customer: customer
+        ? {
+            id: customer.id,
+            accountId: customer.accountId,
+            account: customer.account
+              ? {
+                  id: customer.account.id,
+                  fullName: customer.account.fullName,
+                  phone: safeDecrypt(this.crypto, customer.account.phone),
+                  email: customer.account.email,
+                }
+              : null,
+          }
+        : null,
+      provider: provider
+        ? {
+            id: provider.id,
+            displayName: provider.displayName,
+            gardenName: provider.displayName,
+            phone: safeDecrypt(this.crypto, provider.account?.phone),
+            address: provider.address,
+          }
+        : null,
       negotiation,
       agreement: agreement
         ? {
@@ -1010,6 +1125,11 @@ export class OrdersService {
     // ACCEPT tạo hợp đồng ngay → Bên B phải có SĐT + số CCCD (REJECT thì không cần).
     if (dto.response === 'ACCEPT') {
       assertProviderIdentityComplete(provider);
+      // Nhận đơn → sẽ có tiền công / tiền bảo đảm phải chi về vườn. Vườn duyệt từ trước luật 21/11
+      // có thể chưa khai ngân hàng → chặn ở đây (REJECT thì không cần).
+      if (!hasBankInfo(provider)) {
+        throw new ConflictException('PROVIDER_BANK_INFO_REQUIRED');
+      }
     }
     const order = await this.orderRepo.findOne({
       where: { id: orderId, providerId: provider.id },
@@ -1472,21 +1592,26 @@ export class OrdersService {
   }
 }
 
-// Vườn thấy mọi đơn từ PENDING_PROVIDER trở đi (DRAFT là của riêng khách).
-// Thiếu trạng thái ở đây = đơn biến mất khỏi danh sách của vườn (B19: trả cây, COMPLETED).
-const ORDER_VISIBLE_TO_PROVIDER = [
-  'PENDING_PROVIDER',
-  'AGREEMENT_PENDING',
-  'AWAITING_PAYMENT',
-  'PAID',
-  'HANDOVER_IN_PROGRESS',
-  'HANDOVER_AWAITING_CONFIRM',
-  'IN_CARE',
-  'RETURN_IN_PROGRESS',
-  'RETURN_AWAITING_CONFIRM',
-  'COMPLETED',
-  'REJECTED',
-  'EXPIRED',
-  'CANCELLED',
-  'DISPUTED',
-] as const;
+/**
+ * Các mốc giờ để app hiện đồng hồ đếm — dùng chung cho chi tiết đơn và từng đơn trong danh sách.
+ * Ba hạn chờ rỗng với đơn tạo trước khi có luật hạn. freeCancelUntil = giờ hẹn − 3 giờ (khách huỷ
+ * đơn đã thanh toán miễn phí tới mốc này); noShowFrom = giờ hẹn + 30 phút (từ đây mới báo được
+ * "vườn không tới" / "khách vắng nhà").
+ */
+function buildDeadlines(
+  order: Pick<
+    ServiceOrder,
+    | 'providerRespondDueAt'
+    | 'agreementDueAt'
+    | 'paymentDueAt'
+    | 'scheduledPickupAt'
+  >,
+) {
+  return {
+    providerRespondDueAt: order.providerRespondDueAt,
+    agreementDueAt: order.agreementDueAt,
+    paymentDueAt: order.paymentDueAt,
+    freeCancelUntil: freeCancelUntil(order.scheduledPickupAt),
+    noShowFrom: noShowFrom(order.scheduledPickupAt),
+  };
+}

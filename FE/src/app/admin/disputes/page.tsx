@@ -306,7 +306,7 @@ export default function AdminDisputesPage() {
             ))}
           </div>
 
-          <div className="bg-white rounded-2xl border border-[#ECE7FA] p-5 shadow-xs space-y-4">
+          <div className="bg-white rounded-2xl border border-[#ECE7FA] p-5 shadow-xs flex flex-col gap-4">
             <div className="max-w-full overflow-x-auto">
               <Segmented
                 value={statusFilter}

@@ -446,7 +446,7 @@ export default function AdminDisputeDetailPage() {
                     </div>
                   ))}
                 </div>
-                <div className="space-y-1">
+                <div className="flex flex-col gap-1">
                   <label htmlFor="resolution-note" className="text-xs font-semibold text-[#1E1B2E]">
                     Lý do phân xử <span className="text-[#C0262D]">*</span>
                   </label>
@@ -587,7 +587,7 @@ export default function AdminDisputeDetailPage() {
           cancelButtonProps={{ className: '!rounded-xl' }}
           centered
         >
-          <div className="space-y-3 pt-2">
+          <div className="flex flex-col gap-3 pt-2">
             <ul className="text-xs space-y-1 pl-4 m-0">
               {d.plants.map((plant) => (
                 <li key={plant.plantId}>

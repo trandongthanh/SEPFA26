@@ -1,4 +1,5 @@
 import { ConflictException } from '@nestjs/common';
+import type { HandoverStatus } from './entities/handover.entity';
 import type { OrderStatus } from './order-status';
 
 /**
@@ -107,6 +108,25 @@ export function isPickupTooSoon(pickupAt: Date, now: Date): boolean {
 /** Hạn đã qua chưa. Hạn rỗng (đơn tạo trước khi có luật này) = không có hạn. */
 export function isPastDue(dueAt: Date | null | undefined, now: Date): boolean {
   return !!dueAt && dueAt.getTime() <= now.getTime();
+}
+
+/**
+ * Khách còn bấm được "Không giao cây" không — đúng các điều kiện route POST /orders/:id/handover/decline kiểm,
+ * để màn xem trước (declinePreview) chỉ hiện số khi bấm thật sẽ thành công:
+ * đơn HANDOVER_AWAITING_CONFIRM + phiên nhận cây AWAITING_CUSTOMER (chưa đồng ý biên bản) + chưa quá hạn 2 giờ.
+ * Khách đã đồng ý (phiên AWAITING_DEPOSIT) hoặc quá hạn (bộ quét chưa kịp huỷ) → false.
+ */
+export function isDeclineOpen(input: {
+  orderStatus: OrderStatus;
+  handoverStatus: HandoverStatus | null | undefined;
+  customerConfirmDueAt: Date | null | undefined;
+  now: Date;
+}): boolean {
+  return (
+    input.orderStatus === 'HANDOVER_AWAITING_CONFIRM' &&
+    input.handoverStatus === 'AWAITING_CUSTOMER' &&
+    !isPastDue(input.customerConfirmDueAt, input.now)
+  );
 }
 
 const PRE_PAYMENT: readonly OrderStatus[] = [

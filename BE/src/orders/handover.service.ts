@@ -17,6 +17,7 @@ import { refundCancelledOrder } from '../payments/cancel-order-refund';
 import { loadCustomerSettlement } from '../payments/customer-settlement';
 import { SecurityDeposit } from '../payments/entities/security-deposit.entity';
 import { settleOrder } from '../payments/settle-order';
+import { agreedServiceTotal } from '../payments/settlement';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { closeAddonsForReturn } from './addon-expiry';
 import {
@@ -187,8 +188,8 @@ export class HandoverService {
 
   /**
    * POST /orders/:id/handover/complete — chốt thẩm định
-   * (→ HANDOVER_AWAITING_CONFIRM). Giá công chốt = basePriceSnapshot × số cây được nhận,
-   * server tự tính (vườn không sửa giá). Mỗi cây được nhận có mức đền: có khai giá = giá khai,
+   * (→ HANDOVER_AWAITING_CONFIRM). Giá công chốt = giá đã ký (provisionalTotal) × số cây được nhận
+   * / tổng số cây, server tự tính (vườn không sửa giá lúc này). Mỗi cây được nhận có mức đền: có khai giá = giá khai,
    * không khai = 2 × giá gói; tổng mức đền = tiền bảo đảm vườn sẽ phải nộp.
    * Đơn mẫu 2 cây × 200.000, cây A khai 3.000.000, cây B không khai: finalTotal 400.000,
    * mức đền 3.000.000 + 400.000 → securityDepositAmount 3.400.000.
@@ -214,8 +215,15 @@ export class HandoverService {
       // Không còn gì để chăm — đúng luồng là provider HỦY đơn (hoàn 100% kể cả ship).
       throw new BadRequestException('ALL_PLANTS_REJECTED');
     }
+    // Mức đền tính theo giá gói (basePrice); giá công tính theo giá ĐÃ KÝ (provisionalTotal có thể là
+    // giá vườn chốt lại khi Nhận đơn) chia đều theo cây — tính theo giá gói thì đơn hạ giá bị
+    // finalTotal > số khách đã trả (RangeError lúc chia tiền), đơn tăng giá bị hoàn nhầm phần tăng.
     const basePrice = BigInt(order.basePriceSnapshot);
-    const finalTotal = (basePrice * BigInt(keptPlants.length)).toString();
+    const finalTotal = agreedServiceTotal(
+      BigInt(order.provisionalTotal),
+      keptPlants.length,
+      plants.length,
+    ).toString();
     const handover = await this.getActiveHandover(order.id);
 
     const result = await this.dataSource.transaction(async (manager) => {
@@ -467,6 +475,12 @@ export class HandoverService {
       locked.cancelledAt = now;
       locked.cancelReason = dto.reason;
       await manager.save(locked);
+      // Hợp đồng huỷ theo đơn — giống nhánh bộ quét huỷ khi khách im lặng quá 2 giờ (closeOrder).
+      await manager.update(
+        ServiceAgreement,
+        { serviceOrderId: order.id },
+        { status: 'CANCELLED' },
+      );
 
       const { customerRefund, declaredReturn } = await refundCancelledOrder(
         manager,
@@ -667,7 +681,8 @@ export class HandoverService {
   /**
    * POST /orders/:id/return/start — vườn bắt đầu trả cây (IN_CARE → RETURN_IN_PROGRESS).
    * Chỉ khi đã hết hạn chăm (care_due_at); trả sớm = dừng giữa chừng, làm sau.
-   * Còn add-on đã trả tiền mà chưa báo xong thì chưa trả cây được (ADDON_OPEN).
+   * Còn add-on đã trả tiền mà chưa báo xong thì chưa trả cây được (ADDON_OPEN); còn add-on khách đã đồng ý
+   * và đang trong hạn trả tiền thì cũng chờ (ADDON_AWAITING_PAYMENT).
    */
   async startReturn(accountId: string, orderId: string) {
     const order = await this.getOrderAsProvider(accountId, orderId);

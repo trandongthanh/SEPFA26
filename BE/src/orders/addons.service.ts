@@ -12,6 +12,12 @@ import type { Role } from '../common/constants/roles';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { formatVnd } from '../notifications/notification.constants';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PaymentComponent } from '../payments/entities/payment-component.entity';
+import { escrowBalance } from '../payments/escrow-balance';
+import {
+  createCustomerDisbursement,
+  writeLedgerEntries,
+} from '../payments/settle-order';
 import { customerFeeFor } from '../payments/settlement';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { expireAddon, expireOverdueAddons } from './addon-expiry';
@@ -28,6 +34,7 @@ import {
 } from './addon-rules';
 import { CompleteAddonDto } from './dto/complete-addon.dto';
 import { CreateAddonDto } from './dto/create-addon.dto';
+import { RefundAddonDto } from './dto/refund-addon.dto';
 import { RespondAddonDto } from './dto/respond-addon.dto';
 import { AddonProposal } from './entities/addon-proposal.entity';
 import { Plant } from './entities/plant.entity';
@@ -262,6 +269,61 @@ export class AddonsService {
     return (await this.toViews([saved]))[0];
   }
 
+  /**
+   * POST /orders/:orderId/addons/:addonId/refund — vườn trả lại add-on khách đã trả tiền mà không làm được.
+   * Chỉ khi add-on PAID và đơn IN_CARE (PAID chỉ tồn tại lúc đang chăm: bắt đầu trả cây bị chặn ADDON_OPEN).
+   * Một transaction, khoá ĐƠN trước rồi khoá ĐỀ XUẤT (cùng thứ tự webhook tiền add-on):
+   * đề xuất → REFUNDED, dòng hoá đơn ADD_ON → REFUNDED, sổ đơn REFUND −(giá + 6%), lệnh chi REFUND cho khách
+   * chi ngay. Nền tảng không giữ đồng phí nào; chia tiền cuối đơn chỉ đọc dòng PAID nên tự bỏ add-on này.
+   * Đơn mẫu: add-on 100.000 khách đã chuyển 106.000 → hoàn 106.000, sổ đơn 590.000 → 484.000.
+   */
+  async refund(
+    accountId: string,
+    orderId: string,
+    addonId: string,
+    dto: RefundAddonDto,
+  ) {
+    const order = await this.getOrderAsProvider(accountId, orderId);
+    const saved = await this.dataSource.transaction(async (manager) => {
+      const locked = await this.orderState.lock(manager, order.id);
+      const proposal = await manager.findOne(AddonProposal, {
+        where: { id: addonId, serviceOrderId: order.id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!proposal) {
+        throw new NotFoundException('ADDON_NOT_FOUND');
+      }
+      if (!locked || locked.status !== 'IN_CARE') {
+        throw new ConflictException('INVALID_STATE_TRANSITION');
+      }
+      assertAddonTransition(proposal.status, 'REFUNDED');
+
+      const now = new Date();
+      const amount = BigInt(proposal.price) + BigInt(proposal.customerFee);
+      await manager.update(
+        PaymentComponent,
+        { addonId: proposal.id, componentType: 'ADD_ON', status: 'PAID' },
+        { status: 'REFUNDED' },
+      );
+      const balance = await escrowBalance(manager, locked.id, 'ORDER');
+      await writeLedgerEntries(manager, locked.id, 'ORDER', balance, [
+        {
+          type: 'REFUND',
+          amount,
+          note: `Vườn trả lại add-on ${proposal.addonCode} của đơn ${locked.orderCode}: giá + phí 6%`,
+        },
+      ]);
+      await createCustomerDisbursement(manager, locked, 'REFUND', amount, now);
+
+      proposal.status = 'REFUNDED';
+      proposal.refundedAt = now;
+      proposal.refundedByAccountId = accountId;
+      proposal.refundReason = dto.reason;
+      return manager.save(proposal);
+    });
+    return (await this.toViews([saved]))[0];
+  }
+
   // ---- helpers ----
 
   /**
@@ -405,6 +467,8 @@ export class AddonsService {
         donePlantHealth: proposal.donePlantHealth,
         expiredReason: proposal.expiredReason,
         expiredAt: proposal.expiredAt,
+        refundedAt: proposal.refundedAt,
+        refundReason: proposal.refundReason,
         createdAt: proposal.createdAt,
       };
     });

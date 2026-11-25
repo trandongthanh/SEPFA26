@@ -40,14 +40,12 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
   ) => request(http).post(`${API}/orders/${path}`).set(auth).send(body);
 
   const detail = async (orderId: string, auth: { Authorization: string }) =>
-    (
-      await request(http)
-        .get(`${API}/orders/${orderId}`)
-        .set(auth)
-        .expect(200)
-    ).body as Record<string, any>;
+    (await request(http).get(`${API}/orders/${orderId}`).set(auth).expect(200))
+      .body as Record<string, any>;
 
-  const photos = [{ photoUrl: 'https://example.com/out.jpg', caption: 'Toàn cây' }];
+  const photos = [
+    { photoUrl: 'https://example.com/out.jpg', caption: 'Toàn cây' },
+  ];
 
   interface Ctx {
     customer: OrderActor;
@@ -193,6 +191,7 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
       declaredDeposit: '0',
       declaredDepositReturned: '0',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     });
     // CP3: chia tiền trong cùng transaction — 484.000 = nền tảng 72.000 + vườn 412.000 (kiểm trong DB).
     const m = await money(id);
@@ -203,7 +202,11 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
     ]);
     expect(m.sum).toBe('0');
     expect(m.components).toEqual([
-      { component_type: 'PACKAGE_PRICE', provider_fee: '48000', status: 'RELEASED' },
+      {
+        component_type: 'PACKAGE_PRICE',
+        provider_fee: '48000',
+        status: 'RELEASED',
+      },
       { component_type: 'PICKUP_FEE', provider_fee: '0', status: 'RELEASED' },
     ]);
     // Sổ bảo đảm: 2 cây không khai giá → vườn đã nộp 800.000, không tranh chấp → trả lại vườn hết, về 0.
@@ -328,6 +331,7 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
       declaredDeposit: '0',
       declaredDepositReturned: '0',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     });
     // S = 200.000: nền tảng giữ 6% (12.000) + 12% (24.000) = 36.000; vườn 200.000 − 24.000 + 60.000.
     const m = await money(id);
@@ -340,7 +344,11 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
     expect(m.sum).toBe('0');
     // Dòng gói có cây bị từ chối vẫn RELEASED, phí 12% tính trên 1 cây.
     expect(m.components).toEqual([
-      { component_type: 'PACKAGE_PRICE', provider_fee: '24000', status: 'RELEASED' },
+      {
+        component_type: 'PACKAGE_PRICE',
+        provider_fee: '24000',
+        status: 'RELEASED',
+      },
       { component_type: 'PICKUP_FEE', provider_fee: '0', status: 'RELEASED' },
     ]);
 
@@ -454,9 +462,7 @@ describe('Order return IN_CARE → COMPLETED (e2e)', () => {
     });
 
     // Phiên CANCELLED không chặn unique → mở phiên trả mới được.
-    const again = await post(`${id}/return/start`, c.provider.auth).expect(
-      200,
-    );
+    const again = await post(`${id}/return/start`, c.provider.auth).expect(200);
     expect(again.body.status).toBe('RETURN_IN_PROGRESS');
     await post(`${id}/return/start`, c.provider.auth).expect(409);
   });

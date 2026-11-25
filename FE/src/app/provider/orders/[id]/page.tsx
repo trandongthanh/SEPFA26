@@ -9,6 +9,7 @@ import {
   CalendarOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
+  StopOutlined,
   CloseCircleOutlined,
   ContainerOutlined,
   CopyOutlined,
@@ -37,6 +38,11 @@ import {
 import { videoCallApi } from '@/lib/video-call.api';
 import ProviderHeader from '../../components/ProviderHeader';
 import ProviderSidebar from '../../components/ProviderSidebar';
+import HandoverCancelModal, { canCancelHandover } from '../../components/HandoverCancelModal';
+import OrderDeadline from '../../components/OrderDeadline';
+import OrderCancelModal, { PROVIDER_CANCELLABLE_STATUSES } from '../../components/OrderCancelModal';
+import RefundAddonModal from '../../components/RefundAddonModal';
+import dayjs from 'dayjs';
 
 const CALL_ELIGIBLE_STATUSES = new Set([
   'PENDING_PROVIDER',
@@ -60,12 +66,16 @@ export default function ProviderOrderDetailPage() {
   const [mounted, setMounted] = useState(false);
   const [profile, setProfile] = useState<ProviderProfileResponse | null>(null);
   const [order, setOrder] = useState<any | null>(null);
+  const [cancelHandoverOpen, setCancelHandoverOpen] = useState(false);
+  const [cancelOrderOpen, setCancelOrderOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [videoCallLoading, setVideoCallLoading] = useState(false);
 
   // Addons state
   const [addons, setAddons] = useState<AddonItem[]>([]);
+  // Add-on đang mở hộp thoại "Trả lại tiền" (null = đóng).
+  const [refundAddon, setRefundAddon] = useState<AddonItem | null>(null);
   const [addonsLoading, setAddonsLoading] = useState(false);
 
   // State for Addon Proposal Modal
@@ -748,6 +758,30 @@ export default function ProviderOrderDetailPage() {
                 </Button>
               )}
 
+              {/* Huỷ đơn trước khi bắt đầu nhận cây (POST /orders/:id/cancel). */}
+              {PROVIDER_CANCELLABLE_STATUSES.includes(order.status) && (
+                <Button
+                  danger
+                  icon={<StopOutlined />}
+                  onClick={() => setCancelOrderOpen(true)}
+                  className="!h-9 !px-4 !rounded-xl font-semibold text-xs"
+                >
+                  Huỷ đơn
+                </Button>
+              )}
+
+              {/* Huỷ ở chặng nhận cây (POST /orders/:id/handover/cancel) — theo trạng thái phiên nhận cây. */}
+              {canCancelHandover(order) && (
+                <Button
+                  danger
+                  icon={<StopOutlined />}
+                  onClick={() => setCancelHandoverOpen(true)}
+                  className="!h-9 !px-4 !rounded-xl font-semibold text-xs"
+                >
+                  Không nhận được cây
+                </Button>
+              )}
+
               {order.status === 'IN_CARE' && (
                 <>
                   <Button
@@ -811,6 +845,27 @@ export default function ProviderOrderDetailPage() {
             </div>
           </div>
 
+          {/* Hạn chót của bước hiện tại (trả lời đơn / ký HĐ / thanh toán / tới lấy cây) */}
+          <OrderDeadline order={order} className="!rounded-2xl !p-3" />
+
+          {/* Đang kiểm tra cây: mốc được báo "khách vắng nhà" = giờ hẹn + 30 phút (BE trả deadlines.noShowFrom). */}
+          {order.handoverStatus === 'IN_PROGRESS' && order.deadlines?.noShowFrom && (
+            <div
+              className={`p-3 rounded-2xl border flex items-center gap-2.5 text-xs ${
+                Date.now() >= new Date(order.deadlines.noShowFrom).getTime()
+                  ? 'bg-[#ECFDF5] border-[#A7F3D0] text-[#065F46]'
+                  : 'bg-[#FFFBEB] border-[#FDE68A] text-[#92400E]'
+              }`}
+            >
+              <ClockCircleOutlined className="text-base shrink-0" />
+              <span>
+                {Date.now() >= new Date(order.deadlines.noShowFrom).getTime()
+                  ? 'Đã quá giờ hẹn 30 phút. Khách không có mặt thì bạn có thể bấm "Không nhận được cây" và chọn khách vắng nhà.'
+                  : `Tới ${dayjs(order.deadlines.noShowFrom).format('HH:mm')} (giờ hẹn + 30 phút) mới báo được khách vắng nhà.`}
+              </span>
+            </div>
+          )}
+
           {/* Alert banner if AWAITING_DEPOSIT */}
           {order.status === 'HANDOVER_AWAITING_CONFIRM' && order.handoverStatus === 'AWAITING_DEPOSIT' && (
             <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
@@ -819,7 +874,11 @@ export default function ProviderOrderDetailPage() {
                 <div>
                   <h4 className="text-sm font-bold text-amber-950">Khách hàng đã đồng ý biên bản nhận cây</h4>
                   <p className="text-xs text-amber-800 mt-0.5">
-                    Khách đã xác nhận bàn giao. Vui lòng nộp tiền bảo lãnh trách nhiệm (trong vòng 2 giờ) để kích hoạt chu kỳ chăm sóc.
+                    Khách đã xác nhận bàn giao. Vui lòng nộp tiền bảo lãnh trách nhiệm
+                    {order.securityDeposit?.dueAt
+                      ? ` trước ${dayjs(order.securityDeposit.dueAt).format('HH:mm DD/MM')}`
+                      : ' trong vòng 2 giờ'}{' '}
+                    để kích hoạt chu kỳ chăm sóc. Quá hạn hệ thống tự huỷ đơn.
                   </p>
                 </div>
               </div>
@@ -893,52 +952,73 @@ export default function ProviderOrderDetailPage() {
             </div>
 
             {/* Customer & Delivery Information */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-              <div className="p-4 rounded-2xl bg-[#FAF8FE] border border-[#ECE7FA] space-y-2">
-                <span className="text-[11px] font-bold text-[#6027D2] uppercase tracking-wider flex items-center gap-1.5">
-                  <UserOutlined /> Thông tin khách hàng
-                </span>
-                <div className="flex items-center gap-3">
-                  <Avatar
-                    size={40}
-                    className="bg-[#6027D2] text-white font-bold shrink-0"
-                  >
-                    {order.customer?.account?.fullName?.charAt(0) || 'K'}
-                  </Avatar>
-                  <div>
-                    <h4 className="font-bold text-sm text-[#1E1B2E]">
-                      {order.customer?.account?.fullName || 'Khách hàng'}
-                    </h4>
-                    <p className="text-xs text-[#6E6A8A]">
-                      {order.customer?.account?.phone ? `📞 ${order.customer.account.phone}` : 'Chưa có SĐT'}
-                      {order.customer?.account?.email ? ` | ✉️ ${order.customer.account.email}` : ''}
+            {(() => {
+              const customerParty = order.agreement?.termsSnapshot?.parties?.customer;
+              const customerName =
+                order.customer?.account?.fullName ||
+                customerParty?.fullName ||
+                'Khách hàng';
+              const customerPhone =
+                order.customer?.account?.phone ||
+                customerParty?.phone;
+              const customerEmail =
+                order.customer?.account?.email;
+              const customerAddress =
+                order.pickupAddress ||
+                customerParty?.address ||
+                'Chưa cung cấp';
+
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                  <div className="p-4 rounded-2xl bg-[#FAF8FE] border border-[#ECE7FA] space-y-2">
+                    <span className="text-[11px] font-bold text-[#6027D2] uppercase tracking-wider flex items-center gap-1.5">
+                      <UserOutlined /> Thông tin khách hàng
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <Avatar
+                        size={40}
+                        className="bg-[#6027D2] text-white font-bold shrink-0"
+                      >
+                        {customerName.charAt(0) || 'K'}
+                      </Avatar>
+                      <div>
+                        <h4 className="font-bold text-sm text-[#1E1B2E]">
+                          {customerName}
+                        </h4>
+                        <p className="text-xs text-[#6E6A8A]">
+                          {customerPhone && customerPhone !== '[CHƯA CẬP NHẬT]'
+                            ? `📞 ${customerPhone}`
+                            : 'Chưa có SĐT'}
+                          {customerEmail ? ` | ✉️ ${customerEmail}` : ''}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-[#FAF8FE] border border-[#ECE7FA] space-y-2">
+                    <span className="text-[11px] font-bold text-[#6027D2] uppercase tracking-wider flex items-center gap-1.5">
+                      <EnvironmentOutlined /> Địa chỉ tiếp nhận & Hẹn lấy cây
+                    </span>
+                    <p className="text-xs text-[#1E1B2E] font-medium leading-relaxed">
+                      {customerAddress}
                     </p>
+                    {order.scheduledPickupAt && (
+                      <p className="text-[11.5px] text-[#6E6A8A] flex items-center gap-1">
+                        <CalendarOutlined className="text-[#6027D2]" /> Hẹn tiếp nhận:{' '}
+                        <strong className="text-[#1E1B2E]">
+                          {new Date(order.scheduledPickupAt).toLocaleDateString('vi-VN')}
+                        </strong>
+                      </p>
+                    )}
+                    {order.customerNote && (
+                      <p className="text-xs text-[#DD6B20] bg-[#FFFBEB] p-2 rounded-xl border border-[#FDE68A]">
+                        💬 <strong>Ghi chú:</strong> "{order.customerNote}"
+                      </p>
+                    )}
                   </div>
                 </div>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-[#FAF8FE] border border-[#ECE7FA] space-y-2">
-                <span className="text-[11px] font-bold text-[#6027D2] uppercase tracking-wider flex items-center gap-1.5">
-                  <EnvironmentOutlined /> Địa chỉ tiếp nhận & Hẹn lấy cây
-                </span>
-                <p className="text-xs text-[#1E1B2E] font-medium leading-relaxed">
-                  {order.pickupAddress || 'Chưa cung cấp'}
-                </p>
-                {order.scheduledPickupAt && (
-                  <p className="text-[11.5px] text-[#6E6A8A] flex items-center gap-1">
-                    <CalendarOutlined className="text-[#6027D2]" /> Hẹn tiếp nhận:{' '}
-                    <strong className="text-[#1E1B2E]">
-                      {new Date(order.scheduledPickupAt).toLocaleDateString('vi-VN')}
-                    </strong>
-                  </p>
-                )}
-                {order.customerNote && (
-                  <p className="text-xs text-[#DD6B20] bg-[#FFFBEB] p-2 rounded-xl border border-[#FDE68A]">
-                    💬 <strong>Ghi chú:</strong> "{order.customerNote}"
-                  </p>
-                )}
-              </div>
-            </div>
+              );
+            })()}
           </div>
 
           {/* 2. Care Plan & Schedule */}
@@ -1158,6 +1238,7 @@ export default function ProviderOrderDetailPage() {
                     DONE: { color: 'green', label: 'Đã hoàn thành' },
                     REJECTED: { color: 'red', label: 'Khách từ chối' },
                     EXPIRED: { color: 'default', label: 'Đã hết hạn' },
+                    REFUNDED: { color: 'blue', label: 'Đã trả lại khách' },
                   };
                   const st = statusMap[ad.status] || { color: 'default', label: ad.status };
 
@@ -1231,6 +1312,25 @@ export default function ProviderOrderDetailPage() {
                         )}
                       </div>
 
+                      {/* Vườn đã trả lại add-on: khách được hoàn giá + 6% */}
+                      {ad.status === 'REFUNDED' && (
+                        <div className="p-4 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-900 space-y-1.5">
+                          <p className="font-bold">
+                            Đã trả lại khách
+                            {ad.refundedAt ? ` · ${new Date(ad.refundedAt).toLocaleString('vi-VN')}` : ''}
+                          </p>
+                          {ad.refundReason && (
+                            <p>
+                              <strong>Lý do:</strong> {ad.refundReason}
+                            </p>
+                          )}
+                          <p>
+                            Khách được hoàn <strong>{Number(ad.amountDue || 0).toLocaleString('vi-VN')} đ</strong>{' '}
+                            (giá + phí 6%). Add-on này không tính vào tiền vườn nhận.
+                          </p>
+                        </div>
+                      )}
+
                       {/* Completed result banner if DONE */}
                       {ad.status === 'DONE' && (
                         <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs space-y-2">
@@ -1291,21 +1391,38 @@ export default function ProviderOrderDetailPage() {
                       )}
 
                       {/* Actions for Paid addon */}
-                      {(ad.status === 'PAID' || ad.status === 'ACCEPTED') && (
+                      {ad.status === 'PAID' && (
                         <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
                           <span className="text-xs text-[#6E6A8A]">
-                            {ad.status === 'PAID'
-                              ? 'Khách đã thanh toán. Nhà vườn hãy tiến hành xử lý và nộp ảnh nghiệm thu.'
-                              : 'Khách đã duyệt đề xuất.'}
+                            Khách đã thanh toán. Nhà vườn hãy tiến hành xử lý và nộp ảnh nghiệm thu.
                           </span>
-                          <Button
-                            type="primary"
-                            icon={<CheckCircleOutlined />}
-                            onClick={() => handleOpenCompleteModal(ad)}
-                            className="!h-9 !px-4 !rounded-xl !bg-[#059669] hover:!bg-[#047857] !border-none !font-semibold text-xs text-white shadow-xs"
-                          >
-                            Báo đã hoàn tất
-                          </Button>
+                          <div className="flex items-center gap-2">
+                            {/* Trả lại chỉ được khi đơn còn đang chăm (BE chặn ở trạng thái khác). */}
+                            {order.status === 'IN_CARE' && (
+                              <Button
+                                danger
+                                onClick={() => setRefundAddon(ad)}
+                                className="!h-9 !px-4 !rounded-xl !font-semibold text-xs"
+                              >
+                                Trả lại tiền
+                              </Button>
+                            )}
+                            <Button
+                              type="primary"
+                              icon={<CheckCircleOutlined />}
+                              onClick={() => handleOpenCompleteModal(ad)}
+                              className="!h-9 !px-4 !rounded-xl !bg-[#059669] hover:!bg-[#047857] !border-none !font-semibold text-xs text-white shadow-xs"
+                            >
+                              Báo đã hoàn tất
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                      {ad.status === 'ACCEPTED' && (
+                        <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
+                          <span className="text-xs text-amber-600 font-medium">
+                            Khách đã duyệt đề xuất, đang chờ khách thanh toán qua VietQR...
+                          </span>
                         </div>
                       )}
                     </div>
@@ -1395,7 +1512,35 @@ export default function ProviderOrderDetailPage() {
             </div>
           </div>
         </main>
+
+        <OrderCancelModal
+          order={cancelOrderOpen && order ? { id: order.id, orderCode: order.orderCode, status: order.status } : null}
+          onClose={() => setCancelOrderOpen(false)}
+          onCancelled={() => loadData()}
+        />
+
+        <HandoverCancelModal
+          orderId={cancelHandoverOpen && order ? order.id : null}
+          onClose={() => setCancelHandoverOpen(false)}
+          onCancelled={() => loadData()}
+        />
       </div>
+
+      {/* Modal: Trả lại add-on đã thanh toán */}
+      <RefundAddonModal
+        orderId={order?.id ?? null}
+        addon={refundAddon}
+        onClose={() => setRefundAddon(null)}
+        onRefunded={async () => {
+          setRefundAddon(null);
+          if (!order) return;
+          try {
+            setAddons(await providerApi.listAddons(order.id));
+          } catch {
+            /* danh sách cũ vẫn hiện; lần tải trang sau sẽ đúng */
+          }
+        }}
+      />
 
       {/* Modal: Create Addon Proposal */}
       <Modal
@@ -1738,8 +1883,8 @@ export default function ProviderOrderDetailPage() {
                   <h4 className="font-bold text-sm text-[#1E1B2E] text-center uppercase tracking-wider mb-2">
                     HỢP ĐỒNG DỊCH VỤ CHĂM SÓC HOA LAN ĐIỆN TỬ
                   </h4>
-                  <p className="text-center text-xs text-[#6E6A8A]">
-                    Số HĐ: <strong className="text-[#6027D2] font-mono">{contractData.agreementNo}</strong>
+                  <p className="text-center text-xs text-[#1E1B2E]">
+                    Số HĐ: <strong className="font-mono">{contractData.agreementNo}</strong>
                   </p>
                 </div>
 
@@ -1749,7 +1894,8 @@ export default function ProviderOrderDetailPage() {
                     <span className="font-bold text-[#6027D2] block">BÊN GỬI CHĂM SÓC (BÊN A)</span>
                     <p>Khách hàng: <strong>{customerParty.fullName || 'Khách hàng'}</strong></p>
                     <p>SĐT: {customerParty.phone || order?.customer?.account?.phone || '--'}</p>
-                    <p>CCCD: {customerParty.identityNumber || customerParty.cccdNumber || '--'}</p>
+                    <p>Ngày sinh: {customerParty.dateOfBirth || '--'}</p>
+                    <p>Quê quán: {customerParty.placeOfOrigin || '--'}</p>
                     {customerParty.address && <p>Địa chỉ: {customerParty.address}</p>}
                   </div>
 
@@ -1757,6 +1903,8 @@ export default function ProviderOrderDetailPage() {
                     <span className="font-bold text-[#6027D2] block">BÊN NHẬN CHĂM SÓC (BÊN B)</span>
                     <p>Nhà vườn: <strong>{providerParty.fullName || providerParty.displayName || profile?.displayName || 'Nhà vườn'}</strong></p>
                     <p>SĐT: {providerParty.phone || profile?.phone || '--'}</p>
+                    <p>Ngày sinh: {providerParty.dateOfBirth || '--'}</p>
+                    <p>Quê quán: {providerParty.placeOfOrigin || '--'}</p>
                     <p>Địa chỉ vườn: {providerParty.address || profile?.address || '--'}</p>
                   </div>
                 </div>
@@ -1768,7 +1916,7 @@ export default function ProviderOrderDetailPage() {
                     <p><strong>1. Trách nhiệm chăm sóc:</strong> Bên B cam kết thực hiện đúng quy trình chuyên môn, bảo quản chậu lan của Bên A trong điều kiện tiêu chuẩn.</p>
                     <p><strong>2. Báo cáo định kỳ:</strong> Bên B có nghĩa vụ chụp ảnh và gửi báo cáo tiến độ chăm sóc đúng tần suất đã thỏa thuận trên hệ thống LanCare.</p>
                     <p><strong>3. Dịch vụ phát sinh:</strong> Bất kỳ dịch vụ nào ngoài gói phải được Bên B đề xuất và Bên A phê duyệt thanh toán thông qua hệ thống trước khi thực hiện.</p>
-                    <p><strong>4. Cam kết bồi thường 120%:</strong> Trong trường hợp chậu lan bị chết, mất hoặc hư hại do lỗi bên chăm sóc, Bên B chịu trách nhiệm bồi thường lên tới 120% giá trị đã khai báo.</p>
+                    <p><strong>4. Cam kết bồi thường 100%:</strong> Trong trường hợp chậu lan bị chết, mất hoặc hư hại do lỗi bên chăm sóc, Bên B chịu trách nhiệm bồi thường tối đa 100% giá trị đã khai báo (cây không khai giá: tối đa 2 lần giá gói).</p>
                   </div>
                 </div>
 

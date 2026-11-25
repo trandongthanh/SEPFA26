@@ -13,7 +13,6 @@ import {
   EnvironmentOutlined,
   EyeOutlined,
   FileProtectOutlined,
-  IdcardOutlined,
   InfoCircleOutlined,
   LoadingOutlined,
   PhoneOutlined,
@@ -59,7 +58,7 @@ export default function ProviderProfilePage() {
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [uploadingDoc, setUploadingDoc] = useState<string | null>(null);
+  const [uploadingDoc, setUploadingDoc] = useState(false);
   const [approvedBannerDismissed, setApprovedBannerDismissed] = useState(false);
 
   useEffect(() => {
@@ -74,9 +73,6 @@ export default function ProviderProfilePage() {
   const user = useAuthStore((state) => state.user);
 
   const [profile, setProfile] = useState<ProviderProfileResponse | null>(null);
-  const [cccdFrontUrl, setCccdFrontUrl] = useState<string>('');
-  const [cccdBackUrl, setCccdBackUrl] = useState<string>('');
-  const [selfieUrl, setSelfieUrl] = useState<string>('');
   const [businessLicenseUrl, setBusinessLicenseUrl] = useState<string>('');
 
   useEffect(() => {
@@ -102,16 +98,15 @@ export default function ProviderProfilePage() {
     try {
       const data = await providerApi.getProfile();
       setProfile(data);
-      setCccdFrontUrl(data.cccdFrontUrl || '');
-      setCccdBackUrl(data.cccdBackUrl || '');
-      setSelfieUrl(data.selfieUrl || '');
       setBusinessLicenseUrl(data.businessLicenseUrl || '');
 
       form.setFieldsValue({
         providerType: data.providerType || 'NURSERY',
         displayName: data.displayName || '',
         phone: data.phone || data.account?.phone || '',
-        cccdNumber: data.cccdNumber || '',
+        fullName: data.account?.fullName || '',
+        dateOfBirth: data.dateOfBirth || '',
+        placeOfOrigin: data.placeOfOrigin || '',
         bio: data.bio || '',
         licenseInfo: data.licenseInfo || '',
         portfolioUrl: data.portfolioUrl || '',
@@ -140,7 +135,7 @@ export default function ProviderProfilePage() {
         providerType: 'NURSERY',
         displayName: user?.fullName || '',
         phone: accountPhone,
-        cccdNumber: '',
+        fullName: user?.fullName || '',
         gpsLat: 10.762622,
         gpsLng: 106.660172,
         address: '',
@@ -181,11 +176,8 @@ export default function ProviderProfilePage() {
     );
   };
 
-  // Upload tài liệu xác thực lên Cloudinary qua BE
-  const handleUploadFile = async (
-    field: 'cccdFrontUrl' | 'cccdBackUrl' | 'selfieUrl' | 'businessLicenseUrl',
-    file: File
-  ) => {
+  // Upload ảnh giấy phép kinh doanh / chứng chỉ lên Cloudinary qua BE
+  const handleUploadFile = async (file: File) => {
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
       message.error('Chỉ hỗ trợ file ảnh dạng JPG, PNG hoặc WEBP.');
       return false;
@@ -195,20 +187,17 @@ export default function ProviderProfilePage() {
       return false;
     }
 
-    setUploadingDoc(field);
+    setUploadingDoc(true);
     try {
       const res = await providerApi.uploadDocument(file);
-      if (field === 'cccdFrontUrl') setCccdFrontUrl(res.url);
-      else if (field === 'cccdBackUrl') setCccdBackUrl(res.url);
-      else if (field === 'selfieUrl') setSelfieUrl(res.url);
-      else if (field === 'businessLicenseUrl') setBusinessLicenseUrl(res.url);
+      setBusinessLicenseUrl(res.url);
       message.success('Tải ảnh lên thành công!');
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { message?: string | string[] } }; message?: string };
       const rawMsg = axiosErr?.response?.data?.message || axiosErr?.message || 'Có lỗi xảy ra khi tải ảnh';
       message.error(Array.isArray(rawMsg) ? rawMsg.join(', ') : rawMsg);
     } finally {
-      setUploadingDoc(null);
+      setUploadingDoc(false);
     }
     return false;
   };
@@ -222,13 +211,12 @@ export default function ProviderProfilePage() {
         providerType: values.providerType,
         displayName: values.displayName?.trim(),
         phone: cleanPhone || undefined,
-        cccdNumber: values.cccdNumber?.trim() || undefined,
+        fullName: values.fullName?.trim() || undefined,
+        dateOfBirth: values.dateOfBirth?.trim() || undefined,
+        placeOfOrigin: values.placeOfOrigin?.trim() || undefined,
         bio: values.bio?.trim() || undefined,
         licenseInfo: values.licenseInfo?.trim() || undefined,
         portfolioUrl: values.portfolioUrl?.trim() || undefined,
-        selfieUrl: selfieUrl || undefined,
-        cccdFrontUrl: cccdFrontUrl || undefined,
-        cccdBackUrl: cccdBackUrl || undefined,
         businessLicenseUrl: businessLicenseUrl || undefined,
         address: values.address?.trim() || undefined,
         gpsLat: values.gpsLat ? Number(values.gpsLat) : undefined,
@@ -248,20 +236,41 @@ export default function ProviderProfilePage() {
         'Đã lưu và gửi hồ sơ thành công! Ban quản trị sẽ tiến hành xét duyệt hồ sơ của bạn.'
       );
     } catch (err: unknown) {
+      // Interceptor trong lib/api.ts đã đổi mã lỗi BE (PHONE_EXISTS, BANK_INFO_INCOMPLETE...) sang câu tiếng Việt.
       const axiosErr = err as { response?: { data?: { message?: string | string[] } }; message?: string };
       const rawMsg = axiosErr?.response?.data?.message || axiosErr?.message || 'Lỗi khi lưu hồ sơ.';
-      if (rawMsg === 'PHONE_EXISTS') {
-        message.error('Số điện thoại này đã được sử dụng bởi tài khoản khác.');
-      } else if (rawMsg === 'CCCD_NUMBER_EXISTS') {
-        message.error('Số Căn cước công dân này đã được đăng ký bởi nhà vườn khác.');
-      } else if (rawMsg === 'PROVIDER_PROFILE_FIELDS_REQUIRED') {
-        message.error('Vui lòng nhập đầy đủ Loại hình đối tác và Tên nhà vườn hiển thị.');
-      } else {
-        message.error(Array.isArray(rawMsg) ? rawMsg.join(', ') : rawMsg);
-      }
+      message.error(Array.isArray(rawMsg) ? rawMsg.join(', ') : rawMsg);
     } finally {
       setSaving(false);
     }
+  };
+
+  // 8 thông tin BE bắt buộc để Admin duyệt và để vườn nhận đơn (lập hợp đồng + nhận tiền).
+  // Tính trên dữ liệu ĐÃ LƯU, không phải giá trị đang gõ trong form. Chưa có hồ sơ → thiếu cả 8.
+  const requiredFields: { name: string; label: string; value: unknown }[] = [
+    { name: 'fullName', label: 'Họ tên người đại diện', value: profile?.account?.fullName },
+    { name: 'phone', label: 'Số điện thoại', value: profile?.phone || profile?.account?.phone },
+    { name: 'address', label: 'Địa chỉ nhà vườn', value: profile?.address },
+    { name: 'dateOfBirth', label: 'Ngày sinh', value: profile?.dateOfBirth },
+    { name: 'placeOfOrigin', label: 'Quê quán', value: profile?.placeOfOrigin },
+    { name: 'bankName', label: 'Tên ngân hàng', value: profile?.bankName },
+    { name: 'bankAccount', label: 'Số tài khoản', value: profile?.bankAccount },
+    { name: 'bankHolder', label: 'Tên chủ tài khoản', value: profile?.bankHolder },
+  ];
+  const missingRequired = requiredFields.filter((field) => !field.value);
+  const filledCount = requiredFields.length - missingRequired.length;
+
+  // Bấm mục còn thiếu → cuộn tới ô, đặt con trỏ vào ô và sáng viền 1,5 giây.
+  const FLASH_CLASSES = ['!border-[#6027D2]', '!shadow-[0_0_0_4px_rgba(96,39,210,0.18)]'];
+  const jumpToField = (name: string) => {
+    form.scrollToField(name, { behavior: 'smooth', block: 'center' });
+    const input = document.getElementById(name);
+    if (!input) return;
+    input.focus({ preventScroll: true });
+    // Input có prefix (SĐT) được antd bọc trong span viền → làm sáng span đó.
+    const target = input.closest('.ant-input-affix-wrapper') ?? input;
+    target.classList.add(...FLASH_CLASSES);
+    window.setTimeout(() => target.classList.remove(...FLASH_CLASSES), 1500);
   };
 
   if (!mounted || !isAuthenticated) return null;
@@ -301,20 +310,9 @@ export default function ProviderProfilePage() {
                 )}
               </div>
               <p className="text-sm text-[#6E6A8A] mt-1">
-                Hoàn thiện thông tin cơ sở và hồ sơ pháp lý (CCCD, vị trí) để Ban quản trị LanCare kiểm duyệt và kích hoạt gói dịch vụ.
+                Hoàn thiện thông tin nhà vườn, người đại diện và tài khoản nhận tiền để Ban quản trị LanCare kiểm duyệt và kích hoạt gói dịch vụ.
               </p>
             </div>
-
-            <Button
-              type="primary"
-              size="large"
-              icon={<SaveOutlined />}
-              loading={saving}
-              onClick={() => form.submit()}
-              className="!bg-[#6027D2] hover:!bg-[#4F1FA9] !rounded-xl !h-11 px-6 font-semibold shadow-[0_8px_20px_rgba(96,39,210,0.25)]"
-            >
-              Lưu & Nộp hồ sơ xét duyệt
-            </Button>
           </div>
 
           {/* BANNER THÔNG BÁO TRẠNG THÁI */}
@@ -324,8 +322,10 @@ export default function ProviderProfilePage() {
               <p className="mt-3 text-sm text-[#6E6A8A]">Đang nạp dữ liệu hồ sơ...</p>
             </div>
           ) : (
-            <div className="space-y-6 max-w-5xl">
-              {profile?.verificationStatus === 'APPROVED' && !approvedBannerDismissed && (
+            <div className="flex flex-col gap-6 max-w-5xl">
+              {/* Mỗi lúc chỉ một thông báo trạng thái: còn thiếu thì banner vàng thay cho banner xanh / chờ duyệt.
+                  Riêng "bị từ chối" vẫn hiện kèm vì có lý do Admin ghi. */}
+              {profile?.verificationStatus === 'APPROVED' && missingRequired.length === 0 && !approvedBannerDismissed && (
                 <Alert
                   type="success"
                   showIcon
@@ -347,7 +347,7 @@ export default function ProviderProfilePage() {
                 />
               )}
 
-              {profile?.verificationStatus === 'PENDING' && (
+              {profile?.verificationStatus === 'PENDING' && missingRequired.length === 0 && (
                 <Alert
                   type="warning"
                   showIcon
@@ -355,7 +355,7 @@ export default function ProviderProfilePage() {
                   message={<span className="font-semibold text-[#92400E]">Hồ sơ đang trong hàng đợi chờ xét duyệt</span>}
                   description={
                     <span className="text-xs text-[#B45309]">
-                      Hồ sơ của bạn đã được gửi tới Ban quản trị LanCare Hub. Quá trình kiểm tra CCCD và thông tin nhà vườn thường diễn ra trong vòng 24 giờ làm việc. Bạn vẫn có thể chỉnh sửa và lưu lại thông tin.
+                      Hồ sơ của bạn đã được gửi tới Ban quản trị LanCare Hub. Admin sẽ kiểm tra thông tin nhà vườn, người đại diện và tài khoản ngân hàng trong vòng 24 giờ làm việc. Bạn vẫn có thể chỉnh sửa và lưu lại thông tin.
                     </span>
                   }
                   className="!rounded-2xl !border-[#FDE68A] !bg-[#FFFBEB]"
@@ -367,43 +367,58 @@ export default function ProviderProfilePage() {
                   type="error"
                   showIcon
                   icon={<CloseCircleFilled className="text-lg text-[#EF4444]" />}
-                  message={<span className="font-semibold text-[#991B1B]">Hồ sơ chưa được duyệt: {profile.verificationNote || 'Vui lòng kiểm tra lại ảnh giấy tờ'}</span>}
+                  message={<span className="font-semibold text-[#991B1B]">Hồ sơ chưa được duyệt</span>}
                   description={
                     <span className="text-xs text-[#B91C1C]">
-                      Lý do từ chối: {profile.verificationNote || 'Ảnh CCCD bị mờ hoặc thông tin chưa trùng khớp. Vui lòng chụp lại ảnh rõ nét và bấm Lưu & Nộp lại.'}
+                      Lý do từ chối: {profile.verificationNote || 'Thông tin hồ sơ chưa chính xác.'} Vui lòng sửa lại thông tin rồi bấm Lưu & Nộp lại.
                     </span>
                   }
                   className="!rounded-2xl !border-[#FECACA] !bg-[#FEF2F2]"
                 />
               )}
 
-              {!profile && (
-                <Alert
-                  type="info"
-                  showIcon
-                  icon={<InfoCircleOutlined className="text-lg text-[#6027D2]" />}
-                  message={<span className="font-semibold text-[#4C1D95]">Vui lòng hoàn tất hồ sơ nhà vườn</span>}
-                  description={
-                    <span className="text-xs text-[#5B21B6]">
-                      Bạn vừa đăng ký tài khoản thành công. Hãy điền Tên hiển thị, Số điện thoại, Địa chỉ, Số CCCD (12 chữ số) và tải lên ảnh CCCD (mặt trước/mặt sau) cùng ảnh chân dung để Admin tiến hành xét duyệt nhà vườn.
+              {missingRequired.length > 0 && (
+                <div
+                  role="status"
+                  className="rounded-2xl border border-[#FDE68A] bg-[#FFFBEB] px-[18px] py-3.5 flex flex-col gap-2.5"
+                >
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="w-[22px] h-[22px] rounded-full bg-[#F59E0B] text-white grid place-items-center text-[13px] font-extrabold shrink-0">
+                      !
                     </span>
-                  }
-                  className="!rounded-2xl !border-[#DDD6FE] !bg-[#F5F3FF]"
-                />
-              )}
-
-              {profile && (!profile.cccdNumber || !(profile.phone || profile.account?.phone)) && (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message={<span className="font-semibold text-[#92400E]">Hồ sơ thiếu thông tin định danh cho Hợp đồng điện tử</span>}
-                  description={
-                    <span className="text-xs text-[#B45309]">
-                      Vui lòng bổ sung đầy đủ <b>Số điện thoại liên hệ</b> và <b>Số Căn cước công dân (12 chữ số)</b> bên dưới để Admin xét duyệt hồ sơ và hệ thống có thể khởi tạo Hợp đồng dịch vụ khi bạn nhận đơn hàng.
+                    <b className="text-[15px] text-[#92400E]">Hoàn tất hồ sơ để nhận đơn</b>
+                    <span className="ml-auto text-xs font-semibold text-[#B45309] tabular-nums">
+                      {filledCount}/{requiredFields.length} đã điền
                     </span>
-                  }
-                  className="!rounded-2xl !border-[#FDE68A] !bg-[#FFFBEB]"
-                />
+                  </div>
+                  <div
+                    className="h-1.5 rounded-full bg-[#FEF3C7] overflow-hidden"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={requiredFields.length}
+                    aria-valuenow={filledCount}
+                    aria-label="Tiến độ hoàn tất hồ sơ"
+                  >
+                    <div
+                      className="h-full rounded-full bg-[#D97706] transition-[width] duration-300"
+                      style={{ width: `${(filledCount / requiredFields.length) * 100}%` }}
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <small className="text-xs text-[#B45309] mr-0.5">Còn thiếu:</small>
+                    {missingRequired.map((field) => (
+                      <button
+                        key={field.name}
+                        type="button"
+                        onClick={() => jumpToField(field.name)}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[#FDE68A] bg-white px-[11px] py-[3px] text-[12.5px] font-semibold text-[#92400E] cursor-pointer hover:border-[#D97706] hover:bg-[#FEF3C7] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#6027D2]"
+                      >
+                        {field.label}
+                        <span aria-hidden className="text-[#D97706] font-bold">→</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               )}
 
               {/* FORM HỒ SƠ */}
@@ -554,6 +569,66 @@ export default function ProviderProfilePage() {
                   </Row>
                 </div>
 
+                {/* KHỐI 1B: NGƯỜI ĐẠI DIỆN KÝ HỢP ĐỒNG — BE in vào Bên B của hợp đồng điện tử */}
+                <div className="bg-white rounded-2xl border border-[#ECE7FA] p-6 shadow-xs">
+                  <div className="flex items-center gap-2 mb-4 pb-3 border-b border-[#F0EDF9]">
+                    <div className="w-8 h-8 rounded-lg bg-[#ECFEFF] flex items-center justify-center text-[#0E7490]">
+                      <UserOutlined className="text-base" />
+                    </div>
+                    <div>
+                      <h2 className="text-base font-bold text-[#1E1B2E]">Người đại diện ký hợp đồng</h2>
+                      <p className="text-xs text-[#6E6A8A]">
+                        Ghi vào Hợp đồng điện tử (Bên B) khi bạn nhận đơn.
+                      </p>
+                    </div>
+                  </div>
+
+                  <Row gutter={16}>
+                    <Col xs={24} md={10}>
+                      <Form.Item
+                        name="fullName"
+                        label={<span className="font-semibold text-xs text-[#4B4764]">Họ và tên người đại diện <span className="text-red-500">*</span></span>}
+                        rules={[
+                          { required: true, whitespace: true, message: 'Vui lòng nhập họ tên người đại diện' },
+                          { min: 2, message: 'Tối thiểu 2 ký tự' },
+                          { max: 255, message: 'Tối đa 255 ký tự' },
+                        ]}
+                      >
+                        <Input size="large" placeholder="Ví dụ: Nguyễn Văn Lan" className="!rounded-xl" />
+                      </Form.Item>
+                    </Col>
+
+                    <Col xs={24} md={6}>
+                      <Form.Item
+                        name="dateOfBirth"
+                        label={<span className="font-semibold text-xs text-[#4B4764]">Ngày sinh <span className="text-red-500">*</span></span>}
+                        rules={[
+                          { required: true, whitespace: true, message: 'Vui lòng nhập ngày sinh' },
+                          {
+                            pattern: /^(0[1-9]|[12]\d|3[01])\/(0[1-9]|1[0-2])\/(19|20)\d{2}$/,
+                            message: 'Nhập theo dạng dd/mm/yyyy, ví dụ 15/08/1988',
+                          },
+                        ]}
+                      >
+                        <Input size="large" maxLength={10} placeholder="dd/mm/yyyy" className="!rounded-xl" />
+                      </Form.Item>
+                    </Col>
+
+                    <Col xs={24} md={8}>
+                      <Form.Item
+                        name="placeOfOrigin"
+                        label={<span className="font-semibold text-xs text-[#4B4764]">Quê quán <span className="text-red-500">*</span></span>}
+                        rules={[
+                          { required: true, whitespace: true, message: 'Vui lòng nhập quê quán' },
+                          { max: 255, message: 'Tối đa 255 ký tự' },
+                        ]}
+                      >
+                        <Input size="large" placeholder="Ví dụ: Bảo Lâm, Lâm Đồng" className="!rounded-xl" />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+                </div>
+
                 {/* KHỐI 2: ĐỊA CHỈ & ĐỊNH VỊ GPS VƯỜN */}
                 <div className="bg-white rounded-2xl border border-[#ECE7FA] p-6 shadow-xs">
                   <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#F0EDF9]">
@@ -580,7 +655,12 @@ export default function ProviderProfilePage() {
                     <Col xs={24} md={16}>
                       <Form.Item
                         name="address"
-                        label={<span className="font-semibold text-xs text-[#4B4764]">Địa chỉ cụ thể của vườn / cơ sở</span>}
+                        label={<span className="font-semibold text-xs text-[#4B4764]">Địa chỉ nhà vườn <span className="text-red-500">*</span></span>}
+                        rules={[
+                          { required: true, whitespace: true, message: 'Vui lòng nhập địa chỉ nhà vườn' },
+                          { max: 255, message: 'Tối đa 255 ký tự' },
+                        ]}
+                        extra={<span className="text-[11px] text-[#6E6A8A]">Địa chỉ này được ghi vào hợp đồng.</span>}
                       >
                         <Input
                           size="large"
@@ -637,215 +717,51 @@ export default function ProviderProfilePage() {
                   </Row>
                 </div>
 
-                {/* KHỐI 3: GIẤY TỜ XÁC MINH & PHÁP LÝ (CCCD & CHÂN DUNG) */}
+                {/* KHỐI 3: GIẤY PHÉP KINH DOANH / CHỨNG CHỈ (TUỲ CHỌN) — không thu CCCD hay ảnh chân dung */}
                 <div className="bg-white rounded-2xl border border-[#ECE7FA] p-6 shadow-xs">
                   <div className="flex items-center gap-2 mb-4 pb-3 border-b border-[#F0EDF9]">
                     <div className="w-8 h-8 rounded-lg bg-[#FEF3C7] flex items-center justify-center text-[#D97706]">
-                      <IdcardOutlined className="text-base" />
+                      <FileProtectOutlined className="text-base" />
                     </div>
                     <div>
-                      <h2 className="text-base font-bold text-[#1E1B2E]">Giấy tờ xác minh danh tính & Pháp lý</h2>
-                      <p className="text-xs text-[#6E6A8A]">
-                        Bắt buộc nhập Số CCCD (12 chữ số), tải lên ảnh CCCD (2 mặt) và ảnh chân dung thật để Admin xét duyệt hồ sơ và ghi nhận vào Hợp đồng điện tử
-                      </p>
+                      <h2 className="text-base font-bold text-[#1E1B2E]">Giấy phép kinh doanh / Chứng chỉ</h2>
+                      <p className="text-xs text-[#6E6A8A]">Không bắt buộc. Giúp Ban quản trị tin tưởng hồ sơ của bạn hơn.</p>
                     </div>
                   </div>
 
-                  <Row gutter={16} className="mb-2">
-                    <Col xs={24} md={12}>
-                      <Form.Item
-                        name="cccdNumber"
-                        label={<span className="font-semibold text-xs text-[#4B4764]">Số Căn cước công dân (12 chữ số) <span className="text-red-500">*</span></span>}
-                        rules={[
-                          { required: true, message: 'Vui lòng nhập đủ 12 chữ số CCCD' },
-                          { pattern: /^\d{12}$/, message: 'Số Căn cước công dân phải gồm đúng 12 chữ số' },
-                        ]}
-                        extra={
-                          <span className="text-[11px] text-[#6E6A8A]">
-                            Lưu ý: Thay đổi số CCCD sau khi hồ sơ đã được duyệt sẽ chuyển trạng thái về Chờ Admin đối chiếu lại.
-                          </span>
-                        }
-                      >
-                        <Input
-                          size="large"
-                          maxLength={12}
-                          prefix={<IdcardOutlined className="text-[#A098C2] mr-1" />}
-                          placeholder="Ví dụ: 079099001234"
-                          className="!rounded-xl font-mono tracking-wider"
+                  <div className="p-4 rounded-xl border border-dashed border-[#D1C9E9] bg-[#FAF8FE] flex flex-col sm:flex-row items-center gap-4">
+                    {businessLicenseUrl ? (
+                      <div className="relative group w-40 shrink-0">
+                        <Image
+                          src={businessLicenseUrl}
+                          alt="Giấy phép kinh doanh"
+                          className="w-full h-28 object-cover rounded-lg shadow-xs"
                         />
-                      </Form.Item>
-                    </Col>
-                  </Row>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    {/* 1. Mặt trước CCCD */}
-                    <div className="p-4 rounded-xl border border-dashed border-[#D1C9E9] bg-[#FAF8FE] flex flex-col justify-between items-center text-center">
-                      <span className="text-xs font-semibold text-[#1E1B2E] mb-2">
-                        Mặt trước CCCD <span className="text-red-500">*</span>
-                      </span>
-
-                      {cccdFrontUrl ? (
-                        <div className="relative group w-full mb-3">
-                          <Image
-                            src={cccdFrontUrl}
-                            alt="Mặt trước CCCD"
-                            className="w-full h-32 object-cover rounded-lg shadow-xs"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setCccdFrontUrl('')}
-                            className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center hover:bg-red-700 shadow-md"
-                          >
-                            <DeleteOutlined className="text-xs" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="w-full h-32 flex flex-col items-center justify-center bg-white rounded-lg border border-[#ECE7FA] mb-3 text-[#A098C2]">
-                          <IdcardOutlined className="text-3xl mb-1" />
-                          <span className="text-[11px]">Chưa tải ảnh</span>
-                        </div>
-                      )}
-
-                      <Upload
-                        showUploadList={false}
-                        beforeUpload={(file) => handleUploadFile('cccdFrontUrl', file)}
-                        accept="image/png,image/jpeg,image/webp"
-                      >
-                        <Button
-                          icon={uploadingDoc === 'cccdFrontUrl' ? <LoadingOutlined /> : <UploadOutlined />}
-                          disabled={uploadingDoc === 'cccdFrontUrl'}
-                          size="small"
-                          className="!rounded-lg font-medium text-xs text-[#6027D2] !border-[#C4B5FD]"
+                        <button
+                          type="button"
+                          onClick={() => setBusinessLicenseUrl('')}
+                          className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center hover:bg-red-700 shadow-md"
                         >
-                          {cccdFrontUrl ? 'Đổi ảnh khác' : 'Tải ảnh lên'}
-                        </Button>
-                      </Upload>
-                    </div>
+                          <DeleteOutlined className="text-xs" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="w-40 h-28 shrink-0 flex flex-col items-center justify-center bg-white rounded-lg border border-[#ECE7FA] text-[#A098C2]">
+                        <FileProtectOutlined className="text-3xl mb-1" />
+                        <span className="text-[11px]">Chưa có ảnh</span>
+                      </div>
+                    )}
 
-                    {/* 2. Mặt sau CCCD */}
-                    <div className="p-4 rounded-xl border border-dashed border-[#D1C9E9] bg-[#FAF8FE] flex flex-col justify-between items-center text-center">
-                      <span className="text-xs font-semibold text-[#1E1B2E] mb-2">
-                        Mặt sau CCCD <span className="text-red-500">*</span>
-                      </span>
-
-                      {cccdBackUrl ? (
-                        <div className="relative group w-full mb-3">
-                          <Image
-                            src={cccdBackUrl}
-                            alt="Mặt sau CCCD"
-                            className="w-full h-32 object-cover rounded-lg shadow-xs"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setCccdBackUrl('')}
-                            className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center hover:bg-red-700 shadow-md"
-                          >
-                            <DeleteOutlined className="text-xs" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="w-full h-32 flex flex-col items-center justify-center bg-white rounded-lg border border-[#ECE7FA] mb-3 text-[#A098C2]">
-                          <IdcardOutlined className="text-3xl mb-1" />
-                          <span className="text-[11px]">Chưa tải ảnh</span>
-                        </div>
-                      )}
-
+                    <div className="flex flex-col items-center sm:items-start gap-2 text-center sm:text-left">
+                      <span className="text-xs text-[#6E6A8A]">Ảnh JPG, PNG hoặc WEBP, tối đa 5 MB.</span>
                       <Upload
                         showUploadList={false}
-                        beforeUpload={(file) => handleUploadFile('cccdBackUrl', file)}
+                        beforeUpload={(file) => handleUploadFile(file)}
                         accept="image/png,image/jpeg,image/webp"
                       >
                         <Button
-                          icon={uploadingDoc === 'cccdBackUrl' ? <LoadingOutlined /> : <UploadOutlined />}
-                          disabled={uploadingDoc === 'cccdBackUrl'}
-                          size="small"
-                          className="!rounded-lg font-medium text-xs text-[#6027D2] !border-[#C4B5FD]"
-                        >
-                          {cccdBackUrl ? 'Đổi ảnh khác' : 'Tải ảnh lên'}
-                        </Button>
-                      </Upload>
-                    </div>
-
-                    {/* 3. Ảnh chân dung (Selfie) */}
-                    <div className="p-4 rounded-xl border border-dashed border-[#D1C9E9] bg-[#FAF8FE] flex flex-col justify-between items-center text-center">
-                      <span className="text-xs font-semibold text-[#1E1B2E] mb-2">
-                        Ảnh chân dung (Selfie) <span className="text-red-500">*</span>
-                      </span>
-
-                      {selfieUrl ? (
-                        <div className="relative group w-full mb-3">
-                          <Image
-                            src={selfieUrl}
-                            alt="Ảnh chân dung"
-                            className="w-full h-32 object-cover rounded-lg shadow-xs"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setSelfieUrl('')}
-                            className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center hover:bg-red-700 shadow-md"
-                          >
-                            <DeleteOutlined className="text-xs" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="w-full h-32 flex flex-col items-center justify-center bg-white rounded-lg border border-[#ECE7FA] mb-3 text-[#A098C2]">
-                          <CameraOutlined className="text-3xl mb-1" />
-                          <span className="text-[11px]">Chưa tải ảnh</span>
-                        </div>
-                      )}
-
-                      <Upload
-                        showUploadList={false}
-                        beforeUpload={(file) => handleUploadFile('selfieUrl', file)}
-                        accept="image/png,image/jpeg,image/webp"
-                      >
-                        <Button
-                          icon={uploadingDoc === 'selfieUrl' ? <LoadingOutlined /> : <UploadOutlined />}
-                          disabled={uploadingDoc === 'selfieUrl'}
-                          size="small"
-                          className="!rounded-lg font-medium text-xs text-[#6027D2] !border-[#C4B5FD]"
-                        >
-                          {selfieUrl ? 'Đổi ảnh khác' : 'Tải ảnh lên'}
-                        </Button>
-                      </Upload>
-                    </div>
-
-                    {/* 4. Giấy phép kinh doanh / Chứng chỉ */}
-                    <div className="p-4 rounded-xl border border-dashed border-[#D1C9E9] bg-[#FAF8FE] flex flex-col justify-between items-center text-center">
-                      <span className="text-xs font-semibold text-[#1E1B2E] mb-2">
-                        Giấy phép KD / Chứng chỉ
-                      </span>
-
-                      {businessLicenseUrl ? (
-                        <div className="relative group w-full mb-3">
-                          <Image
-                            src={businessLicenseUrl}
-                            alt="Giấy phép kinh doanh"
-                            className="w-full h-32 object-cover rounded-lg shadow-xs"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setBusinessLicenseUrl('')}
-                            className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center hover:bg-red-700 shadow-md"
-                          >
-                            <DeleteOutlined className="text-xs" />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="w-full h-32 flex flex-col items-center justify-center bg-white rounded-lg border border-[#ECE7FA] mb-3 text-[#A098C2]">
-                          <FileProtectOutlined className="text-3xl mb-1" />
-                          <span className="text-[11px]">Tuỳ chọn bổ sung</span>
-                        </div>
-                      )}
-
-                      <Upload
-                        showUploadList={false}
-                        beforeUpload={(file) => handleUploadFile('businessLicenseUrl', file)}
-                        accept="image/png,image/jpeg,image/webp"
-                      >
-                        <Button
-                          icon={uploadingDoc === 'businessLicenseUrl' ? <LoadingOutlined /> : <UploadOutlined />}
-                          disabled={uploadingDoc === 'businessLicenseUrl'}
+                          icon={uploadingDoc ? <LoadingOutlined /> : <UploadOutlined />}
+                          disabled={uploadingDoc}
                           size="small"
                           className="!rounded-lg font-medium text-xs text-[#6027D2] !border-[#C4B5FD]"
                         >
@@ -864,7 +780,7 @@ export default function ProviderProfilePage() {
                     </div>
                     <div>
                       <h2 className="text-base font-bold text-[#1E1B2E]">Tài khoản ngân hàng nhận thanh toán</h2>
-                      <p className="text-xs text-[#6E6A8A]">Hệ thống sẽ đối soát và giải ngân doanh thu chăm sóc lan vào tài khoản này</p>
+                      <p className="text-xs text-[#6E6A8A]">Bắt buộc trước khi được duyệt và nhận đơn. Chỉ đổi sang tài khoản khác được, không xoá được.</p>
                     </div>
                   </div>
 
@@ -872,7 +788,11 @@ export default function ProviderProfilePage() {
                     <Col xs={24} md={8}>
                       <Form.Item
                         name="bankName"
-                        label={<span className="font-semibold text-xs text-[#4B4764]">Tên ngân hàng</span>}
+                        label={<span className="font-semibold text-xs text-[#4B4764]">Tên ngân hàng <span className="text-red-500">*</span></span>}
+                        rules={[
+                          { required: true, whitespace: true, message: 'Vui lòng nhập tên ngân hàng' },
+                          { max: 100, message: 'Tối đa 100 ký tự' },
+                        ]}
                       >
                         <Input
                           size="large"
@@ -885,7 +805,11 @@ export default function ProviderProfilePage() {
                     <Col xs={24} md={8}>
                       <Form.Item
                         name="bankAccount"
-                        label={<span className="font-semibold text-xs text-[#4B4764]">Số tài khoản ngân hàng</span>}
+                        label={<span className="font-semibold text-xs text-[#4B4764]">Số tài khoản ngân hàng <span className="text-red-500">*</span></span>}
+                        rules={[
+                          { required: true, whitespace: true, message: 'Vui lòng nhập số tài khoản' },
+                          { max: 50, message: 'Tối đa 50 ký tự' },
+                        ]}
                       >
                         <Input
                           size="large"
@@ -898,7 +822,11 @@ export default function ProviderProfilePage() {
                     <Col xs={24} md={8}>
                       <Form.Item
                         name="bankHolder"
-                        label={<span className="font-semibold text-xs text-[#4B4764]">Tên chủ tài khoản (In hoa không dấu)</span>}
+                        label={<span className="font-semibold text-xs text-[#4B4764]">Tên chủ tài khoản (In hoa không dấu) <span className="text-red-500">*</span></span>}
+                        rules={[
+                          { required: true, whitespace: true, message: 'Vui lòng nhập tên chủ tài khoản' },
+                          { max: 100, message: 'Tối đa 100 ký tự' },
+                        ]}
                       >
                         <Input
                           size="large"

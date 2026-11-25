@@ -2,8 +2,8 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Avatar, Input, message } from 'antd';
-import { BellOutlined, MailOutlined, SearchOutlined, SettingOutlined } from '@ant-design/icons';
+import { Avatar, message } from 'antd';
+import { BellOutlined, MailOutlined, SettingOutlined } from '@ant-design/icons';
 import { ProviderProfileResponse } from '@/lib/provider.api';
 import { useAuthStore } from '@/lib/auth.store';
 
@@ -16,16 +16,8 @@ export default function ProviderHeader({ profile, pendingCount = 0 }: ProviderHe
   const user = useAuthStore((state) => state.user);
 
   return (
-    <header className="h-16 bg-white border-b border-[#ECE7FA] px-6 flex items-center justify-between gap-4 flex-shrink-0 z-10">
-      {/* Search Bar */}
-      <div className="w-96">
-        <Input
-          prefix={<SearchOutlined className="text-[#A098C2] mr-1" />}
-          placeholder="Tìm kiếm gói dịch vụ, đơn hàng..."
-          className="!rounded-xl !bg-[#F6F4FC] !border-none !py-2 text-sm text-[#1E1B2E]"
-        />
-      </div>
-
+    <header className="h-16 bg-white border-b border-[#ECE7FA] px-6 flex items-center justify-end gap-4 flex-shrink-0 z-10">
+      {/* Ô tìm kiếm chung đã bỏ (chưa từng hoạt động) — mỗi trang danh sách có ô tìm kiếm riêng. */}
       {/* Right Header Controls */}
       <div className="flex items-center gap-4">
         <button

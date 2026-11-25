@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { applyBankPatch, hasBankInfo } from '../common/bank-info';
 import { assertGpsPair } from '../common/gps';
 import {
   PG_UNIQUE_VIOLATION,
@@ -245,9 +246,8 @@ export class ProvidersService {
     if (dto.specialties !== undefined) profile.specialties = dto.specialties;
     if (dto.serviceAreas !== undefined) profile.serviceAreas = dto.serviceAreas;
     if (dto.certificates !== undefined) profile.certificates = dto.certificates;
-    if (dto.bankName !== undefined) profile.bankName = dto.bankName;
-    if (dto.bankAccount !== undefined) profile.bankAccount = dto.bankAccount;
-    if (dto.bankHolder !== undefined) profile.bankHolder = dto.bankHolder;
+    // Tài khoản nhận tiền công: cho sửa (gửi đủ bộ 3), cấm xoá — chốt 21/11.
+    applyBankPatch(profile, dto);
   }
 
   // Public (GET /providers/:id, khách vãng lai gọi được): CHỈ field giới thiệu vườn.
@@ -351,8 +351,11 @@ export class ProvidersService {
     });
     return profiles.map((p) => ({
       ...this.toProfileView(p, true),
-      // Nút "Duyệt" chỉ bật khi đủ bộ định danh — khớp điều kiện chặn ở verifyProvider.
-      canVerify: p.verificationStatus === 'PENDING' && hasCompleteIdentity(p),
+      // Nút "Duyệt" chỉ bật khi đủ bộ định danh + tài khoản ngân hàng — khớp điều kiện chặn ở verifyProvider.
+      canVerify:
+        p.verificationStatus === 'PENDING' &&
+        hasCompleteIdentity(p) &&
+        hasBankInfo(p),
     }));
   }
 
@@ -411,6 +414,10 @@ export class ProvidersService {
     // qua PUT /providers/me/profile rồi admin duyệt lại). Giữ mã lỗi cũ để FE admin không phải sửa.
     if (dto.decision === 'APPROVED' && !hasCompleteIdentity(profile)) {
       throw new BadRequestException('PROVIDER_PROFILE_NOT_SUBMITTED');
+    }
+    // Vườn được duyệt là nhận đơn được → phải có sẵn tài khoản nhận tiền (chốt 21/11).
+    if (dto.decision === 'APPROVED' && !hasBankInfo(profile)) {
+      throw new BadRequestException('PROVIDER_BANK_INFO_REQUIRED');
     }
 
     profile.verificationStatus = dto.decision;

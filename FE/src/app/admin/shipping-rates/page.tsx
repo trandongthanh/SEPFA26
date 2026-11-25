@@ -206,7 +206,7 @@ export default function AdminShippingRatesPage() {
       <div className="flex-1 flex flex-col min-w-0">
         <AdminHeader />
 
-        <main className="flex-1 p-6 space-y-6 overflow-y-auto">
+        <main className="flex-1 p-6 flex flex-col gap-6 *:shrink-0 overflow-y-auto">
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
             <div>
               <h1 className="text-2xl font-bold text-[#1E1B2E]">Bảng phí lấy cây</h1>

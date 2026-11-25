@@ -138,6 +138,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
     bankName: 'MBBank',
     bankAccount: '0123456789',
     bankHolder: 'VUON LAN',
+    bankBin: null,
   };
 
   it('settlement: chưa ký → null; đã ký → khách thấy 484.000; COMPLETED → vườn thấy phần mình, khách không thấy', async () => {
@@ -157,6 +158,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       declaredDeposit: '0',
       declaredDepositReturned: '0',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     };
     // Trước COMPLETED: khách và vườn cùng thấy đúng phần hoá đơn, chưa có phần chia tiền.
     expect((await detail(id, c.customer.auth)).settlement).toEqual(
@@ -206,6 +208,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       declaredDeposit: '0',
       declaredDepositReturned: '0',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     });
     expect((await detail(id, c.provider.auth)).settlement).toMatchObject({
       refundAmount: '212000',
@@ -400,11 +403,22 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
     expect(saved.transfer_code).toBe(won.body.transferCode);
   });
 
-  it('admin: vườn chưa khai ngân hàng → 409; khai xong → 200 và lệnh chi lưu bản chụp tài khoản', async () => {
+  it('admin: lệnh chi cũ chưa có bản chụp + vườn chưa khai ngân hàng → 409; khai xong → 200 và lệnh chi lưu bản chụp tài khoản', async () => {
     const c = await toCompleted();
     const id = c.order.orderId;
     const admin = await seed.admin();
     await makeEligible(id);
+    // Từ 21/11 vườn phải có ngân hàng mới nhận đơn → ca này chỉ còn ở dữ liệu cũ (vườn duyệt và lệnh chi
+    // tạo trước luật). Giả lập bằng SQL: xoá ngân hàng của vườn và bản chụp trên lệnh chi.
+    await ctx.dataSource.query(
+      `UPDATE provider_profiles SET bank_name = NULL, bank_account = NULL, bank_holder = NULL WHERE id = $1`,
+      [c.provider.profileId],
+    );
+    await ctx.dataSource.query(
+      `UPDATE disbursements SET bank_name = NULL, bank_account = NULL, bank_holder = NULL
+        WHERE service_order_id = $1`,
+      [id],
+    );
 
     const list = await listDisbursements(admin.auth).expect(200);
     const row = list.body.data[0] as Record<string, any>;
@@ -494,16 +508,17 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
     }).expect(409);
     expect(noBank.body.message).toBe('DISBURSEMENT_BANK_INFO_MISSING');
 
-    // Khách khai thiếu chủ tài khoản → vẫn coi là chưa khai.
+    // Khách khai thiếu chủ tài khoản → 400, hồ sơ không đổi, vẫn coi là chưa khai.
     const putProfile = (body: object) =>
       request(http)
         .put(`${API}/customers/me/profile`)
         .set(c.customer.auth)
         .send(body);
-    await putProfile({
+    const partial = await putProfile({
       bankName: 'Vietcombank',
       bankAccount: '9876543210',
-    }).expect(200);
+    }).expect(400);
+    expect(partial.body.message).toBe('BANK_INFO_INCOMPLETE');
     expect(
       (await listDisbursements(admin.auth).expect(200)).body.data[0].bank,
     ).toBeNull();
@@ -511,11 +526,17 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       409,
     );
 
-    await putProfile({ bankHolder: 'NGUYEN VAN MINH' }).expect(200);
+    await putProfile({
+      bankName: 'Vietcombank',
+      bankAccount: '9876543210',
+      bankHolder: 'NGUYEN VAN MINH',
+      bankBin: '970436',
+    }).expect(200);
     const customerBank = {
       bankName: 'Vietcombank',
       bankAccount: '9876543210',
       bankHolder: 'NGUYEN VAN MINH',
+      bankBin: '970436',
     };
     // Danh sách gợi ý theo hồ sơ khách hiện tại dù lệnh chi chưa có bản chụp.
     expect(
@@ -533,13 +554,14 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       bank: customerBank,
     });
     const [saved] = (await ctx.dataSource.query(
-      `SELECT bank_name, bank_account, bank_holder FROM disbursements WHERE id = $1`,
+      `SELECT bank_name, bank_account, bank_holder, bank_bin FROM disbursements WHERE id = $1`,
       [refund.id],
     )) as Record<string, string | null>[];
     expect(saved).toEqual({
       bank_name: 'Vietcombank',
       bank_account: '9876543210',
       bank_holder: 'NGUYEN VAN MINH',
+      bank_bin: '970436',
     });
     // Lệnh của vườn không bị ảnh hưởng: vẫn PENDING, chưa tới hạn.
     const early = await markPaid(payout.id, admin.auth, {
@@ -548,7 +570,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
     expect(early.body.message).toBe('DISBURSEMENT_NOT_ELIGIBLE');
   });
 
-  it('hồ sơ khách: khai / sửa / xoá 3 field ngân hàng; khách và admin đều thấy', async () => {
+  it('hồ sơ khách: khai / sửa ngân hàng (cấm xoá, phải gửi đủ bộ 3); khách và admin đều thấy', async () => {
     const customer = await seed.customer();
     const admin = await seed.admin();
     const profile = (method: 'get' | 'put', body?: object) =>
@@ -585,6 +607,7 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
     await profile('put', { bankName: 'x'.repeat(101) }).expect(400);
     await profile('put', { bankAccount: '1'.repeat(51) }).expect(400);
     await profile('put', { bankHolder: 123 }).expect(400);
+    await profile('put', { bankBin: '97042' }).expect(400);
 
     const forAdmin = await request(http)
       .get(`${API}/customers/admin/${customer.profileId}`)
@@ -597,9 +620,35 @@ describe('Payout: settlement trong chi tiết đơn + admin trả tiền vườn
       lostDisputeCount: 0,
     });
 
-    // Chuỗi rỗng (sau trim) = xoá.
-    const cleared = await profile('put', { bankHolder: '   ' }).expect(200);
-    expect(cleared.body.bankHolder).toBeNull();
-    expect(cleared.body.bankName).toBe('Vietcombank');
+    // Luật 21/11: không xoá được — chuỗi rỗng (sau trim) hoặc null → 400, hồ sơ giữ nguyên.
+    const cleared = await profile('put', {
+      bankName: 'Vietcombank',
+      bankAccount: '9876543210',
+      bankHolder: '   ',
+    }).expect(400);
+    expect(cleared.body.message).toBe('BANK_INFO_CANNOT_BE_CLEARED');
+    const nulled = await profile('put', { bankName: null }).expect(400);
+    expect(nulled.body.message).toBe('BANK_INFO_CANNOT_BE_CLEARED');
+
+    // Gửi lẻ 1 trường → 400; muốn sửa phải gửi đủ bộ 3.
+    const single = await profile('put', { bankAccount: '1111' }).expect(400);
+    expect(single.body.message).toBe('BANK_INFO_INCOMPLETE');
+    expect((await profile('get').expect(200)).body).toMatchObject({
+      bankName: 'Vietcombank',
+      bankAccount: '9876543210',
+      bankHolder: 'NGUYEN VAN MINH',
+    });
+
+    const changed = await profile('put', {
+      bankName: 'MBBank',
+      bankAccount: '0123456789',
+      bankHolder: 'NGUYEN VAN MINH',
+      bankBin: '970422',
+    }).expect(200);
+    expect(changed.body).toMatchObject({
+      bankName: 'MBBank',
+      bankAccount: '0123456789',
+      bankBin: '970422',
+    });
   });
 });

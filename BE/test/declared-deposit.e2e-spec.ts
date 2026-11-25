@@ -4,6 +4,7 @@ import { DisputesService } from '../src/orders/disputes.service';
 import { createAuthTestApp, type AuthTestApp } from './auth-test-app';
 import {
   OrderSeed,
+  PROVIDER_BANK,
   type DraftOrder,
   type OrderActor,
   type OrderProvider,
@@ -247,6 +248,7 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
       declaredDeposit: '300000',
       declaredDepositReturned: '0',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     });
   });
 
@@ -257,9 +259,29 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
     expect(short.body.ignored).toBe('INSUFFICIENT_AMOUNT');
     expect(await balance(id, 'ORDER')).toBe('0');
     expect(await balance(id, 'DECLARED')).toBe('0');
+    // Chưa trả đủ: settlement vẫn là số phải trả (784.000) nhưng paidAt rỗng.
+    const unpaid = await detail(id, c.customer.auth);
+    expect(unpaid.paidAt).toBeNull();
+    expect(unpaid.settlement.customerTotal).toBe('784000');
 
+    const before = Date.now();
     const paid = await seed.webhook(c.order.orderCode, '784000').expect(200);
     expect(paid.body.status).toBe('PAID');
+    // Tiền về → ghi paidAt; chi tiết đơn và danh sách đơn đều trả field này, settlement không đổi.
+    const view = await detail(id, c.customer.auth);
+    expect(new Date(view.paidAt).getTime()).toBeGreaterThanOrEqual(
+      before - 1000,
+    );
+    expect(view.settlement.customerTotal).toBe('784000');
+    const list = await request(http)
+      .get(`${API}/orders`)
+      .set(c.customer.auth)
+      .expect(200);
+    expect(
+      (list.body.data as { id: string; paidAt: string | null }[]).find(
+        (order) => order.id === id,
+      )?.paidAt,
+    ).toBe(view.paidAt);
     expect(await ledger(id, 'ORDER')).toEqual([
       { entry_type: 'DEPOSIT', amount: '484000', balance_after: '484000' },
     ]);
@@ -269,11 +291,17 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
     expect((await declaredComponent(id)).status).toBe('PAID');
   });
 
-  it('khách chuyển dư 10.000 → phần dư vào sổ đơn, sổ khai giá vẫn đúng 300.000', async () => {
+  it('khách chuyển dư 10.000 → phần dư thối lại ngay (lệnh chi OVERPAY_RETURN), sổ đơn 484.000, sổ khai giá vẫn đúng 300.000', async () => {
     const { c } = await toAwaitingPayment();
     await seed.webhook(c.order.orderCode, '794000').expect(200);
-    expect(await balance(c.order.orderId, 'ORDER')).toBe('494000');
+    expect(await balance(c.order.orderId, 'ORDER')).toBe('484000');
     expect(await balance(c.order.orderId, 'DECLARED')).toBe('300000');
+    expect(
+      await sql(
+        `SELECT type, amount FROM disbursements WHERE service_order_id = $1`,
+        [c.order.orderId],
+      ),
+    ).toEqual([{ type: 'OVERPAY_RETURN', amount: '10000' }]);
   });
 
   it('đơn xong không tranh chấp → trả đủ 300.000 cho khách, chi được ngay, ba sổ về 0', async () => {
@@ -302,6 +330,7 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
     expect(view.settlement).toMatchObject({
       declaredDepositReturned: '300000',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     });
   });
 
@@ -342,7 +371,7 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
         status: 'PENDING',
         customer_id: null,
         provider_id: c.provider.profileId,
-        bank_account: null,
+        bank_account: PROVIDER_BANK.bank_account,
         held: true,
       },
     ]);
@@ -360,6 +389,7 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
     expect(forCustomer.settlement).toMatchObject({
       declaredDepositReturned: '0',
       declaredDepositForfeited: '300000',
+      overpayReturned: '0',
     });
     const forProvider = await detail(id, c.provider.auth);
     expect(forProvider.settlement.declaredForfeitReceived).toBe('300000');
@@ -434,14 +464,26 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
   it('khách từ chối giao cây → mất phí lấy cây như cũ nhưng 300.000 trả đủ', async () => {
     const c = await toAwaitingConfirm();
     const id = c.order.orderId;
+    // Trước khi bấm: khách thấy trước đúng số sẽ nhận; vườn không có field này.
+    const preview = (await detail(id, c.customer.auth)).declinePreview;
+    expect(preview).toEqual({
+      refundAmount: '424000',
+      declaredDepositReturned: '300000',
+      pickupFeeKept: '60000',
+    });
+    expect(await detail(id, c.provider.auth)).not.toHaveProperty(
+      'declinePreview',
+    );
     const res = await post(`${id}/handover/decline`, c.customer.auth, {
       reason: 'Không đồng ý biên bản',
     }).expect(200);
     expect(res.body).toEqual({
       status: 'CANCELLED',
-      refundAmount: '424000',
-      declaredDepositReturned: '300000',
+      refundAmount: preview.refundAmount,
+      declaredDepositReturned: preview.declaredDepositReturned,
     });
+    // Đơn đã huỷ thì không còn gì để xem trước.
+    expect((await detail(id, c.customer.auth)).declinePreview).toBeNull();
     await expectAllBooksZero(id);
     expect((await declaredComponent(id)).status).toBe('REFUNDED');
     expect(await declaredDisbursements(id)).toMatchObject([
@@ -453,6 +495,8 @@ describe('Tiền bảo đảm khai giá của khách (e2e)', () => {
     const c = await toAwaitingConfirm();
     const id = c.order.orderId;
     await post(`${id}/handover/confirm`, c.customer.auth).expect(200);
+    // Khách đã đồng ý biên bản → không còn nút "Không giao cây", không có số xem trước.
+    expect((await detail(id, c.customer.auth)).declinePreview).toBeNull();
     await post(`${id}/handover/cancel`, c.provider.auth, {
       reason: 'Không chuẩn bị kịp tiền bảo đảm',
     }).expect(200);

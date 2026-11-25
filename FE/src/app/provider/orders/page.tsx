@@ -1,6 +1,6 @@
 'use client';
 
-import React, { Suspense, useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   AppstoreAddOutlined,
@@ -24,17 +24,37 @@ import {
   PrinterOutlined,
   SafetyCertificateFilled,
   SafetyCertificateOutlined,
+  StopOutlined,
   ToolOutlined,
   UploadOutlined,
   UserOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Checkbox, Image, Input, Modal, Radio, Segmented, Select, Spin, Tag, message } from 'antd';
+import { Avatar, Button, Checkbox, Empty, Image, Input, Modal, Pagination, Radio, Select, Spin, Tag, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
-import { AddonItem, AddonStatus, DisputeDetail, DisputeReason, OrderDisputeItem, OrderItem, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
+import { AddonItem, AddonStatus, DisputeDetail, DisputeReason, OrderDisputeItem, OrderItem, OrderListSort, ProviderProfileResponse, providerApi } from '@/lib/provider.api';
 import { videoCallApi } from '@/lib/video-call.api';
 import ProviderHeader from '../components/ProviderHeader';
 import ProviderSidebar from '../components/ProviderSidebar';
+import ListToolbar, { NoResults } from '../components/ListToolbar';
+import Highlight from '../components/Highlight';
+import HandoverCancelModal, { HANDOVER_CANCEL_ORDER_STATUSES } from '../components/HandoverCancelModal';
+import OrderDeadline from '../components/OrderDeadline';
+import OrderCancelModal, { PROVIDER_CANCELLABLE_STATUSES } from '../components/OrderCancelModal';
+import RefundAddonModal from '../components/RefundAddonModal';
+import { useUrlParam } from '@/lib/search';
+
+const ORDERS_PAGE_SIZE = 10;
+const ORDER_TABS = [
+  { value: 'ALL', label: 'Tất cả' },
+  { value: 'PENDING_PROVIDER', label: 'Chờ duyệt đặt lịch' },
+  { value: 'AGREEMENT_PENDING', label: 'Chờ ký hợp đồng' },
+  { value: 'PAID', label: 'Đã thanh toán' },
+  { value: 'HANDOVER_IN_PROGRESS', label: 'Đang bàn giao cây' },
+  { value: 'HANDOVER_AWAITING_CONFIRM', label: 'Chờ khách xác nhận' },
+  { value: 'IN_CARE', label: 'Đang chăm sóc' },
+  { value: 'COMPLETED', label: 'Hoàn thành' },
+];
 
 function OrdersPageContent() {
   const router = useRouter();
@@ -46,12 +66,18 @@ function OrdersPageContent() {
 
   const [profile, setProfile] = useState<ProviderProfileResponse | null>(null);
   const [orders, setOrders] = useState<OrderItem[]>([]);
+  // Đơn đang mở hộp thoại "Không nhận được cây" (huỷ ở chặng nhận cây).
+  const [cancelHandoverOrderId, setCancelHandoverOrderId] = useState<string | null>(null);
+  // Đơn đang mở hộp thoại "Huỷ đơn" (trước khi bắt đầu nhận cây).
+  const [cancelOrderTarget, setCancelOrderTarget] = useState<{ id: string; orderCode: string; status: string } | null>(null);
   const [activeTab, setActiveTab] = useState<string>('ALL');
 
   // State for Handover Assessment Modal
   const [handoverModalOpen, setHandoverModalOpen] = useState(false);
   const [handoverLoading, setHandoverLoading] = useState(false);
   const [handoverOrder, setHandoverOrder] = useState<any | null>(null);
+  const [handoverTargetOrderId, setHandoverTargetOrderId] = useState<string | null>(null);
+  const [handoverError, setHandoverError] = useState<string | null>(null);
   const [plantForms, setPlantForms] = useState<
     Record<
       string,
@@ -213,6 +239,8 @@ function OrdersPageContent() {
   const [addonModalOpen, setAddonModalOpen] = useState(false);
   const [addonOrder, setAddonOrder] = useState<OrderItem | null>(null);
   const [addons, setAddons] = useState<AddonItem[]>([]);
+  // Add-on đang mở hộp thoại "Trả lại tiền" (null = đóng).
+  const [refundAddon, setRefundAddon] = useState<AddonItem | null>(null);
   const [addonsLoading, setAddonsLoading] = useState(false);
   const [addonSubmitting, setAddonSubmitting] = useState(false);
   const [addonUploading, setAddonUploading] = useState(false);
@@ -409,35 +437,99 @@ function OrdersPageContent() {
     }
   }, [searchParams]);
 
-  const loadData = async (status?: string) => {
-    setLoading(true);
+  // ===== Tìm kiếm + lọc + sắp xếp + phân trang: BE làm hết (GET /orders?q&status&sort&page&limit) =====
+  const [searchQuery, setSearchQuery] = useUrlParam('q');
+  // Gõ xong 300ms mới gọi BE, tránh gọi theo từng phím.
+  const [debouncedQuery, setDebouncedQuery] = useState(searchQuery.trim());
+  const [sortBy, setSortBy] = useState<OrderListSort>('newest');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalFiltered, setTotalFiltered] = useState(0);
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  // Tổng đơn của vườn khi không tìm gì (để phân biệt "chưa có đơn nào" với "không có kết quả").
+  const [grandTotal, setGrandTotal] = useState<number | null>(null);
+  const ordersRequestId = useRef(0);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Về trang 1 mỗi khi đổi điều kiện lọc.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeTab, debouncedQuery, sortBy]);
+
+  // Gọi lại BE với bộ lọc hiện tại. Các thao tác trên đơn (nhận, huỷ, bàn giao...) gọi loadData → hàm này.
+  const loadOrders = async () => {
+    const requestId = ++ordersRequestId.current;
+    try {
+      const res = await providerApi.searchOrders({
+        status: activeTab === 'ALL' ? undefined : activeTab,
+        q: debouncedQuery || undefined,
+        sort: sortBy,
+        page: currentPage,
+        limit: ORDERS_PAGE_SIZE,
+      });
+      if (requestId !== ordersRequestId.current) return; // đã có lượt gọi mới hơn
+      setOrders(res.data);
+      setTotalFiltered(res.total);
+      setStatusCounts(res.statusCounts);
+      if (!debouncedQuery) {
+        setGrandTotal(Object.values(res.statusCounts).reduce((sum, n) => sum + Number(n || 0), 0));
+      }
+    } catch {
+      if (requestId !== ordersRequestId.current) return;
+      setOrders([]);
+      setTotalFiltered(0);
+      message.error('Không tải được danh sách đơn hàng. Vui lòng thử lại.');
+    }
+  };
+
+  const loadData = async () => {
     try {
       const prof = await providerApi.getProfile();
       setProfile(prof);
     } catch {
       setProfile(null);
     }
-
-    try {
-      const queryStatus = status === 'ALL' ? undefined : status;
-      const res = await providerApi.listOrders(queryStatus);
-      if (res && Array.isArray(res.items)) {
-        setOrders(res.items);
-      } else {
-        setOrders([]);
-      }
-    } catch (err: any) {
-      setOrders([]);
-    } finally {
-      setLoading(false);
-    }
+    await loadOrders();
   };
 
+  // Lần đầu: hồ sơ + đơn, có vòng xoay toàn trang.
   useEffect(() => {
-    if (mounted && isAuthenticated) {
-      loadData(activeTab);
-    }
-  }, [mounted, isAuthenticated, activeTab]);
+    if (!mounted || !isAuthenticated) return;
+    setLoading(true);
+    providerApi
+      .getProfile()
+      .then(setProfile)
+      .catch(() => setProfile(null))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, isAuthenticated]);
+
+  // Mỗi khi đổi tab / từ khoá / sắp xếp / trang → gọi BE lấy đúng trang đó.
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  useEffect(() => {
+    if (!mounted || !isAuthenticated) return;
+    setOrdersLoading(true);
+    loadOrders().finally(() => setOrdersLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, isAuthenticated, activeTab, debouncedQuery, sortBy, currentPage]);
+
+  // "Tất cả" = tổng mọi trạng thái (kể cả đơn đã huỷ / tranh chấp không có tab riêng).
+  const tabCounts = ORDER_TABS.reduce<Record<string, number>>((acc, tab) => {
+    acc[tab.value] =
+      tab.value === 'ALL'
+        ? Object.values(statusCounts).reduce((sum, n) => sum + Number(n || 0), 0)
+        : Number(statusCounts[tab.value] ?? 0);
+    return acc;
+  }, {});
+  const pagedOrders = orders;
+  const resetFilters = () => {
+    setSearchQuery('');
+    setDebouncedQuery('');
+    setActiveTab('ALL');
+  };
 
   // Handle Accept / Reject Order Negotiation
   const handleRespondOrder = async (orderId: string, action: 'ACCEPT' | 'REJECT') => {
@@ -449,18 +541,15 @@ function OrdersPageContent() {
           ? 'Đã chấp nhận đơn đặt lịch thành công! Đơn chuyển sang giai đoạn ký hợp đồng.'
           : 'Đã từ chối đơn hàng.'
       );
-      loadData(activeTab);
+      loadData();
     } catch (err: any) {
       const rawMsg =
         err?.response?.data?.message || err?.message || 'Không thể xử lý đơn hàng lúc này.';
       const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
-      if (msgText.includes('PROVIDER_IDENTITY_INCOMPLETE')) {
-        message.error(
-          'Vui lòng cập nhật đầy đủ Số điện thoại và Số CCCD (12 chữ số) tại mục Hồ sơ nhà vườn trước khi chấp nhận đơn và tạo hợp đồng!'
-        );
-      } else if (msgText.includes('INVALID_STATE_TRANSITION')) {
+      // Mã lỗi khác (vd PROVIDER_IDENTITY_INCOMPLETE) đã được lib/api.ts dịch sẵn sang tiếng Việt.
+      if (msgText.includes('INVALID_STATE_TRANSITION')) {
         message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới danh sách...');
-        loadData(activeTab);
+        loadData();
       } else {
         message.error(msgText);
       }
@@ -486,7 +575,7 @@ function OrdersPageContent() {
       message.success('Đã ký hợp đồng dịch vụ trực tuyến thành công!');
       setSignConfirmModalOpen(false);
       setOrderToSign(null);
-      loadData(activeTab);
+      loadData();
       if (contractModalOpen && currentContractOrderId === orderId) {
         handleOpenContractModal(orderId);
       }
@@ -496,7 +585,7 @@ function OrdersPageContent() {
       if (msgText.includes('INVALID_STATE_TRANSITION')) {
         message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới dữ liệu...');
         setSignConfirmModalOpen(false);
-        loadData(activeTab);
+        loadData();
       } else {
         message.error(msgText);
       }
@@ -511,13 +600,13 @@ function OrdersPageContent() {
     try {
       await providerApi.startHandover(orderId);
       message.success('Đã mở phiên tiếp nhận bàn giao cây! Vui lòng tiến hành thẩm định từng cây.');
-      loadData(activeTab);
+      loadData();
     } catch (err: any) {
       const rawMsg = err?.response?.data?.message || err?.message || 'Không thể bắt đầu bàn giao.';
       const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
       if (msgText.includes('INVALID_STATE_TRANSITION')) {
         message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới danh sách...');
-        loadData(activeTab);
+        loadData();
       } else {
         message.error(msgText);
       }
@@ -528,8 +617,10 @@ function OrdersPageContent() {
 
   // Mở modal thẩm định bàn giao
   const handleOpenHandoverModal = async (orderId: string) => {
+    setHandoverTargetOrderId(orderId);
     setHandoverModalOpen(true);
     setHandoverLoading(true);
+    setHandoverError(null);
     try {
       const detail = await providerApi.getOrderDetail(orderId);
       setHandoverOrder(detail);
@@ -546,7 +637,10 @@ function OrdersPageContent() {
       });
       setPlantForms(forms);
     } catch (err: any) {
-      message.error('Không thể tải chi tiết đơn hàng để thẩm định.');
+      const errMsg = err?.response?.data?.message || err?.message || 'Không thể tải chi tiết đơn hàng để thẩm định.';
+      const msgStr = Array.isArray(errMsg) ? errMsg.join(', ') : String(errMsg);
+      setHandoverError(msgStr);
+      message.error(msgStr);
     } finally {
       setHandoverLoading(false);
     }
@@ -623,14 +717,14 @@ function OrdersPageContent() {
       await providerApi.completeHandover(handoverOrder.id);
       message.success('Đã hoàn tất thẩm định! Đơn hàng đang chờ khách hàng xác nhận bàn giao.');
       setHandoverModalOpen(false);
-      loadData(activeTab);
+      loadData();
     } catch (err: any) {
       const rawMsg = err?.response?.data?.message || err?.message || 'Không thể hoàn tất thẩm định bàn giao.';
       const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
       if (msgText.includes('INVALID_STATE_TRANSITION')) {
         message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới dữ liệu...');
         setHandoverModalOpen(false);
-        loadData(activeTab);
+        loadData();
       } else {
         message.error(msgText);
       }
@@ -645,7 +739,7 @@ function OrdersPageContent() {
     try {
       await providerApi.startReturn(orderId);
       message.success('Đã bắt đầu phiên bàn giao trả cây! Vui lòng ghi nhận tình trạng từng cây.');
-      await loadData(activeTab);
+      await loadData();
       handleOpenReturnModal(orderId);
     } catch (err: any) {
       const rawCode = err?.response?.data?.rawCode;
@@ -754,7 +848,7 @@ function OrdersPageContent() {
       await providerApi.completeReturn(returnOrder.id);
       message.success('Đã hoàn tất bàn giao trả cây! Đơn hàng đang chờ khách hàng xác nhận nhận lại.');
       setReturnModalOpen(false);
-      loadData(activeTab);
+      loadData();
     } catch (err: any) {
       const msg = err?.response?.data?.message || err?.message || 'Vui lòng đánh giá đủ tất cả cây đang chăm trước khi hoàn tất.';
       message.error(Array.isArray(msg) ? msg.join(', ') : msg);
@@ -774,7 +868,7 @@ function OrdersPageContent() {
       await providerApi.cancelReturn(returnOrder.id, cancelReturnReason.trim());
       message.info('Đã hủy phiên trả và đưa đơn về trạng thái Đang chăm sóc để hẹn lại.');
       setReturnModalOpen(false);
-      loadData(activeTab);
+      loadData();
     } catch (err: any) {
       const msg = err?.response?.data?.message || err?.message || 'Không thể hủy phiên trả.';
       message.error(Array.isArray(msg) ? msg.join(', ') : msg);
@@ -970,45 +1064,68 @@ function OrdersPageContent() {
             </div>
           </div>
 
-          {/* Filter Tabs */}
-          <div className="mb-6 bg-white p-2 rounded-2xl border border-[#ECE7FA] shadow-xs inline-block">
-            <Segmented
-              value={activeTab}
-              onChange={(val) => setActiveTab(val as string)}
-              options={[
-                { label: 'Tất cả đơn', value: 'ALL' },
-                { label: 'Chờ duyệt đặt lịch', value: 'PENDING_PROVIDER' },
-                { label: 'Chờ ký hợp đồng', value: 'AGREEMENT_PENDING' },
-                { label: 'Đã thanh toán', value: 'PAID' },
-                { label: 'Đang bàn giao cây', value: 'HANDOVER_IN_PROGRESS' },
-                { label: 'Chờ khách xác nhận', value: 'HANDOVER_AWAITING_CONFIRM' },
-                { label: 'Đang chăm sóc', value: 'IN_CARE' },
-                { label: 'Hoàn thành', value: 'COMPLETED' },
-              ]}
-              className="!bg-[#F6F4FC] font-semibold text-xs text-[#1E1B2E]"
+          {/* Tìm kiếm + lọc nhanh theo trạng thái + sắp xếp */}
+          <div className="mb-3">
+            <ListToolbar
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              placeholder="Tìm mã đơn, tên khách hoặc tên gói…"
+              chips={ORDER_TABS.map((tab) => ({ ...tab, count: tabCounts[tab.value] ?? 0 }))}
+              activeChip={activeTab}
+              onChipChange={setActiveTab}
+              extra={
+                <Select
+                  size="large"
+                  value={sortBy}
+                  onChange={setSortBy}
+                  aria-label="Sắp xếp đơn"
+                  className="w-48"
+                  options={[
+                    { value: 'newest', label: 'Mới nhất trước' },
+                    { value: 'pickupSoon', label: 'Giờ hẹn gần nhất' },
+                    { value: 'oldest', label: 'Cũ nhất trước' },
+                  ]}
+                />
+              }
             />
           </div>
+          {!loading && !ordersLoading && totalFiltered > 0 && (
+            <p className="mb-4 text-xs text-[#6E6A8A]">
+              {searchQuery || activeTab !== 'ALL' ? (
+                <>
+                  <b className="text-[#1E1B2E] tabular-nums">{totalFiltered}</b> kết quả
+                </>
+              ) : (
+                <>
+                  Tổng <b className="text-[#1E1B2E] tabular-nums">{totalFiltered}</b> đơn
+                </>
+              )}
+            </p>
+          )}
 
-          {loading ? (
+          {loading || (ordersLoading && orders.length === 0) ? (
             <div className="py-20 text-center">
               <Spin size="large" />
               <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải danh sách đơn hàng...</p>
             </div>
-          ) : orders.length === 0 ? (
+          ) : grandTotal === 0 && !debouncedQuery && activeTab === 'ALL' ? (
             <div className="bg-white rounded-2xl p-12 text-center border border-[#ECE7FA] flex flex-col items-center justify-center">
               <div className="w-20 h-20 rounded-full bg-[#F3E8FF] text-[#6027D2] flex items-center justify-center text-4xl mb-4">
                 <ContainerOutlined />
               </div>
               <h3 className="font-bold text-[#1E1B2E] text-base">Không có đơn hàng nào</h3>
               <p className="text-xs text-[#6E6A8A] mt-1">
-                {activeTab === 'PENDING_PROVIDER'
-                  ? 'Hiện tại nhà vườn không có yêu cầu đặt lịch chờ duyệt nào.'
-                  : 'Chưa có đơn hàng nào trong trạng thái này.'}
+                Khi khách đặt lịch chăm sóc tại nhà vườn, đơn sẽ hiện ở đây.
               </p>
             </div>
+          ) : totalFiltered === 0 && !ordersLoading ? (
+            <NoResults
+              label={searchQuery || ORDER_TABS.find((t) => t.value === activeTab)?.label || activeTab}
+              onReset={resetFilters}
+            />
           ) : (
-            <div className="space-y-4">
-              {orders.map((order) => {
+            <div className={`flex flex-col gap-4 transition-opacity ${ordersLoading ? 'opacity-60' : ''}`}>
+              {pagedOrders.map((order) => {
                 const firstPlantPhoto =
                   (order as any).plants?.[0]?.initialPhotos?.[0]?.photoUrl ||
                   (order as any).plants?.[0]?.photos?.[0]?.photoUrl ||
@@ -1046,7 +1163,7 @@ function OrdersPageContent() {
                             <h3 className="font-bold text-base text-[#1E1B2E] flex items-center gap-1.5">
                               <span>Mã đơn:</span>
                               <span className="text-[#6027D2] font-extrabold tracking-tight">
-                                {order.orderCode}
+                                <Highlight text={order.orderCode} query={searchQuery} />
                               </span>
                             </h3>
                             <button
@@ -1085,7 +1202,10 @@ function OrdersPageContent() {
                                 Khách hàng
                               </span>
                               <span className="block text-xs font-bold text-[#1E1B2E] truncate mt-0.5">
-                                {order.customer?.account?.fullName || 'Khách hàng ẩn danh'}
+                                <Highlight
+                                  text={order.customer?.account?.fullName || 'Khách hàng ẩn danh'}
+                                  query={searchQuery}
+                                />
                               </span>
                             </div>
                           </div>
@@ -1097,7 +1217,10 @@ function OrdersPageContent() {
                                 Gói dịch vụ
                               </span>
                               <span className="block text-xs font-bold text-[#6027D2] truncate mt-0.5">
-                                {order.servicePackage?.name || 'Gói chăm sóc lan tiêu chuẩn'}
+                                <Highlight
+                                  text={order.servicePackage?.name || 'Gói chăm sóc lan tiêu chuẩn'}
+                                  query={searchQuery}
+                                />
                               </span>
                             </div>
                           </div>
@@ -1116,6 +1239,9 @@ function OrdersPageContent() {
                             </div>
                           </div>
                         </div>
+
+                        {/* Hạn chót của bước hiện tại (trả lời đơn / ký HĐ / thanh toán / tới lấy cây) */}
+                        <OrderDeadline order={order} className="mt-3" />
 
                         {/* Bottom Row: Action Buttons */}
                         <div className="mt-4 pt-3 border-t border-[#F3EFFA] flex items-center gap-2 flex-wrap">
@@ -1194,8 +1320,35 @@ function OrdersPageContent() {
                             </Button>
                           )}
 
+                          {/* Huỷ đơn trước khi bắt đầu nhận cây (chờ ký HĐ / chờ thanh toán / đã thanh toán). */}
+                          {PROVIDER_CANCELLABLE_STATUSES.includes(order.status) && (
+                            <Button
+                              danger
+                              type="text"
+                              icon={<StopOutlined />}
+                              onClick={() =>
+                                setCancelOrderTarget({ id: order.id, orderCode: order.orderCode, status: order.status })
+                              }
+                              className="!h-9 !px-3 !rounded-xl !font-semibold text-xs"
+                            >
+                              Huỷ đơn
+                            </Button>
+                          )}
+
+                          {/* Huỷ ở chặng nhận cây — hộp thoại tự tải chi tiết đơn để biết đúng bước của phiên nhận cây. */}
+                          {HANDOVER_CANCEL_ORDER_STATUSES.includes(order.status) && (
+                            <Button
+                              danger
+                              icon={<StopOutlined />}
+                              onClick={() => setCancelHandoverOrderId(order.id)}
+                              className="!h-9 !px-4 !rounded-xl !font-semibold text-xs sm:ml-auto"
+                            >
+                              Không nhận được cây
+                            </Button>
+                          )}
+
                           {order.status === 'HANDOVER_AWAITING_CONFIRM' && (
-                            <Tag color="volcano" className="!h-9 !px-3 !rounded-xl flex items-center font-semibold text-xs sm:ml-auto">
+                            <Tag color="volcano" className="!h-9 !px-3 !rounded-xl flex items-center font-semibold text-xs">
                               Chờ khách xác nhận bàn giao
                             </Tag>
                           )}
@@ -1281,9 +1434,36 @@ function OrdersPageContent() {
                   </div>
                 );
               })}
+              {totalFiltered > ORDERS_PAGE_SIZE && (
+                <div className="flex justify-end pt-2">
+                  <Pagination
+                    current={currentPage}
+                    pageSize={ORDERS_PAGE_SIZE}
+                    total={totalFiltered}
+                    onChange={(page) => {
+                      setCurrentPage(page);
+                      document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    showSizeChanger={false}
+                    showTotal={(total, [from, to]) => `${from}–${to} / ${total} đơn`}
+                  />
+                </div>
+              )}
             </div>
           )}
         </main>
+
+        <OrderCancelModal
+          order={cancelOrderTarget}
+          onClose={() => setCancelOrderTarget(null)}
+          onCancelled={() => loadData()}
+        />
+
+        <HandoverCancelModal
+          orderId={cancelHandoverOrderId}
+          onClose={() => setCancelHandoverOrderId(null)}
+          onCancelled={() => loadData()}
+        />
       </div>
 
       {/* Handover Assessment Modal */}
@@ -1314,7 +1494,8 @@ function OrdersPageContent() {
                 type="primary"
                 onClick={handleCompleteHandover}
                 loading={completingHandover}
-                className="!rounded-xl !bg-[#2563EB] hover:!bg-[#1D4ED8] !font-bold"
+                disabled={!handoverOrder || !handoverOrder.plants?.length}
+                className="!rounded-xl !bg-[#2563EB] hover:!bg-[#1D4ED8] !font-bold disabled:!opacity-50"
               >
                 Hoàn tất thẩm định & Chốt bàn giao
               </Button>
@@ -1327,7 +1508,31 @@ function OrdersPageContent() {
             <Spin size="large" />
             <p className="mt-3 text-sm text-[#6E6A8A]">Đang tải danh sách cây cần bàn giao...</p>
           </div>
-        ) : handoverOrder ? (
+        ) : !handoverOrder ? (
+          <div className="py-12 text-center space-y-4">
+            <Empty
+              description={
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-[#1E1B2E]">
+                    {handoverError || 'Không thể tải chi tiết chậu cây của đơn hàng.'}
+                  </p>
+                  <p className="text-xs text-[#6E6A8A]">
+                    Vui lòng kiểm tra lại kết nối mạng hoặc thử tải lại.
+                  </p>
+                </div>
+              }
+            />
+            {handoverTargetOrderId && (
+              <Button
+                type="primary"
+                onClick={() => handleOpenHandoverModal(handoverTargetOrderId)}
+                className="!rounded-xl !bg-[#2563EB]"
+              >
+                Thử tải lại
+              </Button>
+            )}
+          </div>
+        ) : (
           <div className="space-y-5 max-h-[72vh] overflow-y-auto pr-1">
             {/* Guide Banner */}
             <div className="bg-[#EFF6FF] border border-[#BFDBFE] rounded-2xl p-4">
@@ -1519,8 +1724,24 @@ function OrdersPageContent() {
               })}
             </div>
           </div>
-        ) : null}
+        )}
       </Modal>
+
+      {/* Trả lại add-on đã thanh toán */}
+      <RefundAddonModal
+        orderId={addonOrder?.id ?? null}
+        addon={refundAddon}
+        onClose={() => setRefundAddon(null)}
+        onRefunded={async () => {
+          setRefundAddon(null);
+          if (!addonOrder) return;
+          try {
+            setAddons(await providerApi.listAddons(addonOrder.id));
+          } catch {
+            /* danh sách cũ vẫn hiện; mở lại hộp thoại sẽ đúng */
+          }
+        }}
+      />
 
       {/* Contract Detail Modal */}
       <Modal
@@ -1620,10 +1841,9 @@ function OrdersPageContent() {
               customerParty.address && customerParty.address !== 'Chưa cung cấp'
                 ? customerParty.address
                 : 'Chưa cập nhật địa chỉ';
-            const customerIdentity =
-              customerParty.identityNumber && customerParty.identityNumber !== 'Chưa cung cấp'
-                ? customerParty.identityNumber
-                : 'Chưa cung cấp';
+            // BE (snapshot v3) không còn số CCCD — chỉ Họ tên, Ngày sinh, Quê quán, Địa chỉ, SĐT.
+            const customerDob = customerParty.dateOfBirth || 'Chưa cung cấp';
+            const customerOrigin = customerParty.placeOfOrigin || 'Chưa cung cấp';
 
             const providerName =
               providerParty.fullName && providerParty.fullName !== 'Chưa cung cấp'
@@ -1637,10 +1857,9 @@ function OrdersPageContent() {
               providerParty.address && providerParty.address !== 'Chưa cung cấp'
                 ? providerParty.address
                 : 'Chưa cập nhật địa chỉ';
-            const providerIdentity =
-              providerParty.identityNumber && providerParty.identityNumber !== 'Chưa cung cấp'
-                ? providerParty.identityNumber
-                : 'Chưa cung cấp';
+            // BE (snapshot v3) không còn số CCCD — chỉ Họ tên, Ngày sinh, Quê quán, Địa chỉ, SĐT.
+            const providerDob = providerParty.dateOfBirth || 'Chưa cung cấp';
+            const providerOrigin = providerParty.placeOfOrigin || 'Chưa cung cấp';
 
             const agreementNumber =
               contractData.agreementNo ||
@@ -1696,8 +1915,8 @@ function OrdersPageContent() {
             const defaultClauses = [
               'Điều 1 – Phạm vi dịch vụ: Bên B (Nhà vườn) cam kết thực hiện dịch vụ chăm sóc hoa lan theo đúng quy trình gói dịch vụ đã chọn, bao gồm tưới nước, bón phân, điều chỉnh ánh sáng, phòng trừ sâu bệnh và các kỹ thuật chuyên sâu theo từng dòng lan.',
               'Điều 2 – Xác nhận tiếp nhận cây tại địa điểm bàn giao: Bên B (Nhà vườn) xác nhận tiếp nhận cây từ Bên A (Khách hàng) theo đúng hình ảnh chụp ban đầu và kết quả khảo sát qua video call, bao gồm số lượng, loài lan và tình trạng thực tế tại thời điểm bàn giao.',
-              'Điều 3 – Trách nhiệm trong quá trình vận chuyển: Nếu xảy ra tình trạng cây bị thất lạc hoặc hư hỏng dẫn đến hậu quả nghiêm trọng trong quá trình vận chuyển giao nhận, Bên B cam kết bồi thường 120% giá trị định giá của cây.',
-              'Điều 4 – Trách nhiệm trong quá trình chăm sóc: Trong suốt thời gian chăm sóc tại nhà vườn, nếu cây bị suy yếu nặng, chết hoặc thất lạc do lỗi chăm sóc kỹ thuật, Bên B chịu trách nhiệm bồi thường cho Bên A mức bằng 120% giá trị khai báo của cây đã thống nhất.',
+              'Điều 3 – Trách nhiệm trong quá trình vận chuyển: Nếu xảy ra tình trạng cây bị thất lạc hoặc hư hỏng dẫn đến hậu quả nghiêm trọng trong quá trình vận chuyển giao nhận, Bên B cam kết bồi thường tối đa 100% giá trị khai báo của cây (cây không khai giá: tối đa 2 lần giá gói).',
+              'Điều 4 – Trách nhiệm trong quá trình chăm sóc: Trong suốt thời gian chăm sóc tại nhà vườn, nếu cây bị suy yếu nặng, chết hoặc thất lạc do lỗi chăm sóc kỹ thuật, Bên B chịu trách nhiệm bồi thường cho Bên A mức tối đa bằng 100% giá trị khai báo của cây đã thống nhất (cây không khai giá: tối đa 2 lần giá gói).',
               'Điều 5 – Cam kết của Bên A: Bên A cam kết thông tin về cây, chủng loại, số lượng, giá trị khai báo và ảnh chụp ban đầu là hoàn toàn trung thực, chính xác.',
               'Điều 6 – Quyền từ chối nhận cây: Nếu tình trạng thực tế cây khác biệt đáng kể so với ảnh ban đầu hoặc nội dung đã trao đổi qua video call, Bên B có quyền từ chối nhận cây và hủy đơn theo quy trình.',
               'Điều 7 – Báo cáo định kỳ: Bên B có nghĩa vụ gửi báo cáo tình trạng cây định kỳ đúng tần suất thỏa thuận kèm hình ảnh minh chứng cụ thể qua Hệ thống LanCare Hub.',
@@ -1712,20 +1931,20 @@ function OrdersPageContent() {
               <div className="bg-white p-6 sm:p-8 rounded-2xl border border-gray-200 text-[#1E1B2E] space-y-6">
                 {/* Header Quốc hiệu & Tiêu ngữ */}
                 <div className="text-center pb-6 border-b-2 border-double border-[#6027D2]/30">
-                  <h4 className="text-xs font-bold tracking-widest text-[#6027D2] uppercase">
+                  <h4 className="text-xs font-bold tracking-widest text-[#1E1B2E] uppercase">
                     CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM
                   </h4>
-                  <p className="text-xs font-semibold text-gray-700 mt-1">
+                  <p className="text-xs font-semibold text-[#1E1B2E] mt-1">
                     Độc lập – Tự do – Hạnh phúc
                   </p>
                   <div className="w-24 h-0.5 bg-[#6027D2]/40 mx-auto my-2.5" />
                   <h2 className="text-xl font-extrabold text-[#1E1B2E] uppercase mt-3 tracking-wide">
                     HỢP ĐỒNG DỊCH VỤ CHĂM SÓC HOA LAN ĐIỆN TỬ
                   </h2>
-                  <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-gray-500 mt-2 font-medium">
-                    <span>Số HĐ: <strong className="text-[#6027D2] font-mono">{agreementNumber}</strong></span>
+                  <div className="flex flex-wrap items-center justify-center gap-3 text-xs text-[#1E1B2E] mt-2 font-medium">
+                    <span>Số HĐ: <strong className="font-mono">{agreementNumber}</strong></span>
                     <span>•</span>
-                    <span>Mã đơn: <strong className="text-gray-800 font-mono">{orderCode}</strong></span>
+                    <span>Mã đơn: <strong className="font-mono">{orderCode}</strong></span>
                     <span>•</span>
                     <span>Ngày lập: <strong>{new Date(agreementDate).toLocaleDateString('vi-VN')}</strong></span>
                   </div>
@@ -1756,7 +1975,8 @@ function OrdersPageContent() {
                       <div className="space-y-1 text-xs text-[#4B4764] mt-1.5">
                         <p><span className="text-gray-400">Số điện thoại:</span> {customerPhone}</p>
                         <p><span className="text-gray-400">Địa chỉ:</span> {customerAddress}</p>
-                        <p><span className="text-gray-400">Số CCCD/Định danh:</span> {customerIdentity}</p>
+                        <p><span className="text-gray-400">Ngày sinh:</span> {customerDob}</p>
+                        <p><span className="text-gray-400">Quê quán:</span> {customerOrigin}</p>
                       </div>
                     </div>
 
@@ -1769,7 +1989,8 @@ function OrdersPageContent() {
                       <div className="space-y-1 text-xs text-[#4B4764] mt-1.5">
                         <p><span className="text-gray-400">Số điện thoại:</span> {providerPhone}</p>
                         <p><span className="text-gray-400">Địa chỉ vườn:</span> {providerAddress}</p>
-                        <p><span className="text-gray-400">Số CCCD/Định danh:</span> {providerIdentity}</p>
+                        <p><span className="text-gray-400">Ngày sinh:</span> {providerDob}</p>
+                        <p><span className="text-gray-400">Quê quán:</span> {providerOrigin}</p>
                       </div>
                     </div>
                   </div>
@@ -1828,15 +2049,16 @@ function OrdersPageContent() {
                           <th className="py-2.5 px-3">Tên chậu lan</th>
                           <th className="py-2.5 px-3">Giống / Loài</th>
                           <th className="py-2.5 px-3 text-right">Giá trị khai báo</th>
-                          <th className="py-2.5 px-3 text-right text-yellow-200">Cam kết đền bù (120%)</th>
+                          <th className="py-2.5 px-3 text-right text-yellow-200">Mức đền tối đa (100%)</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-[#ECE7FA]">
                         {contractData.plants?.map((p: any, idx: number) => {
                           const declared = p.declaredValue ? Number(p.declaredValue) : 0;
-                          const comp = p.compensationAmount
-                            ? Number(p.compensationAmount)
-                            : (declared > 0 ? declared * 1.2 : 0);
+                          // Mức đền theo luật đền thật của BE (orders/compensation-cap.ts): 100% giá khai; không khai = 2 × giá gói.
+                          const comp = p.isValueDeclared && declared > 0
+                            ? declared
+                            : 2 * Number(pricing.basePricePerPlant || 0);
 
                           return (
                             <tr key={idx} className="hover:bg-[#F8F6FC] transition-colors">
@@ -1910,14 +2132,14 @@ function OrdersPageContent() {
                   </div>
                 </div>
 
-                {/* V. CHÍNH SÁCH BỒI THƯỜNG 120% */}
+                {/* V. CHÍNH SÁCH BỒI THƯỜNG 100% */}
                 <div>
                   <h4 className="text-xs font-extrabold uppercase tracking-wider text-[#6027D2] mb-3 flex items-center gap-1.5">
-                    <SafetyCertificateFilled /> V. CHÍNH SÁCH BỒI THƯỜNG THIỆT HẠI (CAM KẾT 120%)
+                    <SafetyCertificateFilled /> V. CHÍNH SÁCH BỒI THƯỜNG THIỆT HẠI (TỐI ĐA 100%)
                   </h4>
                   <div className="p-4 bg-[#FAF8FE] border border-[#ECE7FA] rounded-xl space-y-3">
                     <p className="text-xs text-[#1E1B2E] font-semibold">
-                      Mức bồi thường: <span className="text-[#6027D2]">120% giá trị định giá của cây</span> đã được hai bên thống nhất tại thời điểm ký hợp đồng.
+                      Mức bồi thường: <span className="text-[#6027D2]">tối đa 100% giá trị khai báo của cây</span> (cây không khai giá: tối đa 2 lần giá gói), đã được hai bên thống nhất tại thời điểm ký hợp đồng.
                     </p>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs text-[#4B4764]">
                       <div className="bg-white p-3 rounded-lg border border-[#ECE7FA]">
@@ -2090,7 +2312,7 @@ function OrdersPageContent() {
               • Nhà vườn xác nhận đã đọc, hiểu rõ và đồng thuận thực hiện đúng quy trình chăm sóc kỹ thuật, nộp báo cáo định kỳ đúng hạn.
             </p>
             <p className="text-[11.5px]">
-              • Cam kết chịu trách nhiệm bồi thường lên tới <strong>120% giá trị khai báo</strong> của cây nếu phát sinh hư hại do lỗi chăm sóc theo điều khoản hợp đồng.
+              • Cam kết chịu trách nhiệm bồi thường tối đa <strong>100% giá trị khai báo</strong> của cây (cây không khai giá: tối đa 2 lần giá gói) nếu phát sinh hư hại do lỗi chăm sóc theo điều khoản hợp đồng.
             </p>
             <p className="text-[11px] text-amber-700 italic pt-1">
               * Chữ ký điện tử này có hiệu lực pháp lý ràng buộc theo quy định của Luật Giao dịch điện tử số 20/2023/QH15.
@@ -2759,6 +2981,7 @@ function OrdersPageContent() {
                     DONE: { color: 'green', label: 'Đã hoàn thành' },
                     REJECTED: { color: 'red', label: 'Khách từ chối' },
                     EXPIRED: { color: 'default', label: 'Đã hết hạn' },
+                    REFUNDED: { color: 'blue', label: 'Đã trả lại khách' },
                   };
                   const st = statusMap[ad.status] || { color: 'default', label: ad.status };
 
@@ -2827,6 +3050,20 @@ function OrdersPageContent() {
                         </div>
                       )}
 
+                      {/* Vườn đã trả lại add-on: khách được hoàn giá + 6% */}
+                      {ad.status === 'REFUNDED' && (
+                        <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-xs text-blue-900 space-y-1">
+                          <p className="font-bold">
+                            Đã trả lại khách · hoàn {Number(ad.amountDue || 0).toLocaleString('vi-VN')} đ
+                          </p>
+                          {ad.refundReason && (
+                            <p>
+                              <strong>Lý do:</strong> {ad.refundReason}
+                            </p>
+                          )}
+                        </div>
+                      )}
+
                       {/* Done section if completed */}
                       {ad.status === 'DONE' && (
                         <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 space-y-1.5">
@@ -2877,7 +3114,17 @@ function OrdersPageContent() {
 
                       {/* Action for PAID status: Mark Complete */}
                       {ad.status === 'PAID' && (
-                        <div className="flex justify-end pt-1">
+                        <div className="flex justify-end gap-2 pt-1">
+                          {/* Trả lại chỉ được khi đơn còn đang chăm (BE chặn ở trạng thái khác). */}
+                          {addonOrder?.status === 'IN_CARE' && (
+                            <Button
+                              danger
+                              onClick={() => setRefundAddon(ad)}
+                              className="!h-8 !px-3.5 !rounded-xl !font-semibold text-xs"
+                            >
+                              Trả lại tiền
+                            </Button>
+                          )}
                           <Button
                             type="primary"
                             icon={<CheckCircleOutlined />}

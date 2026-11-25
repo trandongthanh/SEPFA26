@@ -7,10 +7,33 @@ export interface RegisterPayload {
   fullName: string;
   phone: string;
   role: UserRole;
+  otp?: string;
+  verificationToken?: string;
   providerType?: ProviderType;
   gpsLat?: number;
   gpsLng?: number;
   address?: string;
+}
+
+export interface SendRegisterOtpPayload {
+  email: string;
+  fullName: string;
+}
+
+export interface SendRegisterOtpResponse {
+  success: boolean;
+  expiresInSeconds: number;
+  cooldownSeconds: number;
+}
+
+export interface VerifyRegisterOtpPayload {
+  email: string;
+  otp: string;
+}
+
+export interface VerifyRegisterOtpResponse {
+  success: boolean;
+  verificationToken: string;
 }
 
 export interface RegisterResponse {

@@ -872,7 +872,10 @@ describe('Auth (e2e)', () => {
       const verified = await request(http)
         .post(`${API}/customers/admin/${row.id}/verify`)
         .set(asAdmin)
-        .send({ decision: 'REJECTED', note: 'Thiếu thông tin quê quán rõ ràng' })
+        .send({
+          decision: 'REJECTED',
+          note: 'Thiếu thông tin quê quán rõ ràng',
+        })
         .expect(201);
       expect(verified.body).toMatchObject({
         verificationStatus: 'REJECTED',
@@ -1035,7 +1038,9 @@ describe('Auth (e2e)', () => {
         const created = await putProvider(token, {
           providerType: 'NURSERY',
           displayName: 'Vườn Lan A',
+          bankName: 'Vietcombank',
           bankAccount: '0123456789',
+          bankHolder: 'VUON LAN A',
         }).expect(200);
         expect(created.body).toMatchObject({
           providerType: 'NURSERY',

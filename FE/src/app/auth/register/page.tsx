@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { Form, Input, Button, Checkbox, App } from 'antd';
+import { Form, Input, Button, Checkbox, App, Modal } from 'antd';
 import {
   UserOutlined,
   MailOutlined,
@@ -34,6 +34,21 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const { message } = App.useApp();
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+
+  // OTP Verification States
+  const [otpModalOpen, setOtpModalOpen] = useState(false);
+  const [otpValue, setOtpValue] = useState('');
+  const [otpLoading, setOtpLoading] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+  const [pendingValues, setPendingValues] = useState<RegisterFormValues | null>(null);
+
+  useEffect(() => {
+    let timer: any;
+    if (countdown > 0) {
+      timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+    }
+    return () => clearTimeout(timer);
+  }, [countdown]);
 
   // Agreement store
   const termsAgreed = useAgreementStore((state) => state.termsAgreed);
@@ -89,22 +104,15 @@ export default function RegisterPage() {
 
     try {
       setLoading(true);
-      await authApi.register({
+      const res = await authApi.sendRegisterOtp({
         fullName: values.fullName.trim(),
         email: values.email.trim(),
-        phone: values.phone.trim(),
-        password: values.password,
-        role: 'PROVIDER',
-        providerType: 'NURSERY',
-        gpsLat: 10.762622,
-        gpsLng: 106.660172,
       });
-
-      // Đăng ký thành công → xóa bản nháp và reset trạng thái đồng ý
-      resetAgreements();
-
-      message.success('Đăng ký tài khoản thành công! Vui lòng đăng nhập.');
-      router.push('/auth/login');
+      setPendingValues(values);
+      setOtpValue('');
+      setCountdown(res.cooldownSeconds || 60);
+      setOtpModalOpen(true);
+      message.success('Mã OTP xác thực đã được gửi tới email của bạn.');
     } catch (err: unknown) {
       const axiosErr = err as { response?: { data?: { message?: string | string[] }; status?: number } };
       const rawMsg = axiosErr.response?.data?.message;
@@ -112,18 +120,83 @@ export default function RegisterPage() {
 
       if (rawMsg === 'EMAIL_EXISTS') {
         errorMsg = 'Email này đã được sử dụng. Vui lòng chọn email khác hoặc đăng nhập.';
-      } else if (rawMsg === 'PHONE_EXISTS') {
-        errorMsg = 'Số điện thoại này đã được sử dụng. Vui lòng kiểm tra lại.';
+      } else if (rawMsg === 'OTP_COOLDOWN') {
+        errorMsg = 'Mã OTP vừa được gửi. Vui lòng kiểm tra email của bạn.';
       } else if (!errorMsg) {
-        errorMsg =
-          axiosErr.response?.status === 409
-            ? 'Email hoặc số điện thoại này đã được sử dụng.'
-            : 'Đăng ký không thành công, vui lòng thử lại sau.';
+        errorMsg = 'Không thể gửi mã xác nhận OTP, vui lòng thử lại sau.';
       }
 
       message.error(errorMsg);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (countdown > 0 || !pendingValues) return;
+    try {
+      setOtpLoading(true);
+      const res = await authApi.sendRegisterOtp({
+        fullName: pendingValues.fullName.trim(),
+        email: pendingValues.email.trim(),
+      });
+      setCountdown(res.cooldownSeconds || 60);
+      message.success('Đã gửi lại mã OTP mới tới email của bạn.');
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || 'Không thể gửi lại mã OTP lúc này.');
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  const handleVerifyOtpAndRegister = async () => {
+    if (!pendingValues) return;
+    if (!otpValue.trim() || otpValue.trim().length !== 6) {
+      message.warning('Vui lòng nhập đủ 6 chữ số mã OTP.');
+      return;
+    }
+
+    try {
+      setOtpLoading(true);
+      // 1. Xác thực OTP nhận verificationToken
+      const verifyRes = await authApi.verifyRegisterOtp({
+        email: pendingValues.email.trim(),
+        otp: otpValue.trim(),
+      });
+
+      // 2. Tạo tài khoản kèm verificationToken
+      await authApi.register({
+        fullName: pendingValues.fullName.trim(),
+        email: pendingValues.email.trim(),
+        phone: pendingValues.phone.trim(),
+        password: pendingValues.password,
+        role: 'PROVIDER',
+        providerType: 'NURSERY',
+        gpsLat: 10.762622,
+        gpsLng: 106.660172,
+        verificationToken: verifyRes.verificationToken,
+      });
+
+      resetAgreements();
+      setOtpModalOpen(false);
+      message.success('Đăng ký tài khoản và xác thực email thành công! Vui lòng đăng nhập.');
+      router.push('/auth/login');
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { message?: string | string[] }; status?: number } };
+      const rawMsg = axiosErr.response?.data?.message;
+      let errorMsg = Array.isArray(rawMsg) ? rawMsg.join(', ') : rawMsg;
+
+      if (rawMsg === 'OTP_INVALID') {
+        errorMsg = 'Mã OTP không chính xác. Vui lòng kiểm tra lại.';
+      } else if (rawMsg === 'OTP_EXPIRED') {
+        errorMsg = 'Mã OTP đã hết hạn. Vui lòng bấm gửi lại mã mới.';
+      } else if (rawMsg === 'OTP_MAX_ATTEMPTS') {
+        errorMsg = 'Bạn đã nhập sai mã OTP quá 5 lần. Vui lòng yêu cầu mã mới.';
+      }
+
+      message.error(errorMsg || 'Xác thực OTP thất bại.');
+    } finally {
+      setOtpLoading(false);
     }
   };
 
@@ -389,6 +462,83 @@ export default function RegisterPage() {
           </Form>
         </div>
       </div>
+
+      {/* Modal xác thực OTP Email */}
+      <Modal
+        open={otpModalOpen}
+        onCancel={() => !otpLoading && setOtpModalOpen(false)}
+        footer={null}
+        centered
+        width={420}
+        destroyOnClose
+        className="rounded-[20px] overflow-hidden"
+      >
+        <div className="py-2 px-1 text-center">
+          <div className="w-14 h-14 bg-[#F3E8FF] rounded-full flex items-center justify-center mx-auto mb-3 text-[#6027D2] text-2xl">
+            <MailOutlined />
+          </div>
+          <h3 className="text-xl font-bold text-[#1E1B2E] mb-1">
+            Xác thực địa chỉ Email
+          </h3>
+          <p className="text-[13px] text-[#6E6A8A] mb-5">
+            Mã OTP gồm 6 chữ số đã được gửi tới email:<br />
+            <span className="font-semibold text-[#1E1B2E]">{pendingValues?.email}</span>
+          </p>
+
+          <div className="mb-4">
+            <Input
+              value={otpValue}
+              onChange={(e) => setOtpValue(e.target.value.replace(/[^0-9]/g, ''))}
+              maxLength={6}
+              placeholder="000000"
+              className="text-center font-bold tracking-[8px] text-[24px] h-[52px] rounded-xl border-[#6027D2] bg-[#FAF8FF] focus:border-[#6027D2] focus:shadow-none"
+              autoFocus
+            />
+            <p className="text-[11px] text-[#9E9BAE] mt-2">
+              Vui lòng kiểm tra hộp thư đến (hoặc thư rác) để lấy mã xác thực.
+            </p>
+          </div>
+
+          <div className="mb-5 text-[13px] text-[#6E6A8A]">
+            {countdown > 0 ? (
+              <span>
+                Gửi lại mã sau <strong className="text-[#6027D2] font-semibold">{countdown}s</strong>
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={handleResendOtp}
+                disabled={otpLoading}
+                className="text-[#6027D2] font-semibold hover:underline cursor-pointer disabled:opacity-50"
+              >
+                Gửi lại mã OTP
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Button
+              type="primary"
+              size="large"
+              loading={otpLoading}
+              disabled={otpValue.length !== 6 || otpLoading}
+              onClick={handleVerifyOtpAndRegister}
+              className="w-full !h-[46px] !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !font-semibold text-[14px] !border-none"
+            >
+              Xác nhận & Hoàn tất
+            </Button>
+            <Button
+              type="text"
+              size="middle"
+              disabled={otpLoading}
+              onClick={() => setOtpModalOpen(false)}
+              className="w-full text-[#6E6A8A] hover:text-[#1E1B2E]"
+            >
+              Quay lại chỉnh sửa
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </main>
   );
 }

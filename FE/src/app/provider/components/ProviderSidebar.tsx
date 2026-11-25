@@ -10,11 +10,10 @@ import {
   HistoryOutlined,
   KeyOutlined,
   LogoutOutlined,
-  PlusOutlined,
   SettingOutlined,
   ShopOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Dropdown, message } from 'antd';
+import { Avatar, Dropdown, message } from 'antd';
 import { useAuthStore } from '@/lib/auth.store';
 import { authApi } from '@/lib/api';
 import { ProviderProfileResponse } from '@/lib/provider.api';
@@ -22,13 +21,9 @@ import ChangePasswordModal from '@/features/auth/components/ChangePasswordModal'
 
 interface ProviderSidebarProps {
   profile: ProviderProfileResponse | null;
-  onOpenCreatePackageModal?: () => void;
 }
 
-export default function ProviderSidebar({
-  profile,
-  onOpenCreatePackageModal,
-}: ProviderSidebarProps) {
+export default function ProviderSidebar({ profile }: ProviderSidebarProps) {
   const router = useRouter();
   const pathname = usePathname();
 
@@ -144,21 +139,6 @@ export default function ProviderSidebar({
 
       {/* Sidebar Bottom Actions */}
       <div className="space-y-3 pt-4 border-t border-[#ECE7FA] bg-white/80 backdrop-blur-xs -mx-4 -mb-4 p-4">
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => {
-            if (onOpenCreatePackageModal) {
-              onOpenCreatePackageModal();
-            } else {
-              router.push('/provider/packages?create=true');
-            }
-          }}
-          className="w-full !h-11 !rounded-xl !bg-[#6027D2] hover:!bg-[#4E1BA8] !font-semibold text-sm shadow-[0_4px_12px_rgba(96,39,210,0.25)]"
-        >
-          Đăng ký gói dịch vụ
-        </Button>
-
         {/* User Profile Card Dropdown */}
         <Dropdown
           menu={{

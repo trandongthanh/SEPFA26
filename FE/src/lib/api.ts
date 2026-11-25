@@ -18,6 +18,29 @@ export interface RegisterPayload {
   providerType?: 'NURSERY' | 'EXPERT';
   gpsLat?: number;
   gpsLng?: number;
+  otp?: string;
+  verificationToken?: string;
+}
+
+export interface SendRegisterOtpPayload {
+  email: string;
+  fullName: string;
+}
+
+export interface SendRegisterOtpResponse {
+  success: boolean;
+  expiresInSeconds: number;
+  cooldownSeconds: number;
+}
+
+export interface VerifyRegisterOtpPayload {
+  email: string;
+  otp: string;
+}
+
+export interface VerifyRegisterOtpResponse {
+  success: boolean;
+  verificationToken: string;
 }
 
 export interface AccountSummary {
@@ -126,17 +149,28 @@ const FE_ERROR_CODE_MAP: Record<string, string> = {
   CURRENT_PASSWORD_INCORRECT: 'Mật khẩu hiện tại không chính xác.',
   EMAIL_EXISTS: 'Email này đã được sử dụng bởi tài khoản khác.',
   PHONE_EXISTS: 'Số điện thoại này đã được sử dụng bởi tài khoản khác.',
-  CCCD_NUMBER_EXISTS: 'Số Căn cước công dân này đã được đăng ký bởi nhà vườn khác.',
   IDENTITY_LOCKED_AFTER_APPROVAL: 'Thông tin định danh đã được phê duyệt nên không thể chỉnh sửa.',
-  CUSTOMER_IDENTITY_DOCUMENTS_REQUIRED: 'Hồ sơ khách hàng chưa đủ số CCCD và 3 ảnh xác minh.',
-  PROVIDER_PROFILE_NOT_SUBMITTED: 'Hồ sơ nhà vườn chưa đủ điều kiện phê duyệt (Cần đủ: Số điện thoại, Số CCCD 12 chữ số, ảnh CCCD 2 mặt và ảnh chân dung).',
+  CUSTOMER_IDENTITY_DOCUMENTS_REQUIRED: 'Hồ sơ khách hàng chưa đủ thông tin: họ tên, số điện thoại, địa chỉ thường trú, ngày sinh, quê quán.',
+  PROVIDER_PROFILE_NOT_SUBMITTED: 'Hồ sơ nhà vườn chưa đủ điều kiện phê duyệt (cần đủ: họ tên, số điện thoại, địa chỉ thường trú, ngày sinh, quê quán).',
   PROVIDER_PROFILE_FIELDS_REQUIRED: 'Vui lòng nhập đầy đủ Loại hình đối tác và Tên nhà vườn hiển thị.',
-  PROVIDER_IDENTITY_INCOMPLETE: 'Vui lòng cập nhật đầy đủ Số điện thoại và Số CCCD (12 chữ số) tại mục Hồ sơ nhà vườn trước khi chấp nhận đơn và tạo hợp đồng!',
+  PROVIDER_IDENTITY_INCOMPLETE: 'Vui lòng cập nhật đầy đủ số điện thoại, địa chỉ thường trú, ngày sinh và quê quán tại mục Hồ sơ nhà vườn trước khi chấp nhận đơn và tạo hợp đồng!',
+  PROVIDER_BANK_INFO_REQUIRED: 'Nhà vườn chưa khai đủ tài khoản ngân hàng (ngân hàng, số tài khoản, chủ tài khoản) nên chưa thể duyệt hoặc nhận đơn.',
+  REFUND_BANK_ACCOUNT_REQUIRED: 'Vui lòng khai đủ tài khoản ngân hàng nhận tiền hoàn (ngân hàng, số tài khoản, chủ tài khoản).',
+  BANK_INFO_INCOMPLETE: 'Vui lòng nhập đủ cả ba thông tin: tên ngân hàng, số tài khoản và tên chủ tài khoản.',
+  BANK_INFO_CANNOT_BE_CLEARED: 'Không thể xoá tài khoản ngân hàng, chỉ có thể đổi sang tài khoản khác.',
+  DISBURSEMENT_BANK_INFO_MISSING: 'Khách chưa khai tài khoản ngân hàng nên chưa thể xác nhận đã chuyển. Đợi khách bổ sung trên app rồi thử lại.',
+  PROVIDER_BANK_INFO_MISSING: 'Nhà vườn chưa khai tài khoản ngân hàng nên chưa thể xác nhận đã chuyển. Nhắc nhà vườn bổ sung ở trang Hồ sơ rồi thử lại.',
   PROFILE_NOT_FOUND: 'Vui lòng hoàn thiện và lưu Hồ sơ nhà vườn trước khi thực hiện thao tác này.',
   PROFILE_NOT_APPROVED: 'Chỉ nhà vườn đã được Admin phê duyệt hồ sơ mới có thể thực hiện thao tác này.',
   GPS_PAIR_REQUIRED: 'Vui lòng nhập đầy đủ cả Vĩ độ (Latitude) và Kinh độ (Longitude).',
   DECLARED_VALUE_RANGE_INVALID: 'Giá trị khai báo tối thiểu phải nhỏ hơn hoặc bằng giá trị tối đa.',
-  UNASSESSED_PLANTS: 'Vui lòng thẩm định đầy đủ tất cả các chậu cây trước khi hoàn tất bàn giao.',
+  // Vườn huỷ ở chặng nhận cây (POST /orders/:id/handover/cancel)
+  CUSTOMER_ABSENT_TOO_EARLY: 'Chưa tới giờ được báo khách vắng nhà (giờ hẹn + 30 phút). Vui lòng chờ thêm rồi thử lại.',
+  ABSENCE_PHOTO_REQUIRED: 'Vui lòng chụp ít nhất 1 ảnh tại chỗ để báo khách vắng nhà.',
+  REASON_CODE_REQUIRED: 'Vui lòng chọn lý do huỷ.',
+  SECURITY_DEPOSIT_NOT_PENDING: 'Không còn gì để huỷ ở bước này: tiền bảo đảm vừa được nộp hoặc đơn đã được huỷ. Vui lòng tải lại trang.',
+  ESCROW_BALANCE_INSUFFICIENT: 'Sổ tiền của đơn đang lệch nên chưa huỷ được. Vui lòng liên hệ Ban quản trị LanCare.',
+  UNASSESSED_PLANTS:'Vui lòng thẩm định đầy đủ tất cả các chậu cây trước khi hoàn tất bàn giao.',
   ALL_PLANTS_REJECTED: 'Không thể hoàn tất bàn giao khi tất cả chậu cây đều bị từ chối.',
   FINAL_TOTAL_REQUIRED: 'Vui lòng nhập tổng chi phí điều chỉnh cuối cùng.',
   FINAL_TOTAL_EXCEEDS_CAP: 'Chi phí điều chỉnh vượt quá mức trần cho phép.',
@@ -144,6 +178,17 @@ const FE_ERROR_CODE_MAP: Record<string, string> = {
   SERVICE_ORDER_NOT_FOUND: 'Không tìm thấy thông tin đơn hàng.',
   ORDER_NOT_IN_CARE: 'Chỉ có thể gửi báo cáo cho đơn hàng đang trong giai đoạn chăm sóc.',
   CARE_NOT_DUE: 'Gói chăm sóc chưa đến hạn trả cây.',
+  // Add-on chặn bắt đầu trả cây / vườn trả lại add-on
+  ADDON_OPEN: 'Còn add-on khách đã thanh toán. Hãy báo hoàn tất hoặc trả lại tiền add-on đó trước khi trả cây.',
+  ADDON_AWAITING_PAYMENT: 'Còn add-on khách đã đồng ý và đang trong 24 giờ thanh toán. Chờ khách thanh toán hoặc hết hạn rồi mới trả cây.',
+  ADDON_INVALID_STATE: 'Add-on này không còn ở trạng thái thực hiện được thao tác này. Vui lòng tải lại trang.',
+  ADDON_NOT_FOUND: 'Không tìm thấy add-on này. Vui lòng tải lại trang.',
+  // Admin hoàn tiền chưa khớp (POST /admin/unmatched-transactions/:id/refund)
+  REFUND_BANK_INFO_REQUIRED: 'Chưa có tài khoản nhận tiền. Hãy nhập ngân hàng, số tài khoản và chủ tài khoản.',
+  RESOLUTION_NOTE_REQUIRED: 'Cần ghi chú bằng chứng khi hoàn khoản không gắn đơn hoặc khi đổi tài khoản nhận.',
+  TRANSACTION_ALREADY_RESOLVED: 'Khoản tiền này đã được hoàn trước đó.',
+  TRANSACTION_NOT_REFUNDABLE: 'Khoản tiền này đã được ghi vào đơn nên không hoàn ở đây.',
+  UNMATCHED_TRANSACTION_NOT_FOUND: 'Không tìm thấy khoản tiền chưa khớp này.',
   PLANT_NOT_IN_CARE: 'Chậu cây này không thuộc danh sách đang chăm sóc.',
   REPORT_PLANTS_MISMATCH: 'Danh sách cây trong báo cáo không khớp với các cây đang chăm sóc của đơn hàng.',
   PLANT_PHOTO_REQUIRED: 'Mỗi cây cần ảnh toàn cảnh (OVERVIEW); bộ phận đánh giá Kém hoặc có sâu bệnh cần thêm ảnh cận tương ứng.',
@@ -302,6 +347,22 @@ export const authApi = {
     const res = await api.post<RegisterResponse>('/api/v1/auth/register', {
       ...payload,
       role: payload.role ?? 'CUSTOMER',
+    });
+    return res.data;
+  },
+
+  sendRegisterOtp: async (payload: SendRegisterOtpPayload) => {
+    const res = await api.post<SendRegisterOtpResponse>('/api/v1/auth/register/send-otp', {
+      email: payload.email.trim().toLowerCase(),
+      fullName: payload.fullName.trim(),
+    });
+    return res.data;
+  },
+
+  verifyRegisterOtp: async (payload: VerifyRegisterOtpPayload) => {
+    const res = await api.post<VerifyRegisterOtpResponse>('/api/v1/auth/register/verify-otp', {
+      email: payload.email.trim().toLowerCase(),
+      otp: payload.otp.trim(),
     });
     return res.data;
   },

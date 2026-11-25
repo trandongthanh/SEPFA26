@@ -28,13 +28,20 @@ export interface ProviderListResponse {
   limit: number;
 }
 
+// Khớp entity ServicePackage của BE (GET /providers/:id/packages trả nguyên entity).
+// Cột tiền là bigint → BE trả CHUỖI số (vd "1200000"). BE không có field `price` —
+// đọc `price` từng làm giá hiện "NaN ₫".
 export interface ServicePackage {
   id: string;
   providerId: string;
   name: string;
-  description?: string;
-  price: number;
+  description?: string | null;
+  basePrice: string;
   durationDays?: number;
+  reportFrequencyDays?: number;
+  maxPlants?: number;
+  minDeclaredValue?: string | null;
+  maxDeclaredValue?: string | null;
   isActive: boolean;
   approvalStatus: string;
   imageUrl?: string;

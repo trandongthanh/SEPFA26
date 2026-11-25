@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   Text,
@@ -11,10 +11,11 @@ import {
   KeyboardAvoidingView,
   Platform,
   Image,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { registerUser } from '../services/authService';
+import { registerUser, sendRegisterOtp, verifyRegisterOtp } from '../services/authService';
 import { UserRole } from '../types/auth';
 import { GoogleSignInButton } from '../components/GoogleSignInButton';
 
@@ -32,6 +33,20 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) =>
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
+
+  // OTP Verification States
+  const [isOtpModalVisible, setIsOtpModalVisible] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpLoading, setOtpLoading] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+
+  useEffect(() => {
+    let timer: any;
+    if (countdown > 0) {
+      timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+    }
+    return () => clearTimeout(timer);
+  }, [countdown]);
 
   const validateForm = (): boolean => {
     if (!fullName.trim() || fullName.trim().length < 2) {
@@ -65,28 +80,76 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) =>
 
     setLoading(true);
     try {
-      await registerUser({
-        fullName,
-        email,
-        password,
-        phone,
-        role,
+      const res = await sendRegisterOtp({
+        email: email.trim().toLowerCase(),
+        fullName: fullName.trim(),
+      });
+      setCountdown(res.cooldownSeconds || 60);
+      setOtpCode('');
+      setIsOtpModalVisible(true);
+    } catch (err: any) {
+      Alert.alert('Không thể gửi mã xác thực', err.message || 'Có lỗi xảy ra, vui lòng thử lại.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (countdown > 0) return;
+    setOtpLoading(true);
+    try {
+      const res = await sendRegisterOtp({
+        email: email.trim().toLowerCase(),
+        fullName: fullName.trim(),
+      });
+      setCountdown(res.cooldownSeconds || 60);
+      Alert.alert('Đã gửi lại mã', 'Mã xác thực mới đã được gửi tới email của bạn.');
+    } catch (err: any) {
+      Alert.alert('Lỗi gửi lại mã', err.message || 'Vui lòng thử lại sau giây lát.');
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  const handleVerifyOtpAndRegister = async () => {
+    if (!otpCode.trim() || otpCode.trim().length !== 6) {
+      Alert.alert('Thông báo', 'Vui lòng nhập đủ 6 chữ số mã OTP.');
+      return;
+    }
+
+    setOtpLoading(true);
+    try {
+      // 1. Xác thực OTP để lấy verificationToken
+      const verifyRes = await verifyRegisterOtp({
+        email: email.trim().toLowerCase(),
+        otp: otpCode.trim(),
       });
 
+      // 2. Tạo tài khoản với verificationToken
+      await registerUser({
+        fullName: fullName.trim(),
+        email: email.trim().toLowerCase(),
+        password,
+        phone: phone.trim(),
+        role,
+        verificationToken: verifyRes.verificationToken,
+      });
+
+      setIsOtpModalVisible(false);
       Alert.alert(
         'Đăng ký thành công',
-        'Chúc mừng bạn đã tạo tài khoản khách hàng thành công!',
+        'Chúc mừng bạn đã tạo tài khoản và xác thực email thành công!',
         [
           {
-            text: 'Đăng nhập',
+            text: 'Đăng nhập ngay',
             onPress: () => navigation?.navigate('Login'),
           },
         ]
       );
     } catch (err: any) {
-      Alert.alert('Đăng ký thất bại', err.message || 'Có lỗi xảy ra, vui lòng thử lại.');
+      Alert.alert('Xác thực thất bại', err.message || 'Mã OTP không hợp lệ hoặc đã hết hạn.');
     } finally {
-      setLoading(false);
+      setOtpLoading(false);
     }
   };
 
@@ -357,6 +420,83 @@ export const RegisterScreen: React.FC<RegisterScreenProps> = ({ navigation }) =>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Modal xác thực OTP Email */}
+      <Modal
+        visible={isOtpModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => !otpLoading && setIsOtpModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}
+        >
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <View style={styles.modalIconCircle}>
+                <Ionicons name="mail-open-outline" size={28} color="#6025D2" />
+              </View>
+              <Text style={styles.modalTitle}>Xác thực địa chỉ Email</Text>
+              <Text style={styles.modalSubtitle}>
+                Mã xác thực gồm 6 chữ số đã được gửi tới hòm thư:{'\n'}
+                <Text style={{ fontWeight: '700', color: '#1A202C' }}>{email}</Text>
+              </Text>
+            </View>
+
+            <View style={styles.otpInputContainer}>
+              <TextInput
+                style={styles.otpInput}
+                placeholder="000000"
+                placeholderTextColor="#CBD5E1"
+                keyboardType="number-pad"
+                maxLength={6}
+                value={otpCode}
+                onChangeText={(val) => setOtpCode(val.replace(/[^0-9]/g, ''))}
+                autoFocus={true}
+              />
+              <Text style={styles.otpHintText}>
+                Vui lòng kiểm tra hộp thư đến (hoặc thư rác) để lấy mã.
+              </Text>
+            </View>
+
+            {/* Countdown / Resend button */}
+            <View style={styles.resendRow}>
+              {countdown > 0 ? (
+                <Text style={styles.countdownText}>
+                  Gửi lại mã sau <Text style={{ fontWeight: '700', color: '#6025D2' }}>{countdown}s</Text>
+                </Text>
+              ) : (
+                <TouchableOpacity onPress={handleResendOtp} disabled={otpLoading}>
+                  <Text style={styles.resendBtnText}>Gửi lại mã OTP</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Buttons */}
+            <TouchableOpacity
+              activeOpacity={0.88}
+              style={[styles.verifySubmitBtn, (otpLoading || otpCode.length !== 6) && styles.submitBtnDisabled]}
+              onPress={handleVerifyOtpAndRegister}
+              disabled={otpLoading || otpCode.length !== 6}
+            >
+              {otpLoading ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <Text style={styles.verifySubmitBtnText}>Xác nhận & Hoàn tất</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.cancelModalBtn}
+              onPress={() => !otpLoading && setIsOtpModalVisible(false)}
+              disabled={otpLoading}
+            >
+              <Text style={styles.cancelModalBtnText}>Quay lại chỉnh sửa</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -674,5 +814,117 @@ const styles = StyleSheet.create({
     transform: [{ rotate: '25deg' }],
     zIndex: 1,
     pointerEvents: 'none',
+  },
+
+  /* OTP Modal Styles */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  modalHeader: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalIconCircle: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#F3E8FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1A202C',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  otpInputContainer: {
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  otpInput: {
+    width: '100%',
+    height: 56,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1.5,
+    borderColor: '#6025D2',
+    borderRadius: 14,
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#1E1B2E',
+    textAlign: 'center',
+    letterSpacing: 8,
+  },
+  otpHintText: {
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  resendRow: {
+    marginBottom: 20,
+    alignItems: 'center',
+  },
+  countdownText: {
+    fontSize: 13,
+    color: '#64748B',
+  },
+  resendBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#6025D2',
+  },
+  verifySubmitBtn: {
+    width: '100%',
+    height: 50,
+    backgroundColor: '#6025D2',
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#6025D2',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  verifySubmitBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  cancelModalBtn: {
+    marginTop: 14,
+    paddingVertical: 8,
+  },
+  cancelModalBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#64748B',
   },
 });

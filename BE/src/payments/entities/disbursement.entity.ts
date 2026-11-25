@@ -12,6 +12,7 @@ import { BaseEntity } from '../../common/entities/base.entity';
 import { CustomerProfile } from '../../customers/entities/customer-profile.entity';
 import { ServiceOrder } from '../../orders/entities/service-order.entity';
 import { ProviderProfile } from '../../providers/entities/provider-profile.entity';
+import { PaymentTransaction } from './payment-transaction.entity';
 
 /**
  * Lệnh chi — tiền thật phải chuyển ra khỏi tài khoản nền tảng. Mỗi dòng có ĐÚNG MỘT người nhận:
@@ -23,17 +24,21 @@ import { ProviderProfile } from '../../providers/entities/provider-profile.entit
  * COMPENSATION (khách) / SECURITY_RETURN (vườn): hai dòng của sổ bảo đảm, khai sẵn kiểu, ghi từ
  * đợt tiền bảo đảm.
  * DECLARED_RETURN (khách, chi ngay) / DECLARED_FORFEIT (vườn, chờ 3 ngày): hai dòng của sổ bảo đảm khai giá.
+ * OVERPAY_RETURN (khách hoặc vườn, chi ngay): trả lại tiền chuyển dư (overpay.ts).
+ * UNMATCHED_REFUND (chi ngay): admin hoàn một khoản tiền chưa khớp (transactions PENDING) — có thể không gắn
+ * đơn, không gắn người nhận (admin nhập tài khoản đích); tiền này chưa từng vào sổ nên không có bút toán.
  * Tên ràng buộc cố định để DB synchronize và DB chạy SQL tay giống nhau.
  */
 @Entity({ name: 'disbursements' })
 @Check(
   'CHK_disbursements_type',
-  `"type" IN ('PAYOUT','REFUND','SECURITY_RETURN','COMPENSATION','DECLARED_RETURN','DECLARED_FORFEIT')`,
+  `"type" IN ('PAYOUT','REFUND','SECURITY_RETURN','COMPENSATION','DECLARED_RETURN','DECLARED_FORFEIT','OVERPAY_RETURN','UNMATCHED_REFUND')`,
 )
 // Đúng một trong hai có giá trị: lệnh chi không người nhận hoặc hai người nhận đều là lỗi.
+// Riêng UNMATCHED_REFUND: 0 hoặc 1 người nhận (người lạ / người nhà chuyển hộ) nhưng BẮT BUỘC có tài khoản đích.
 @Check(
   'CHK_disbursements_recipient',
-  `("customer_id" IS NULL) <> ("provider_id" IS NULL)`,
+  `("type" <> 'UNMATCHED_REFUND' AND ("customer_id" IS NULL) <> ("provider_id" IS NULL)) OR ("type" = 'UNMATCHED_REFUND' AND ("customer_id" IS NULL OR "provider_id" IS NULL) AND "bank_account" IS NOT NULL)`,
 )
 @Check('CHK_disbursements_status', `"status" IN ('PENDING','PAID')`)
 @Check('CHK_disbursements_amount', `"amount" > 0`)
@@ -48,12 +53,25 @@ export class Disbursement extends BaseEntity {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
-  @Column({ type: 'uuid', name: 'service_order_id' })
-  serviceOrderId!: string;
+  // Null chỉ với UNMATCHED_REFUND của tiền không khớp đơn nào.
+  @Column({ type: 'uuid', name: 'service_order_id', nullable: true })
+  serviceOrderId!: string | null;
 
-  @ManyToOne(() => ServiceOrder, { onDelete: 'RESTRICT' })
+  @ManyToOne(() => ServiceOrder, { onDelete: 'RESTRICT', nullable: true })
   @JoinColumn({ name: 'service_order_id' })
-  serviceOrder!: ServiceOrder;
+  serviceOrder!: ServiceOrder | null;
+
+  // UNMATCHED_REFUND: hoàn khoản tiền vào nào. UNIQUE → một khoản chỉ hoàn được một lần.
+  @Index('UQ_disbursements_source_transaction', { unique: true })
+  @Column({ type: 'uuid', name: 'source_transaction_id', nullable: true })
+  sourceTransactionId!: string | null;
+
+  @ManyToOne(() => PaymentTransaction, {
+    onDelete: 'RESTRICT',
+    nullable: true,
+  })
+  @JoinColumn({ name: 'source_transaction_id' })
+  sourceTransaction!: PaymentTransaction | null;
 
   @Column({ type: 'uuid', name: 'provider_id', nullable: true })
   providerId!: string | null;
@@ -76,7 +94,9 @@ export class Disbursement extends BaseEntity {
     | 'SECURITY_RETURN'
     | 'COMPENSATION'
     | 'DECLARED_RETURN'
-    | 'DECLARED_FORFEIT';
+    | 'DECLARED_FORFEIT'
+    | 'OVERPAY_RETURN'
+    | 'UNMATCHED_REFUND';
 
   @Column({ type: 'bigint' })
   amount!: string;
@@ -93,6 +113,9 @@ export class Disbursement extends BaseEntity {
 
   @Column({ type: 'varchar', length: 100, name: 'bank_holder', nullable: true })
   bankHolder!: string | null;
+
+  @Column({ type: 'varchar', length: 6, name: 'bank_bin', nullable: true })
+  bankBin!: string | null;
 
   @Column({ type: 'varchar', length: 20, default: 'PENDING' })
   status!: 'PENDING' | 'PAID';
@@ -117,4 +140,8 @@ export class Disbursement extends BaseEntity {
 
   @Column({ type: 'text', nullable: true })
   note!: string | null;
+
+  // Ảnh biên lai admin đính lúc bấm "Đã chuyển" (không bắt buộc) — người nhận xem lại được.
+  @Column({ type: 'varchar', length: 500, name: 'receipt_url', nullable: true })
+  receiptUrl!: string | null;
 }

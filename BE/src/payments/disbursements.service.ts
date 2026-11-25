@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
+import { pickBank } from '../common/bank-info';
 import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { formatVnd } from '../notifications/notification.constants';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -13,24 +14,6 @@ import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { MarkDisbursementPaidDto } from './dto/mark-disbursement-paid.dto';
 import { QueryDisbursementDto } from './dto/query-disbursement.dto';
 import { Disbursement } from './entities/disbursement.entity';
-
-export interface BankInfo {
-  bankName: string;
-  bankAccount: string;
-  bankHolder: string;
-}
-
-// Đủ cả 3 trường mới coi là có tài khoản nhận tiền (thiếu 1 trường thì admin không chuyển được).
-function pickBank(source: {
-  bankName: string | null;
-  bankAccount: string | null;
-  bankHolder: string | null;
-}): BankInfo | null {
-  const { bankName, bankAccount, bankHolder } = source;
-  return bankName && bankAccount && bankHolder
-    ? { bankName, bankAccount, bankHolder }
-    : null;
-}
 
 /**
  * Lệnh chi cho admin: xem danh sách và bấm "Đã chuyển" sau khi chuyển khoản tay.
@@ -113,15 +96,19 @@ export class DisbursementsService {
             throw new ConflictException('DISBURSEMENT_BANK_INFO_MISSING');
           }
           Object.assign(disbursement, bank);
-        } else {
+        } else if (disbursement.providerId) {
           const provider = await manager.findOne(ProviderProfile, {
-            where: { id: disbursement.providerId ?? undefined },
+            where: { id: disbursement.providerId },
           });
           const bank = provider ? pickBank(provider) : null;
           if (!bank) {
             throw new ConflictException('PROVIDER_BANK_INFO_MISSING');
           }
           Object.assign(disbursement, bank);
+        } else {
+          // Lệnh không gắn người nhận (UNMATCHED_REFUND, admin nhập TK đích) mà thiếu tài khoản — không đoán hộ.
+          // Trước đây nhánh này lấy vườn theo id undefined → có thể chụp nhầm tài khoản người khác.
+          throw new ConflictException('DISBURSEMENT_BANK_INFO_MISSING');
         }
       }
 
@@ -131,6 +118,8 @@ export class DisbursementsService {
       disbursement.transferCode = dto.transferCode;
       // Ghi chú toàn khoảng trắng (sau trim còn rỗng) coi như không ghi.
       disbursement.note = dto.note || null;
+      // Ảnh biên lai không bắt buộc; mã giao dịch vẫn là bằng chứng chính.
+      disbursement.receiptUrl = dto.receiptUrl || null;
       await manager.save(disbursement);
     });
 
@@ -145,17 +134,21 @@ export class DisbursementsService {
     const recipientAccountId =
       saved.customer?.accountId ?? saved.provider?.accountId;
     if (recipientAccountId) {
+      const orderCode = saved.serviceOrder?.orderCode ?? null;
+      const body = orderCode
+        ? `Quản trị viên đã chuyển khoản ${formatVnd(saved.amount)}đ cho đơn ${orderCode} (mã GD: ${saved.transferCode}).`
+        : `Quản trị viên đã chuyển khoản ${formatVnd(saved.amount)}đ (mã GD: ${saved.transferCode}).`;
       await this.notifications?.sendSafe({
         accountId: recipientAccountId,
         type: 'DISBURSEMENT_PAID',
         title: `Đã giải ngân ${formatVnd(saved.amount)}đ`,
-        body: `Quản trị viên đã chuyển khoản ${formatVnd(saved.amount)}đ cho đơn ${saved.serviceOrder.orderCode} (mã GD: ${saved.transferCode}).`,
+        body,
         refEntity: 'DISBURSEMENT',
         refId: saved.id,
         metadata: {
           disbursementId: saved.id,
           orderId: saved.serviceOrderId,
-          orderCode: saved.serviceOrder.orderCode,
+          orderCode,
           amount: saved.amount,
           transferCode: saved.transferCode,
         },
@@ -167,13 +160,21 @@ export class DisbursementsService {
   // Một hình dạng cho cả danh sách lẫn kết quả mark-paid.
   private toView(row: Disbursement, now: Date) {
     const toCustomer = row.customerId !== null;
+    const toProvider = row.providerId !== null;
     // Hồ sơ hiện tại của người nhận — gợi ý tài khoản khi lệnh chi chưa có bản chụp.
     const profile = toCustomer ? row.customer : row.provider;
     return {
       id: row.id,
+      // Null với UNMATCHED_REFUND của tiền không khớp đơn nào.
       orderId: row.serviceOrderId,
-      orderCode: row.serviceOrder.orderCode,
-      recipient: toCustomer ? ('CUSTOMER' as const) : ('PROVIDER' as const),
+      orderCode: row.serviceOrder?.orderCode ?? null,
+      // OTHER = không gắn khách/vườn (UNMATCHED_REFUND, admin nhập tài khoản đích).
+      recipient: toCustomer
+        ? ('CUSTOMER' as const)
+        : toProvider
+          ? ('PROVIDER' as const)
+          : ('OTHER' as const),
+      sourceTransactionId: row.sourceTransactionId,
       // Tên người nhận đúng bên: tên vườn hoặc họ tên tài khoản khách.
       recipientName: toCustomer
         ? (row.customer?.account?.fullName ?? null)
@@ -191,6 +192,7 @@ export class DisbursementsService {
       transferCode: row.transferCode,
       paidAt: row.paidAt,
       note: row.note,
+      receiptUrl: row.receiptUrl,
     };
   }
 }

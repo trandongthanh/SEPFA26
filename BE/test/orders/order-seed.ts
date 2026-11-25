@@ -8,6 +8,13 @@ import type { AuthTestApp } from '../auth-test-app';
 const API = '/api/v1';
 const PASSWORD = 'matkhau123';
 
+// Vườn được duyệt phải có sẵn tài khoản nhận tiền (luật 21/11) — thiếu thì ACCEPT bị 409.
+export const PROVIDER_BANK = {
+  bank_name: 'Techcombank',
+  bank_account: '1903555666',
+  bank_holder: 'VUON LAN',
+} as const;
+
 export interface OrderActor {
   accountId: string;
   profileId: string;
@@ -31,7 +38,7 @@ export interface DraftOrder {
 /**
  * Seed cho e2e luồng đơn: tài khoản qua API đăng ký/đăng nhập thật; hồ sơ, gói, đơn DRAFT
  * (kèm cây + ảnh ban đầu) bằng SQL — bỏ qua bước tạo đơn vì cần dịch vụ tính khoảng cách bên ngoài.
- * Vườn có sẵn SĐT + số CCCD (mã hoá thật) để ACCEPT tạo được hợp đồng.
+ * Vườn có sẵn SĐT + số CCCD (mã hoá thật) + tài khoản ngân hàng để ACCEPT tạo được hợp đồng.
  */
 export class OrderSeed {
   private seq = 0;
@@ -106,8 +113,10 @@ export class OrderSeed {
     );
     const [{ id }] = (await this.ctx.dataSource.query(
       `INSERT INTO provider_profiles
-         (account_id, provider_type, display_name, verification_status, address, date_of_birth, place_of_origin)
-       VALUES ($1, 'NURSERY', 'Vườn Lan', 'APPROVED', '12 Nguyễn Văn Bảo', '20/10/1985', 'TP. Bảo Lộc, Lâm Đồng') RETURNING id`,
+         (account_id, provider_type, display_name, verification_status, address, date_of_birth, place_of_origin,
+          bank_name, bank_account, bank_holder)
+       VALUES ($1, 'NURSERY', 'Vườn Lan', 'APPROVED', '12 Nguyễn Văn Bảo', '20/10/1985', 'TP. Bảo Lộc, Lâm Đồng',
+               '${PROVIDER_BANK.bank_name}', '${PROVIDER_BANK.bank_account}', '${PROVIDER_BANK.bank_holder}') RETURNING id`,
       [account.accountId],
     )) as { id: string }[];
     const [{ id: packageId }] = (await this.ctx.dataSource.query(

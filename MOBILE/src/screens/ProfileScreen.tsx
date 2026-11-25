@@ -3,7 +3,6 @@ import { useFocusEffect } from '@react-navigation/native';
 import {
   ActivityIndicator,
   Alert,
-  Image,
   Modal,
   ScrollView,
   RefreshControl,
@@ -15,16 +14,48 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
 import { LocationPickerModal } from '../components/LocationPickerModal';
 import { customerService } from '../services/customerService';
-import { uploadService } from '../services/uploadService';
-import { ekycService } from '../services/ekycService';
-import { CustomerProfileResponse, UpdateCustomerProfilePayload } from '../types/customer';
+import { CustomerProfileResponse, UpdateCustomerProfilePayload, VerificationStatus } from '../types/customer';
 import { storage } from '../utils/storage';
 import { GoogleSignin } from '../utils/googleAuth';
 import { socketService } from '../services/socketService';
 import { navigationRef } from '../navigation/navigationRef';
+
+// Nhãn trạng thái xác thực — khớp CUSTOMER_STATUS bên trang admin.
+const VERIFY_META: Record<
+  VerificationStatus,
+  { label: string; hint: string; icon: keyof typeof Ionicons.glyphMap; fg: string; bg: string }
+> = {
+  APPROVED: {
+    label: 'Đã xác thực',
+    hint: 'Đọc thẻ, kiểm tra người thật và so khớp khuôn mặt đều đạt.',
+    icon: 'checkmark-circle',
+    fg: '#16A34A',
+    bg: '#F0FDF4',
+  },
+  NOT_SUBMITTED: {
+    label: 'Chưa xác thực',
+    hint: 'Chưa xác thực thì chưa đặt được gói chăm sóc. Mất khoảng 1 phút.',
+    icon: 'alert-circle-outline',
+    fg: '#475569',
+    bg: '#F1F5F9',
+  },
+  REJECTED: {
+    label: 'eKYC không đạt',
+    hint: 'Lần eKYC trước chưa đạt. Chụp lại rõ nét để xác thực.',
+    icon: 'close-circle',
+    fg: '#E53E3E',
+    bg: '#FEF2F2',
+  },
+  PENDING: {
+    label: 'Tự khai, chưa eKYC',
+    hint: 'Hồ sơ tự khai trước đây. Làm eKYC để được xác thực.',
+    icon: 'time-outline',
+    fg: '#B45309',
+    bg: '#FFFBEB',
+  },
+};
 
 interface ProfileScreenProps {
   navigation: any;
@@ -36,20 +67,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const [userEmail, setUserEmail] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(true);
 
-  // Signed URLs cho ảnh CCCD bảo mật
-  const [signedThumbnails, setSignedThumbnails] = useState<{
-    front?: string;
-    back?: string;
-    selfie?: string;
-  }>({});
-  const [previewDocModalVisible, setPreviewDocModalVisible] = useState<boolean>(false);
-  const [previewDocTitle, setPreviewDocTitle] = useState<string>('');
-  const [previewDocUrl, setPreviewDocUrl] = useState<string | null>(null);
-  const [loadingDocPreview, setLoadingDocPreview] = useState<boolean>(false);
-
   // Edit Modal States
   const [isProfileModalVisible, setIsProfileModalVisible] = useState<boolean>(false);
-  const [isCccdModalVisible, setIsCccdModalVisible] = useState<boolean>(false);
   const [isGoongMapModalVisible, setIsGoongMapModalVisible] = useState<boolean>(false);
   const [saving, setSaving] = useState<boolean>(false);
 
@@ -63,12 +82,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   const [bankAccount, setBankAccount] = useState<string>('');
   const [bankHolder, setBankHolder] = useState<string>('');
 
-  // CCCD Verification Image URLs & Number
-  const [cccdNumber, setCccdNumber] = useState<string>('');
-  const [cccdFrontUrl, setCccdFrontUrl] = useState<string>('');
-  const [cccdBackUrl, setCccdBackUrl] = useState<string>('');
-  const [selfieWithIdUrl, setSelfieWithIdUrl] = useState<string>('');
-  const [uploadingType, setUploadingType] = useState<'front' | 'back' | 'selfie' | null>(null);
   const [sessionExpired, setSessionExpired] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
@@ -109,32 +122,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       setBankName(res.bankName || '');
       setBankAccount(res.bankAccount || '');
       setBankHolder(res.bankHolder || '');
-      setCccdNumber(res.cccdNumber || '');
-      setCccdFrontUrl(res.cccdFrontUrl || '');
-      setCccdBackUrl(res.cccdBackUrl || '');
-      setSelfieWithIdUrl(res.selfieWithIdUrl || '');
-
-      // Tải signed URL cho ảnh bảo mật nếu đã có ảnh CCCD / Selfie
-      if (res.cccdFrontUrl || res.cccdBackUrl || res.selfieWithIdUrl) {
-        try {
-          const [front, back, selfie] = await Promise.all([
-            res.cccdFrontUrl && !res.cccdFrontUrl.startsWith('http')
-              ? ekycService.getDocumentUrl('front').then((r) => r.url).catch(() => null)
-              : Promise.resolve(res.cccdFrontUrl?.startsWith('http') ? res.cccdFrontUrl : null),
-            res.cccdBackUrl && !res.cccdBackUrl.startsWith('http')
-              ? ekycService.getDocumentUrl('back').then((r) => r.url).catch(() => null)
-              : Promise.resolve(res.cccdBackUrl?.startsWith('http') ? res.cccdBackUrl : null),
-            res.selfieWithIdUrl && !res.selfieWithIdUrl.startsWith('http')
-              ? ekycService.getDocumentUrl('selfie').then((r) => r.url).catch(() => null)
-              : Promise.resolve(res.selfieWithIdUrl?.startsWith('http') ? res.selfieWithIdUrl : null),
-          ]);
-          setSignedThumbnails({
-            front: front || undefined,
-            back: back || undefined,
-            selfie: selfie || undefined,
-          });
-        } catch (_) {}
-      }
     } catch (err: any) {
       console.error('[ProfileScreen] loadProfile error:', err?.response?.status, err?.response?.data || err?.message || err);
       if (err?.response?.status === 401) {
@@ -161,52 +148,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
     }, [])
   );
 
-  const getDocUri = (field: 'front' | 'back' | 'selfie') => {
-    if (field === 'front') {
-      return signedThumbnails.front || (profile?.cccdFrontUrl?.startsWith('http') ? profile.cccdFrontUrl : undefined);
-    }
-    if (field === 'back') {
-      return signedThumbnails.back || (profile?.cccdBackUrl?.startsWith('http') ? profile.cccdBackUrl : undefined);
-    }
-    if (field === 'selfie') {
-      return signedThumbnails.selfie || (profile?.selfieWithIdUrl?.startsWith('http') ? profile.selfieWithIdUrl : undefined);
-    }
-    return undefined;
-  };
-
-  const handlePressThumbnail = async (field: 'front' | 'back' | 'selfie', title: string) => {
-    const existing = getDocUri(field);
-    if (existing) {
-      setPreviewDocTitle(title);
-      setPreviewDocUrl(existing);
-      setPreviewDocModalVisible(true);
-      return;
-    }
-    const hasField =
-      field === 'front'
-        ? profile?.cccdFrontUrl
-        : field === 'back'
-          ? profile?.cccdBackUrl
-          : profile?.selfieWithIdUrl;
-
-    if (hasField) {
-      setPreviewDocTitle(title);
-      setPreviewDocModalVisible(true);
-      setLoadingDocPreview(true);
-      try {
-        const res = await ekycService.getDocumentUrl(field);
-        setPreviewDocUrl(res.url);
-        setSignedThumbnails((prev) => ({ ...prev, [field]: res.url }));
-      } catch (_) {
-        setPreviewDocUrl(null);
-      } finally {
-        setLoadingDocPreview(false);
-      }
-      return;
-    }
-    handleOpenCccdModal();
-  };
-
   // Open Modal 1: Personal Info & Delivery Profile
   const handleOpenProfileModal = () => {
     if (profile) {
@@ -220,90 +161,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       setBankHolder(profile.bankHolder || '');
     }
     setIsProfileModalVisible(true);
-  };
-
-  // Open Modal 2: CCCD Documents Upload
-  const handleOpenCccdModal = () => {
-    if (profile) {
-      setCccdNumber(profile.cccdNumber || '');
-      setCccdFrontUrl(profile.cccdFrontUrl || '');
-      setCccdBackUrl(profile.cccdBackUrl || '');
-      setSelfieWithIdUrl(profile.selfieWithIdUrl || '');
-    }
-    setIsCccdModalVisible(true);
-  };
-
-  // Upload image handler via Camera or Library
-  const processImageResult = async (result: ImagePicker.ImagePickerResult, type: 'front' | 'back' | 'selfie') => {
-    if (!result.canceled && result.assets && result.assets.length > 0) {
-      const uri = result.assets[0].uri;
-      setUploadingType(type);
-      try {
-        const uploadedUrl = await uploadService.uploadDocumentImage(uri);
-        if (type === 'front') setCccdFrontUrl(uploadedUrl);
-        if (type === 'back') setCccdBackUrl(uploadedUrl);
-        if (type === 'selfie') setSelfieWithIdUrl(uploadedUrl);
-        Alert.alert('Tải ảnh thành công', 'Đã tải ảnh giấy tờ lên hệ thống!');
-      } catch (err: any) {
-        console.error('Upload document error:', err);
-        Alert.alert('Lỗi tải ảnh', err?.response?.data?.message || err?.message || 'Không thể tải ảnh lên.');
-      } finally {
-        setUploadingType(null);
-      }
-    }
-  };
-
-  // Pick or Capture CCCD / Selfie Document Image
-  const handlePickDocument = (type: 'front' | 'back' | 'selfie') => {
-    Alert.alert(
-      'Tải ảnh xác minh CCCD',
-      'Vui lòng chọn phương thức tải ảnh:',
-      [
-        {
-          text: '📷 Chụp ảnh bằng Camera',
-          onPress: async () => {
-            try {
-              const permission = await ImagePicker.requestCameraPermissionsAsync();
-              if (!permission.granted) {
-                Alert.alert('Cần quyền truy cập', 'Vui lòng cấp quyền máy ảnh để chụp ảnh CCCD.');
-                return;
-              }
-              const result = await ImagePicker.launchCameraAsync({
-                allowsEditing: true,
-                quality: 0.8,
-              });
-              await processImageResult(result, type);
-            } catch (err: any) {
-              Alert.alert('Lỗi camera', err?.message || 'Không thể mở máy ảnh.');
-            }
-          },
-        },
-        {
-          text: '🖼️ Chọn từ thư viện ảnh',
-          onPress: async () => {
-            try {
-              const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-              if (!permission.granted) {
-                Alert.alert('Cần quyền truy cập', 'Vui lòng cấp quyền thư viện ảnh để chọn ảnh CCCD.');
-                return;
-              }
-              const result = await ImagePicker.launchImageLibraryAsync({
-                mediaTypes: ['images'],
-                allowsEditing: true,
-                quality: 0.8,
-              });
-              await processImageResult(result, type);
-            } catch (err: any) {
-              Alert.alert('Lỗi thư viện ảnh', err?.message || 'Không thể mở thư viện ảnh.');
-            }
-          },
-        },
-        {
-          text: 'Hủy',
-          style: 'cancel',
-        },
-      ]
-    );
   };
 
   // Handle location selected from Goong Maps + Leaflet Modal
@@ -364,76 +221,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
     }
   };
 
-  // Save Modal 2: CCCD Images & Number
-  const handleSaveCccdDocs = async () => {
-    const isAlreadyApproved = profile?.verificationStatus === 'APPROVED';
-
-    // Nếu đã xác thực (eKYC) và chỉ đang bổ sung ảnh mặt sau còn thiếu
-    if (isAlreadyApproved) {
-      if (profile?.cccdBackUrl) {
-        Alert.alert('Đã xác thực', 'Hồ sơ định danh của bạn đã được xác thực đầy đủ.');
-        setIsCccdModalVisible(false);
-        return;
-      }
-      if (!cccdBackUrl || !cccdBackUrl.startsWith('http')) {
-        Alert.alert('Chưa có ảnh mặt sau', 'Vui lòng tải lên ảnh mặt sau thẻ CCCD trước khi lưu.');
-        return;
-      }
-      setSaving(true);
-      try {
-        const updatedProfile = await customerService.updateMyProfile({
-          cccdBackUrl: cccdBackUrl.trim(),
-        });
-        setProfile(updatedProfile);
-        setIsCccdModalVisible(false);
-        Alert.alert('Thành công', 'Đã bổ sung ảnh mặt sau CCCD thành công!');
-        loadProfile();
-      } catch (err: any) {
-        const msg = err?.response?.data?.message || err?.message || 'Có lỗi xảy ra khi lưu ảnh mặt sau CCCD.';
-        Alert.alert('Lỗi xác minh', Array.isArray(msg) ? msg.join('\n') : msg);
-      } finally {
-        setSaving(false);
-      }
-      return;
-    }
-
-    const trimmedNumber = cccdNumber.trim();
-    if (!trimmedNumber || !/^\d{12}$/.test(trimmedNumber)) {
-      Alert.alert('Số CCCD không hợp lệ', 'Vui lòng nhập đúng 12 chữ số Căn cước công dân!');
-      return;
-    }
-    if (!cccdFrontUrl || !cccdBackUrl || !selfieWithIdUrl) {
-      Alert.alert('Chưa đủ 3 ảnh', 'Vui lòng tải lên đầy đủ 3 ảnh (Mặt trước, Mặt sau và Ảnh chân dung) trước khi gửi xác minh!');
-      return;
-    }
-    setSaving(true);
-    try {
-      const payload: UpdateCustomerProfilePayload = {
-        cccdNumber: trimmedNumber,
-      };
-      if (cccdFrontUrl.trim().startsWith('http')) {
-        payload.cccdFrontUrl = cccdFrontUrl.trim();
-      }
-      if (cccdBackUrl.trim().startsWith('http')) {
-        payload.cccdBackUrl = cccdBackUrl.trim();
-      }
-      if (selfieWithIdUrl.trim().startsWith('http')) {
-        payload.selfieWithIdUrl = selfieWithIdUrl.trim();
-      }
-
-      const updatedProfile = await customerService.updateMyProfile(payload);
-      setProfile(updatedProfile);
-      setIsCccdModalVisible(false);
-      Alert.alert('Thành công', 'Đã gửi thông tin CCCD cho Admin duyệt!');
-      loadProfile();
-    } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.message || 'Có lỗi xảy ra khi gửi xác minh CCCD.';
-      Alert.alert('Lỗi xác minh', Array.isArray(msg) ? msg.join('\n') : msg);
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const handleLogout = async () => {
     Alert.alert('Đăng xuất', 'Bạn có chắc chắn muốn đăng xuất?', [
       { text: 'Hủy', style: 'cancel' },
@@ -487,8 +274,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   };
 
   const hasGpsPinned = Boolean(profile?.gpsLat && profile?.gpsLng);
-  const isVerified = profile?.verificationStatus === 'APPROVED';
-  const hasUploadedDocs = Boolean(profile?.cccdFrontUrl && profile?.cccdBackUrl && profile?.selfieWithIdUrl);
+  // Khách chưa làm gì: BE trả NOT_SUBMITTED → không còn hiện nhầm "Chờ duyệt".
+  const verificationStatus: VerificationStatus = profile?.verificationStatus || 'NOT_SUBMITTED';
+  const isVerified = verificationStatus === 'APPROVED';
+  const verifyMeta = VERIFY_META[verificationStatus] || VERIFY_META.NOT_SUBMITTED;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -559,49 +348,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               <Text style={styles.userName}>{userName}</Text>
               <Text style={styles.userEmail}>{userEmail}</Text>
             </View>
-            <View
-              style={[
-                styles.statusBadge,
-                isVerified
-                  ? styles.approvedBadge
-                  : profile?.verificationStatus === 'REJECTED'
-                    ? styles.rejectedBadge
-                    : styles.pendingBadge,
-              ]}
-            >
-              <Ionicons
-                name={
-                  isVerified
-                    ? 'checkmark-circle'
-                    : profile?.verificationStatus === 'REJECTED'
-                      ? 'close-circle'
-                      : 'time-outline'
-                }
-                size={14}
-                color={
-                  isVerified
-                    ? '#2E7D32'
-                    : profile?.verificationStatus === 'REJECTED'
-                      ? '#E53E3E'
-                      : '#D69E2E'
-                }
-              />
-              <Text
-                style={[
-                  styles.statusBadgeText,
-                  isVerified
-                    ? styles.approvedBadgeText
-                    : profile?.verificationStatus === 'REJECTED'
-                      ? styles.rejectedBadgeText
-                      : styles.pendingBadgeText,
-                ]}
-              >
-                {isVerified
-                  ? 'Đã xác thực'
-                  : profile?.verificationStatus === 'REJECTED'
-                    ? 'Bị từ chối'
-                    : 'Chờ duyệt'}
-              </Text>
+            <View style={[styles.statusBadge, { backgroundColor: verifyMeta.bg }]}>
+              <Ionicons name={verifyMeta.icon} size={14} color={verifyMeta.fg} />
+              <Text style={[styles.statusBadgeText, { color: verifyMeta.fg }]}>{verifyMeta.label}</Text>
             </View>
           </View>
 
@@ -702,10 +451,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               </View>
             </TouchableOpacity>
 
-            {/* Card 2: Xác thực danh tính */}
+            {/* Card 2: Xác thực danh tính (eKYC) */}
             <TouchableOpacity
               style={[styles.cardContainerHalf, { justifyContent: 'space-between' }]}
               activeOpacity={0.9}
+              disabled={isVerified}
               onPress={() => navigation.navigate('Ekyc')}
             >
               <View style={styles.cardHeaderRow}>
@@ -717,7 +467,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                     Xác thực danh tính
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={16} color="#A0AEC0" />
+                {!isVerified && <Ionicons name="chevron-forward" size={16} color="#A0AEC0" />}
               </View>
 
               <View style={styles.cccdInnerBox}>
@@ -726,188 +476,60 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                     <Ionicons name="scan" size={30} color="#7C3AED" />
                   </View>
                   <View style={styles.cccdCheckBadge}>
-                    <Ionicons
-                      name={
-                        isVerified
-                          ? 'checkmark-circle'
-                          : profile?.verificationStatus === 'REJECTED'
-                            ? 'close-circle'
-                            : 'time'
-                      }
-                      size={20}
-                      color={
-                        isVerified
-                          ? '#22C55E'
-                          : profile?.verificationStatus === 'REJECTED'
-                            ? '#EF4444'
-                            : '#F59E0B'
-                      }
-                    />
+                    <Ionicons name={verifyMeta.icon} size={20} color={verifyMeta.fg} />
                   </View>
                 </View>
 
-                <Text style={styles.cccdStatusTitle}>
-                  {isVerified
-                    ? 'Đã xác thực'
-                    : profile?.verificationStatus === 'REJECTED'
-                      ? 'Xác thực thất bại'
-                      : hasUploadedDocs
-                        ? 'Đang xử lý hồ sơ'
-                        : 'Chưa xác thực'}
-                </Text>
-
-                <Text style={styles.cccdStatusSubtitle}>
-                  {profile?.cccdNumber
-                    ? `Mã CCCD: ${profile.cccdNumber}`
-                    : isVerified
-                      ? 'Tài khoản đã được xác minh thành công'
-                      : profile?.verificationStatus === 'REJECTED'
-                        ? 'Bấm để chụp lại CCCD & chân dung'
-                        : 'Quét CCCD & khuôn mặt chỉ 1 phút'}
-                </Text>
+                <Text style={styles.cccdStatusTitle}>{verifyMeta.label}</Text>
+                <Text style={styles.cccdStatusSubtitle}>{verifyMeta.hint}</Text>
               </View>
 
-              <TouchableOpacity
-                style={[styles.softPurpleBtn, { backgroundColor: isVerified ? '#F0FDF4' : '#F5F3FF' }]}
-                onPress={() => navigation.navigate('Ekyc')}
-              >
-                <Ionicons
-                  name={isVerified ? 'shield-checkmark' : 'shield-checkmark-outline'}
-                  size={14}
-                  color={isVerified ? '#16A34A' : '#6027D2'}
-                />
-                <Text
-                  style={[
-                    styles.softPurpleBtnText,
-                    { color: isVerified ? '#16A34A' : '#6027D2' },
-                  ]}
+              {isVerified ? (
+                <View style={[styles.softPurpleBtn, { backgroundColor: '#F0FDF4' }]}>
+                  <Ionicons name="shield-checkmark" size={14} color="#16A34A" />
+                  <Text style={[styles.softPurpleBtnText, { color: '#16A34A' }]}>Đã xác thực bằng eKYC</Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.softPurpleBtn, { backgroundColor: '#F5F3FF' }]}
+                  onPress={() => navigation.navigate('Ekyc')}
                 >
-                  {isVerified ? 'Xem thông tin' : 'Xác thực ngay'}
-                </Text>
-              </TouchableOpacity>
+                  <Ionicons name="shield-checkmark-outline" size={14} color="#6027D2" />
+                  <Text style={[styles.softPurpleBtnText, { color: '#6027D2' }]}>
+                    {verificationStatus === 'REJECTED' ? 'Làm lại eKYC' : 'Xác thực bằng eKYC'}
+                  </Text>
+                </TouchableOpacity>
+              )}
             </TouchableOpacity>
           </View>
 
-          {/* Card 3: Hình ảnh CCCD */}
+          {/* Card 3: Thông tin định danh (chỉ xem — BE tự điền khi eKYC đạt, không lưu số/ảnh CCCD) */}
           <View style={styles.cardContainerFull}>
             <View style={styles.cardHeaderRow}>
               <View style={styles.cardHeaderLeft}>
                 <View style={styles.headerIconCircle}>
-                  <Ionicons name="image-outline" size={16} color="#6027D2" />
+                  <Ionicons name="document-text-outline" size={16} color="#6027D2" />
                 </View>
-                <Text style={styles.cardTitleText}>Hình ảnh CCCD</Text>
+                <Text style={styles.cardTitleText}>Thông tin định danh</Text>
               </View>
-
-              <View style={styles.docsStatusPill}>
-                <Ionicons
-                  name={hasUploadedDocs ? 'checkmark' : 'alert'}
-                  size={12}
-                  color={hasUploadedDocs ? '#6027D2' : '#D69E2E'}
-                />
-                <Text style={styles.docsStatusPillText}>
-                  {hasUploadedDocs ? 'Đã cập nhật' : 'Chưa đủ 3 ảnh'}
+            </View>
+            <View style={styles.dividerLine} />
+            {[
+              { label: 'Họ tên', value: profile?.fullName },
+              { label: 'Ngày sinh', value: profile?.dateOfBirth },
+              { label: 'Quê quán', value: profile?.placeOfOrigin },
+              { label: 'Địa chỉ thường trú', value: profile?.address },
+            ].map((row) => (
+              <View key={row.label} style={styles.idRow}>
+                <Text style={styles.idRowLabel}>{row.label}</Text>
+                <Text style={[styles.idRowValue, !row.value && styles.idRowEmpty]} numberOfLines={2}>
+                  {row.value || 'Chưa có'}
                 </Text>
               </View>
-            </View>
-
-            {/* 3 Thumbnail Previews */}
-            <View style={styles.thumbnailsRow}>
-              {/* Thumbnail 1: Mặt trước */}
-              <TouchableOpacity
-                style={styles.thumbnailCard}
-                activeOpacity={0.85}
-                onPress={() => handlePressThumbnail('front', 'Ảnh CCCD Mặt trước')}
-              >
-                {getDocUri('front') ? (
-                  <Image source={{ uri: getDocUri('front') }} style={styles.thumbnailImg} />
-                ) : (
-                  <View style={styles.thumbnailPlaceholder}>
-                    <Ionicons name="id-card-outline" size={26} color="#CBD5E0" />
-                  </View>
-                )}
-                <View style={styles.thumbnailOverlayBar}>
-                  <Text style={styles.thumbnailOverlayText} numberOfLines={1}>
-                    Mặt trước
-                  </Text>
-                  <Ionicons name="eye-outline" size={12} color="#FFFFFF" />
-                </View>
-              </TouchableOpacity>
-
-              {/* Thumbnail 2: Mặt sau */}
-              <TouchableOpacity
-                style={styles.thumbnailCard}
-                activeOpacity={0.85}
-                onPress={() => handlePressThumbnail('back', 'Ảnh CCCD Mặt sau')}
-              >
-                {getDocUri('back') ? (
-                  <Image source={{ uri: getDocUri('back') }} style={styles.thumbnailImg} />
-                ) : (
-                  <View style={styles.thumbnailPlaceholder}>
-                    <Ionicons name="card-outline" size={26} color="#CBD5E0" />
-                  </View>
-                )}
-                <View style={styles.thumbnailOverlayBar}>
-                  <Text style={styles.thumbnailOverlayText} numberOfLines={1}>
-                    Mặt sau
-                  </Text>
-                  <Ionicons name="eye-outline" size={12} color="#FFFFFF" />
-                </View>
-              </TouchableOpacity>
-
-              {/* Thumbnail 3: Ảnh chân dung */}
-              <TouchableOpacity
-                style={styles.thumbnailCard}
-                activeOpacity={0.85}
-                onPress={() => handlePressThumbnail('selfie', 'Ảnh chân dung cầm CCCD')}
-              >
-                {getDocUri('selfie') ? (
-                  <Image source={{ uri: getDocUri('selfie') }} style={styles.thumbnailImg} />
-                ) : (
-                  <View style={styles.thumbnailPlaceholder}>
-                    <Ionicons name="person-outline" size={26} color="#CBD5E0" />
-                  </View>
-                )}
-                <View style={styles.thumbnailOverlayBar}>
-                  <Text style={styles.thumbnailOverlayText} numberOfLines={1}>
-                    Ảnh chân dung
-                  </Text>
-                  <Ionicons name="eye-outline" size={12} color="#FFFFFF" />
-                </View>
-              </TouchableOpacity>
-            </View>
-
-            {/* Full-width Action Button at bottom of Card 3 */}
-            {isVerified && hasUploadedDocs ? (
-              <View
-                style={[
-                  styles.fullWidthUpdateBtn,
-                  { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' },
-                ]}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="shield-checkmark" size={16} color="#16A34A" />
-                  <Text style={[styles.fullWidthUpdateBtnText, { color: '#15803D' }]}>
-                    Đã xác thực đầy đủ giấy tờ định danh
-                  </Text>
-                </View>
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={styles.fullWidthUpdateBtn}
-                activeOpacity={0.85}
-                onPress={handleOpenCccdModal}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="create-outline" size={16} color="#6027D2" />
-                  <Text style={styles.fullWidthUpdateBtnText}>
-                    {isVerified && !profile?.cccdBackUrl
-                      ? 'Bổ sung ảnh mặt sau CCCD'
-                      : 'Cập nhật thông tin CCCD'}
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={16} color="#6027D2" />
-              </TouchableOpacity>
-            )}
+            ))}
+            <Text style={styles.idNote}>
+              Lấy tự động từ eKYC. LanCare không lưu số CCCD hay ảnh giấy tờ.
+            </Text>
           </View>
         </ScrollView>
       )}
@@ -1082,196 +704,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         </View>
       </Modal>
 
-      {/* Modal 2: CCCD Documents Upload */}
-      <Modal
-        visible={isCccdModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setIsCccdModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Cập nhật giấy tờ CCCD</Text>
-              <TouchableOpacity onPress={() => setIsCccdModalVisible(false)}>
-                <Ionicons name="close-circle" size={24} color="#A0AEC0" />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView showsVerticalScrollIndicator={false} style={styles.modalFormScroll}>
-              {/* CCCD Number Input */}
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Mã số CCCD / Căn cước (12 chữ số):</Text>
-                <TextInput
-                  style={styles.textInput}
-                  placeholder="Nhập 12 chữ số (ví dụ: 001234567890)"
-                  keyboardType="numeric"
-                  maxLength={12}
-                  value={cccdNumber}
-                  onChangeText={setCccdNumber}
-                  editable={profile?.verificationStatus !== 'APPROVED' || !profile?.cccdNumber}
-                />
-                {profile?.verificationStatus === 'APPROVED' && !!profile?.cccdNumber && (
-                  <Text style={{ fontSize: 11, color: '#2E7D32', marginTop: 4 }}>
-                    🔒 Hồ sơ đã được xác thực, không thể thay đổi thông tin định danh.
-                  </Text>
-                )}
-              </View>
-
-              <View style={styles.uploadDocSection}>
-                <Text style={styles.docSectionTitle}>🪪 Ảnh giấy tờ Căn cước công dân (CCCD)</Text>
-                <Text style={styles.docSectionSubtitle}>
-                  {isVerified
-                    ? 'Giấy tờ đã xác thực được khóa bảo mật. Bạn có thể bổ sung ảnh mặt sau nếu còn thiếu.'
-                    : 'Tải lên ảnh chụp rõ nét để Admin xác minh tài khoản trước khi đặt dịch vụ.'}
-                </Text>
-
-                {/* 1. CCCD Front */}
-                <View style={styles.uploadCard}>
-                  <Text style={styles.uploadCardLabel}>1. Ảnh mặt trước CCCD</Text>
-                  {cccdFrontUrl ? (
-                    <Image
-                      source={{
-                        uri:
-                          cccdFrontUrl.startsWith('http') || cccdFrontUrl.startsWith('file://')
-                            ? cccdFrontUrl
-                            : signedThumbnails.front || cccdFrontUrl,
-                      }}
-                      style={styles.uploadedImagePreview}
-                    />
-                  ) : null}
-                  {isVerified && profile?.cccdFrontUrl ? (
-                    <Text style={{ fontSize: 12, color: '#16A34A', fontWeight: '600', marginTop: 4 }}>
-                      ✓ Đã xác thực
-                    </Text>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.selectImageBtn}
-                      onPress={() => handlePickDocument('front')}
-                      disabled={uploadingType === 'front'}
-                    >
-                      {uploadingType === 'front' ? (
-                        <ActivityIndicator size="small" color="#6027D2" />
-                      ) : (
-                        <>
-                          <Ionicons name="camera-outline" size={18} color="#6027D2" />
-                          <Text style={styles.selectImageBtnText}>
-                            {cccdFrontUrl ? 'Thay đổi ảnh mặt trước' : 'Chọn ảnh mặt trước CCCD'}
-                          </Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                {/* 2. CCCD Back */}
-                <View style={styles.uploadCard}>
-                  <Text style={styles.uploadCardLabel}>2. Ảnh mặt sau CCCD</Text>
-                  {cccdBackUrl ? (
-                    <Image
-                      source={{
-                        uri:
-                          cccdBackUrl.startsWith('http') || cccdBackUrl.startsWith('file://')
-                            ? cccdBackUrl
-                            : signedThumbnails.back || cccdBackUrl,
-                      }}
-                      style={styles.uploadedImagePreview}
-                    />
-                  ) : null}
-                  {isVerified && profile?.cccdBackUrl ? (
-                    <Text style={{ fontSize: 12, color: '#16A34A', fontWeight: '600', marginTop: 4 }}>
-                      ✓ Đã xác thực
-                    </Text>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.selectImageBtn}
-                      onPress={() => handlePickDocument('back')}
-                      disabled={uploadingType === 'back'}
-                    >
-                      {uploadingType === 'back' ? (
-                        <ActivityIndicator size="small" color="#6027D2" />
-                      ) : (
-                        <>
-                          <Ionicons name="camera-outline" size={18} color="#6027D2" />
-                          <Text style={styles.selectImageBtnText}>
-                            {cccdBackUrl ? 'Thay đổi ảnh mặt sau' : 'Chọn ảnh mặt sau CCCD'}
-                          </Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                {/* 3. Selfie with ID */}
-                <View style={styles.uploadCard}>
-                  <Text style={styles.uploadCardLabel}>3. Ảnh chân dung</Text>
-                  {selfieWithIdUrl ? (
-                    <Image
-                      source={{
-                        uri:
-                          selfieWithIdUrl.startsWith('http') || selfieWithIdUrl.startsWith('file://')
-                            ? selfieWithIdUrl
-                            : signedThumbnails.selfie || selfieWithIdUrl,
-                      }}
-                      style={styles.uploadedImagePreview}
-                    />
-                  ) : null}
-                  {isVerified && profile?.selfieWithIdUrl ? (
-                    <Text style={{ fontSize: 12, color: '#16A34A', fontWeight: '600', marginTop: 4 }}>
-                      ✓ Đã xác thực
-                    </Text>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.selectImageBtn}
-                      onPress={() => handlePickDocument('selfie')}
-                      disabled={uploadingType === 'selfie'}
-                    >
-                      {uploadingType === 'selfie' ? (
-                        <ActivityIndicator size="small" color="#6027D2" />
-                      ) : (
-                        <>
-                          <Ionicons name="camera-outline" size={18} color="#6027D2" />
-                          <Text style={styles.selectImageBtnText}>
-                            {selfieWithIdUrl ? 'Thay đổi ảnh chân dung' : 'Chọn ảnh chân dung'}
-                          </Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
-            </ScrollView>
-
-            <View style={styles.modalFooter}>
-              <TouchableOpacity
-                style={styles.cancelModalButton}
-                onPress={() => setIsCccdModalVisible(false)}
-              >
-                <Text style={styles.cancelModalButtonText}>
-                  {isVerified && profile?.cccdBackUrl ? 'Đóng' : 'Hủy'}
-                </Text>
-              </TouchableOpacity>
-
-              {(!isVerified || !profile?.cccdBackUrl) && (
-                <TouchableOpacity
-                  style={styles.saveModalButton}
-                  activeOpacity={0.8}
-                  onPress={handleSaveCccdDocs}
-                  disabled={saving}
-                >
-                  {saving ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
-                  ) : (
-                    <Text style={styles.saveModalButtonText}>
-                      {isVerified ? 'Lưu ảnh mặt sau' : 'Lưu & Gửi xác minh'}
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              )}
-            </View>
-          </View>
-        </View>
-      </Modal>
 
       {/* Goong Maps Interactive Picker Modal */}
       <LocationPickerModal
@@ -1282,52 +714,39 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         initialLng={gpsLng ? parseFloat(gpsLng) : 106.700806}
       />
 
-      {/* Modal phóng to xem ảnh CCCD/Selfie bảo mật */}
-      <Modal
-        visible={previewDocModalVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setPreviewDocModalVisible(false)}
-      >
-        <View style={styles.docPreviewOverlay}>
-          <View style={styles.docPreviewContainer}>
-            <View style={styles.docPreviewHeader}>
-              <Text style={styles.docPreviewTitle}>{previewDocTitle}</Text>
-              <TouchableOpacity
-                onPress={() => setPreviewDocModalVisible(false)}
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <Ionicons name="close-circle" size={26} color="#94A3B8" />
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.docPreviewBody}>
-              {loadingDocPreview ? (
-                <View style={styles.docPreviewCenter}>
-                  <ActivityIndicator size="large" color="#6027D2" />
-                  <Text style={styles.docPreviewLoadingText}>Đang tải ảnh giấy tờ...</Text>
-                </View>
-              ) : previewDocUrl ? (
-                <Image
-                  source={{ uri: previewDocUrl }}
-                  style={styles.docPreviewImage}
-                  resizeMode="contain"
-                />
-              ) : (
-                <View style={styles.docPreviewCenter}>
-                  <Ionicons name="alert-circle-outline" size={48} color="#CBD5E0" />
-                  <Text style={styles.docPreviewLoadingText}>Không thể hiển thị ảnh</Text>
-                </View>
-              )}
-            </View>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  idRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 7,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  idRowLabel: {
+    fontSize: 12,
+    color: '#64748B',
+  },
+  idRowValue: {
+    flex: 1,
+    textAlign: 'right',
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+  idRowEmpty: {
+    color: '#94A3B8',
+    fontWeight: '400',
+  },
+  idNote: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 8,
+  },
   safeArea: {
     flex: 1,
     backgroundColor: '#F8FAFC',

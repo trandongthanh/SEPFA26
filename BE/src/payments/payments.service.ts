@@ -36,6 +36,19 @@ import { PaymentTransaction } from './entities/payment-transaction.entity';
 import { PaymentWebhookLog } from './entities/payment-webhook-log.entity';
 import { SecurityDeposit } from './entities/security-deposit.entity';
 import { escrowBalance } from './escrow-balance';
+import { returnOverpay } from './overpay';
+import {
+  addonUnmatchedReason,
+  depositUnmatchedReason,
+  UnmatchedReason,
+} from './unmatched-reasons';
+
+// Webhook tới cho một khoản admin đã hoàn — dừng mọi ghi sổ, trả 200 ALREADY_REFUNDED.
+class TransactionAlreadyRefundedError extends Error {
+  constructor(readonly sepayTxnId: string) {
+    super('TRANSACTION_ALREADY_REFUNDED');
+  }
+}
 
 const PG_UNIQUE_VIOLATION = '23505';
 
@@ -217,6 +230,27 @@ export class PaymentsService {
     authorization: string | undefined,
     rawBody: Record<string, unknown>,
   ) {
+    try {
+      return await this.processSepayWebhook(authorization, rawBody);
+    } catch (err) {
+      if (!(err instanceof TransactionAlreadyRefundedError)) {
+        throw err;
+      }
+      this.logger.warn(
+        `Webhook ${err.sepayTxnId}: khoản này admin đã hoàn, không ghi nhận vào đơn`,
+      );
+      await this.webhookLogRepo.update(
+        { sepayTxnId: err.sepayTxnId },
+        { processed: true },
+      );
+      return { success: true, ignored: 'ALREADY_REFUNDED' };
+    }
+  }
+
+  private async processSepayWebhook(
+    authorization: string | undefined,
+    rawBody: Record<string, unknown>,
+  ) {
     // (1) Log trước — id thiếu/hỏng vẫn phải ghi được: sinh khóa thay thế.
     const rawId = rawBody['id'];
     const sepayTxnId =
@@ -321,7 +355,14 @@ export class PaymentsService {
       this.logger.warn(
         `Webhook ${sepayTxnId}: không tìm thấy mã đơn trong nội dung CK`,
       );
-      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, null);
+      await this.recordPendingTransaction(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        null,
+        'NO_CODE',
+      );
       return { success: true, ignored: 'ORDER_CODE_NOT_FOUND' };
     }
 
@@ -330,7 +371,14 @@ export class PaymentsService {
       this.logger.warn(
         `Webhook ${sepayTxnId}: mã ${orderCode} không khớp đơn nào`,
       );
-      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, null);
+      await this.recordPendingTransaction(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        null,
+        'CODE_NOT_FOUND',
+      );
       return { success: true, ignored: 'ORDER_NOT_MATCHED' };
     }
     await this.webhookLogRepo.update(log.id, { matchedOrderId: order.id });
@@ -339,7 +387,14 @@ export class PaymentsService {
       this.logger.warn(
         `Webhook ${sepayTxnId}: đơn ${orderCode} đang ${order.status}, bỏ qua`,
       );
-      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, order.id);
+      await this.recordPendingTransaction(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        order.id,
+        'ORDER_NOT_AWAITING_PAYMENT',
+      );
       return { success: true, ignored: 'ORDER_NOT_AWAITING_PAYMENT' };
     }
     // Tiền về SAU hạn thanh toán (bộ quét chưa kịp huỷ đơn) → không ghi nhận, lưu lại chờ admin hoàn tay.
@@ -348,7 +403,14 @@ export class PaymentsService {
       this.logger.warn(
         `Webhook ${sepayTxnId}: đơn ${orderCode} đã quá hạn thanh toán, bỏ qua`,
       );
-      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, order.id);
+      await this.recordPendingTransaction(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        order.id,
+        'PAYMENT_DEADLINE_PASSED',
+      );
       return { success: true, ignored: 'PAYMENT_DEADLINE_PASSED' };
     }
 
@@ -358,7 +420,14 @@ export class PaymentsService {
       this.logger.warn(
         `Webhook ${sepayTxnId}: đơn ${orderCode} thiếu tiền (nhận ${transferAmount}, cần ${amountDue})`,
       );
-      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, order.id);
+      await this.recordPendingTransaction(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        order.id,
+        'INSUFFICIENT_AMOUNT',
+      );
       return { success: true, ignored: 'INSUFFICIENT_AMOUNT' };
     }
 
@@ -384,7 +453,7 @@ export class PaymentsService {
       );
 
       // Tiền bảo đảm khai giá (dòng DECLARED_DEPOSIT, nếu có) vào sổ RIÊNG của nó đúng bằng số phải nộp;
-      // phần còn lại — kể cả chuyển dư — vào sổ đơn như cũ. Đơn mẫu nhận 784.000: sổ khai giá 300.000,
+      // phần còn lại vào sổ đơn (phần chuyển dư thối ngay ở dưới). Đơn mẫu nhận 784.000: sổ khai giá 300.000,
       // sổ đơn 484.000. transferAmount ≥ amountDue đã kiểm ở trên nên phần sổ đơn không âm.
       const declaredComponent = await manager.findOne(PaymentComponent, {
         where: {
@@ -405,6 +474,17 @@ export class PaymentsService {
           balanceAfter: (lastBalance + orderAmount).toString(),
           note: `Thu đủ đơn ${order.orderCode} qua SePay #${sepayTxnId}`,
         }),
+      );
+      // Chuyển dư → thối ngay cho khách (sổ đơn chỉ giữ đúng số trên hoá đơn).
+      // Đơn mẫu cần 484.000 nhận 500.000 → OVERPAY_RETURN −16.000, lệnh chi 16.000 chi ngay.
+      await returnOverpay(
+        manager,
+        lockedOrder,
+        'ORDER',
+        transferAmount - amountDue,
+        'CUSTOMER',
+        new Date(),
+        txn.id,
       );
       if (declaredAmount > 0n) {
         const declaredBalance = await escrowBalance(
@@ -432,6 +512,7 @@ export class PaymentsService {
       );
 
       lockedOrder.status = 'PAID';
+      lockedOrder.paidAt = new Date();
       await manager.save(lockedOrder);
       await manager.update(PaymentWebhookLog, log.id, { processed: true });
       return true;
@@ -439,7 +520,14 @@ export class PaymentsService {
 
     if (!processed) {
       // Thua re-check (đơn vừa được webhook khác trả xong) — tiền vẫn phải vào sổ.
-      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, order.id);
+      await this.recordPendingTransaction(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        order.id,
+        'ORDER_NOT_AWAITING_PAYMENT',
+      );
       return { success: true, ignored: 'ORDER_NOT_AWAITING_PAYMENT' };
     }
     await this.notifications?.notifyOrderPartiesSafe(order, {
@@ -491,7 +579,14 @@ export class PaymentsService {
       this.logger.warn(
         `Webhook ${sepayTxnId}: mã add-on ${addonCode} không khớp đề xuất nào`,
       );
-      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, null);
+      await this.recordPendingTransaction(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        null,
+        'CODE_NOT_FOUND',
+      );
       return { success: true, ignored: 'ADDON_NOT_MATCHED' };
     }
     const orderId = found.serviceOrderId;
@@ -550,6 +645,16 @@ export class PaymentsService {
           note: `Thu add-on ${proposal.addonCode} của đơn ${order.orderCode} qua SePay #${sepayTxnId}`,
         }),
       );
+      // Chuyển dư tiền add-on → thối ngay cho khách.
+      await returnOverpay(
+        manager,
+        order,
+        'ORDER',
+        transferAmount - amountDue,
+        'CUSTOMER',
+        now,
+        txn.id,
+      );
       // Dòng hoá đơn add-on chỉ sinh khi tiền đã về → không bao giờ có dòng PENDING mồ côi.
       await manager.save(
         manager.create(PaymentComponent, {
@@ -578,7 +683,14 @@ export class PaymentsService {
       this.logger.warn(
         `Webhook ${sepayTxnId}: add-on ${addonCode} không ghi nhận được (${ignored}, nhận ${transferAmount})`,
       );
-      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, orderId);
+      await this.recordPendingTransaction(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        orderId,
+        addonUnmatchedReason(ignored),
+      );
       return { success: true, ignored };
     }
     if (addonOrderInfo) {
@@ -644,7 +756,14 @@ export class PaymentsService {
       this.logger.warn(
         `Webhook ${sepayTxnId}: mã bảo đảm ${depositCode} không khớp khoản nào`,
       );
-      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, null);
+      await this.recordPendingTransaction(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        null,
+        'CODE_NOT_FOUND',
+      );
       return { success: true, ignored: 'SECURITY_DEPOSIT_NOT_MATCHED' };
     }
     const orderId = found.serviceOrderId;
@@ -691,7 +810,7 @@ export class PaymentsService {
         dto,
         rawBody,
       );
-      // Ghi toàn bộ tiền thật nhận (kể cả chuyển dư) vào sổ BẢO ĐẢM; balance_after là số dư riêng sổ này.
+      // Ghi toàn bộ tiền thật nhận vào sổ BẢO ĐẢM (phần dư thối ngay ở dưới); balance_after là số dư riêng sổ này.
       const lastBalance = await escrowBalance(manager, order.id, 'SECURITY');
       await manager.save(
         manager.create(EscrowLedger, {
@@ -703,6 +822,16 @@ export class PaymentsService {
           balanceAfter: (lastBalance + transferAmount).toString(),
           note: `Vườn nộp tiền bảo đảm đơn ${order.orderCode} (${deposit.depositCode}) qua SePay #${sepayTxnId}`,
         }),
+      );
+      // Vườn nộp dư → trả phần dư cho vườn ngay; sổ bảo đảm chỉ giữ đúng số phải nộp.
+      await returnOverpay(
+        manager,
+        order,
+        'SECURITY',
+        transferAmount - BigInt(deposit.amount),
+        'PROVIDER',
+        now,
+        txn.id,
       );
       deposit.status = 'PAID';
       deposit.paidAt = now;
@@ -740,7 +869,14 @@ export class PaymentsService {
       this.logger.warn(
         `Webhook ${sepayTxnId}: tiền bảo đảm ${depositCode} không ghi nhận được (${ignored}, nhận ${transferAmount})`,
       );
-      await this.recordPendingTransaction(sepayTxnId, dto, rawBody, orderId);
+      await this.recordPendingTransaction(
+        log,
+        sepayTxnId,
+        dto,
+        rawBody,
+        orderId,
+        depositUnmatchedReason(ignored),
+      );
       return { success: true, ignored };
     }
     if (depositOrderInfo) {
@@ -786,6 +922,9 @@ export class PaymentsService {
   /**
    * Ghi giao dịch tiền vào thành công. Retry sau crash có thể đã để lại dòng PENDING cùng
    * sepay_txn_id (UNIQUE) — nâng cấp dòng đó thay vì insert đụng khóa.
+   * Dòng PENDING mà admin ĐÃ HOÀN (có refund_disbursement_id) thì tuyệt đối không nâng: tiền đó đã rời
+   * tài khoản → ném TransactionAlreadyRefundedError, cả transaction huỷ, webhook trả ALREADY_REFUNDED.
+   * Khoá dòng cùng kiểu với route hoàn của admin nên hai việc không chạy chồng.
    */
   private async saveSuccessTransaction(
     manager: EntityManager,
@@ -797,11 +936,16 @@ export class PaymentsService {
   ): Promise<PaymentTransaction> {
     const existing = await manager.findOne(PaymentTransaction, {
       where: { sepayTxnId },
+      lock: { mode: 'pessimistic_write' },
     });
     if (existing) {
+      if (existing.refundDisbursementId) {
+        throw new TransactionAlreadyRefundedError(sepayTxnId);
+      }
       existing.serviceOrderId = orderId;
       existing.amount = transferAmount.toString();
       existing.status = 'SUCCESS';
+      existing.unmatchedReason = null;
       return manager.save(existing);
     }
     return manager.save(
@@ -818,33 +962,39 @@ export class PaymentsService {
   }
 
   /**
-   * Ghi dấu vết tài chính cho tiền thật vào mà chưa xử lý được:
-   * status PENDING, có thể chưa gắn đơn (serviceOrderId null) — admin đối soát.
-   * Retry đụng UNIQUE sepay_txn_id → dòng đã có từ lần trước, giữ nguyên.
+   * Bỏ tiền thật chưa xử lý được vào "hộp": dòng transactions PENDING kèm lý do, có thể chưa gắn đơn.
+   * Cùng lúc đánh dấu log đã xử lý — "không khớp" là quyết định chung cuộc (admin hoàn qua màn tiền
+   * chưa khớp), SePay gửi lại cùng mã thì trả duplicated, không xét lại từ đầu.
+   * Retry đụng UNIQUE sepay_txn_id → dòng đã có từ lần trước, giữ nguyên (vẫn đánh dấu log).
    */
   private async recordPendingTransaction(
+    log: PaymentWebhookLog,
     sepayTxnId: string,
     dto: SepayWebhookDto,
     rawBody: Record<string, unknown>,
     serviceOrderId: string | null,
+    reason: UnmatchedReason,
   ): Promise<void> {
-    try {
-      await this.transactionRepo.save(
-        this.transactionRepo.create({
-          serviceOrderId,
-          direction: 'IN' as const,
-          amount: dto.transferAmount,
-          sepayTxnId,
-          transferContent: dto.content ?? null,
-          status: 'PENDING' as const,
-          rawPayload: rawBody,
-        }),
-      );
-    } catch (err) {
-      if ((err as { code?: string }).code !== PG_UNIQUE_VIOLATION) {
-        throw err;
+    await this.dataSource.transaction(async (manager) => {
+      const exists = await manager.findOne(PaymentTransaction, {
+        where: { sepayTxnId },
+      });
+      if (!exists) {
+        await manager.save(
+          manager.create(PaymentTransaction, {
+            serviceOrderId,
+            direction: 'IN' as const,
+            amount: dto.transferAmount,
+            sepayTxnId,
+            transferContent: dto.content ?? null,
+            status: 'PENDING' as const,
+            rawPayload: rawBody,
+            unmatchedReason: reason,
+          }),
+        );
       }
-    }
+      await manager.update(PaymentWebhookLog, log.id, { processed: true });
+    });
   }
 
   // "Còn phải trả" = Σ (amount + customer_fee) của component PENDING — một nguồn sự thật duy nhất,

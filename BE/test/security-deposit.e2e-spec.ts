@@ -399,7 +399,7 @@ describe('Tiền bảo đảm lúc nhận cây + huỷ tại chỗ (e2e)', () =>
       ),
     ).toEqual([{ amount: '3400000' }]);
 
-    // Chuyển dư 1.000 vẫn nhận; sổ bảo đảm ghi đúng số thực nhận.
+    // Chuyển dư 1.000 vẫn nhận; sổ bảo đảm ghi số thực nhận rồi trả phần dư cho vườn ngay (chốt 23/11).
     await seed.webhook(deposit.deposit_code, '3401000').expect(200);
     expect((await orderRow(id)).status).toBe('IN_CARE');
     expect(await ledger(id, 'SECURITY')).toEqual([
@@ -408,7 +408,18 @@ describe('Tiền bảo đảm lúc nhận cây + huỷ tại chỗ (e2e)', () =>
         amount: '3401000',
         balance_after: '3401000',
       },
+      {
+        entry_type: 'OVERPAY_RETURN',
+        amount: '-1000',
+        balance_after: '3400000',
+      },
     ]);
+    expect(
+      await sql(
+        `SELECT type, amount FROM disbursements WHERE service_order_id = $1 AND provider_id IS NOT NULL`,
+        [id],
+      ),
+    ).toEqual([{ type: 'OVERPAY_RETURN', amount: '1000' }]);
     // Sổ đơn không dính tiền bảo đảm.
     expect(await ledger(id, 'ORDER')).toEqual([
       { entry_type: 'DEPOSIT', amount: '484000', balance_after: '484000' },
@@ -773,6 +784,7 @@ describe('Tiền bảo đảm lúc nhận cây + huỷ tại chỗ (e2e)', () =>
       declaredDeposit: '0',
       declaredDepositReturned: '0',
       declaredDepositForfeited: '0',
+      overpayReturned: '0',
     });
 
     // Sổ đơn chia như đơn thường; sổ bảo đảm trả lại vườn toàn bộ → cả hai về 0.

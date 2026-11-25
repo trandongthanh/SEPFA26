@@ -43,6 +43,7 @@ export default function ProviderDashboardPage() {
   const [inCareOrders, setInCareOrders] = useState<OrderItem[]>([]);
   const [myPackages, setMyPackages] = useState<ServicePackageItem[]>([]);
   const [careReports, setCareReports] = useState<CareReportItem[]>([]);
+  const [careReportTotal, setCareReportTotal] = useState(0);
 
   useEffect(() => {
     setMounted(true);
@@ -100,16 +101,13 @@ export default function ProviderDashboardPage() {
     }
 
     try {
-      const reportsRes = await providerApi.listCareReports();
-      if (Array.isArray(reportsRes)) {
-        setCareReports(reportsRes);
-      } else if (reportsRes && Array.isArray((reportsRes as any).items)) {
-        setCareReports((reportsRes as any).items);
-      } else {
-        setCareReports([]);
-      }
+      // Chỉ cần vài báo cáo mới nhất để hiện; tổng số lấy từ total của BE.
+      const reportsRes = await providerApi.listCareReports({ limit: 3 });
+      setCareReports(reportsRes.data);
+      setCareReportTotal(reportsRes.total);
     } catch {
       setCareReports([]);
+      setCareReportTotal(0);
     } finally {
       setLoading(false);
     }
@@ -136,11 +134,8 @@ export default function ProviderDashboardPage() {
       const rawMsg =
         err?.response?.data?.message || err?.message || 'Có lỗi xảy ra khi xử lý đơn hàng.';
       const msgText = Array.isArray(rawMsg) ? rawMsg.join(', ') : String(rawMsg);
-      if (msgText.includes('PROVIDER_IDENTITY_INCOMPLETE')) {
-        message.error(
-          'Vui lòng cập nhật đầy đủ Số điện thoại và Số CCCD (12 chữ số) tại mục Hồ sơ nhà vườn trước khi chấp nhận đơn!'
-        );
-      } else if (msgText.includes('INVALID_STATE_TRANSITION')) {
+      // Mã lỗi khác (vd PROVIDER_IDENTITY_INCOMPLETE) đã được lib/api.ts dịch sẵn sang tiếng Việt.
+      if (msgText.includes('INVALID_STATE_TRANSITION')) {
         message.warning('Trạng thái đơn hàng vừa thay đổi. Đang làm mới dữ liệu...');
         fetchData();
       } else {
@@ -268,7 +263,7 @@ export default function ProviderDashboardPage() {
                   </div>
                   <p className="text-xs text-[#6E6A8A] font-medium">Báo cáo đã nộp</p>
                   <h3 className="text-2xl font-bold text-[#1E1B2E] mt-1 leading-none">
-                    {careReports.length}
+                    {careReportTotal}
                   </h3>
                   <p className="text-xs text-[#8B86A4] mt-1 font-normal">báo cáo nhật ký</p>
                 </div>

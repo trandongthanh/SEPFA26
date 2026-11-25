@@ -7,8 +7,6 @@ import {
   CloseCircleOutlined,
   DownloadOutlined,
   EyeOutlined,
-  FileImageOutlined,
-  IdcardOutlined,
 } from '@ant-design/icons';
 import { App, Button, Input, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -18,6 +16,7 @@ import { adminApi } from '@/lib/admin.api';
 import type { AdminProviderItem } from '@/lib/admin.api';
 import AdminSidebar from '../../components/AdminSidebar';
 import AdminHeader from '../../components/AdminHeader';
+import { PROVIDER_REQUIREMENT_COUNT, missingProviderRequirements, providerPhone } from './provider-identity';
 
 type FilterTab = 'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED';
 
@@ -82,8 +81,7 @@ export default function AdminVerifyProvidersPage() {
       p.displayName.toLowerCase().includes(keyword) ||
       p.account?.email?.toLowerCase().includes(keyword) ||
       p.account?.fullName?.toLowerCase().includes(keyword) ||
-      (p.phone || p.account?.phone || '').toLowerCase().includes(keyword) ||
-      (p.cccdNumber || '').toLowerCase().includes(keyword);
+      (providerPhone(p) || '').toLowerCase().includes(keyword);
     return matchTab && matchSearch;
   });
 
@@ -93,9 +91,6 @@ export default function AdminVerifyProvidersPage() {
     { key: 'APPROVED', label: 'Đã duyệt' },
     { key: 'REJECTED', label: 'Đã từ chối' },
   ];
-
-  const hasDocument = (p: AdminProviderItem) =>
-    Boolean(p.cccdNumber || p.cccdFrontUrl || p.cccdBackUrl || p.selfieUrl || p.businessLicenseUrl);
 
   const columns: ColumnsType<AdminProviderItem> = [
     {
@@ -111,7 +106,7 @@ export default function AdminVerifyProvidersPage() {
             <div className="font-medium text-[#1E1B2E] text-sm truncate">{record.displayName}</div>
             <div className="text-xs text-[#6E6A8A] truncate">
               {record.account?.email}
-              {(record.phone || record.account?.phone) ? ` · ${record.phone || record.account?.phone}` : ''}
+              {providerPhone(record) ? ` · ${providerPhone(record)}` : ''}
             </div>
           </div>
         </div>
@@ -136,18 +131,20 @@ export default function AdminVerifyProvidersPage() {
       ),
     },
     {
-      title: 'Tài liệu',
-      key: 'documents',
-      width: 100,
-      align: 'center',
-      render: (_, record) => (
-        <div className="flex items-center justify-center gap-1.5">
-          {record.cccdFrontUrl && <IdcardOutlined className="text-[#6027D2]" title="CCCD mặt trước" />}
-          {record.cccdBackUrl && <IdcardOutlined className="text-[#6027D2]" title="CCCD mặt sau" />}
-          {record.businessLicenseUrl && <FileImageOutlined className="text-[#6027D2]" title="Giấy phép KD" />}
-          {!hasDocument(record) && <span className="text-xs text-[#A098C2]">—</span>}
-        </div>
-      ),
+      title: 'Điều kiện duyệt',
+      key: 'identity',
+      width: 150,
+      render: (_, record) => {
+        const missing = missingProviderRequirements(record);
+        const total = PROVIDER_REQUIREMENT_COUNT;
+        return missing.length === 0 ? (
+          <Tag color="success">Đủ {total}/{total}</Tag>
+        ) : (
+          <span className="text-xs font-semibold text-[#B7791F]" title={`Thiếu: ${missing.join(', ')}`}>
+            Thiếu {missing.length}/{total}
+          </span>
+        );
+      },
     },
     {
       title: 'Trạng thái',
@@ -172,7 +169,7 @@ export default function AdminVerifyProvidersPage() {
           onClick={() => router.push(`/admin/verify/providers/${record.id}`)}
           className="!rounded-lg !bg-[#6027D2] hover:!bg-[#4E1BA8] !text-xs !font-medium"
         >
-          Xét duyệt
+          {record.verificationStatus === 'PENDING' ? 'Xét duyệt' : 'Xem'}
         </Button>
       ),
     },

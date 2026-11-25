@@ -7,24 +7,30 @@ import {
   CloseCircleOutlined,
   DownloadOutlined,
   EyeOutlined,
-  IdcardOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
 import { App, Button, Input, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { useAuthStore } from '@/lib/auth.store';
 import { adminApi } from '@/lib/admin.api';
-import type { AdminCustomerItem } from '@/lib/admin.api';
+import type { AdminCustomerItem, CustomerVerificationStatus } from '@/lib/admin.api';
 import AdminSidebar from '../../components/AdminSidebar';
 import AdminHeader from '../../components/AdminHeader';
+import { CUSTOMER_STATUS } from './customer-status';
 
-type FilterTab = 'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED';
+// Khách tự xác thực bằng eKYC; trang này để theo dõi, không duyệt tay.
+// "Chưa xác thực" gồm cả hồ sơ tự khai cũ (PENDING) vì cũng chưa qua eKYC.
+type FilterTab = 'ALL' | 'APPROVED' | 'UNVERIFIED' | 'REJECTED';
 
-const STATUS_TAG: Record<string, { color: string; label: string }> = {
-  PENDING: { color: 'warning', label: 'Chờ duyệt' },
-  APPROVED: { color: 'success', label: 'Đã duyệt' },
-  REJECTED: { color: 'error', label: 'Đã từ chối' },
+const TAB_STATUSES: Record<Exclude<FilterTab, 'ALL'>, CustomerVerificationStatus[]> = {
+  APPROVED: ['APPROVED'],
+  UNVERIFIED: ['NOT_SUBMITTED', 'PENDING'],
+  REJECTED: ['REJECTED'],
 };
+
+const nameOf = (c: AdminCustomerItem) => c.fullName || c.account?.fullName || '';
+const emailOf = (c: AdminCustomerItem) => c.email || c.account?.email || '';
 
 export default function AdminVerifyCustomersPage() {
   const router = useRouter();
@@ -68,21 +74,21 @@ export default function AdminVerifyCustomersPage() {
     // Không hiển thị tài khoản đã chuyển sang role ADMIN trong danh sách chờ duyệt
     if (c.account?.role === 'ADMIN') return false;
 
-    const matchTab = activeTab === 'ALL' || c.verificationStatus === activeTab;
+    const matchTab = activeTab === 'ALL' || TAB_STATUSES[activeTab].includes(c.verificationStatus);
     const keyword = searchText.toLowerCase();
     const matchSearch =
       !keyword ||
-      c.account?.fullName?.toLowerCase().includes(keyword) ||
-      c.account?.email?.toLowerCase().includes(keyword) ||
+      nameOf(c).toLowerCase().includes(keyword) ||
+      emailOf(c).toLowerCase().includes(keyword) ||
       c.phone?.includes(keyword);
     return matchTab && matchSearch;
   });
 
   const tabs: { key: FilterTab; label: string }[] = [
     { key: 'ALL', label: 'Tất cả' },
-    { key: 'PENDING', label: 'Chờ duyệt' },
-    { key: 'APPROVED', label: 'Đã duyệt' },
-    { key: 'REJECTED', label: 'Đã từ chối' },
+    { key: 'APPROVED', label: 'Đã xác thực' },
+    { key: 'UNVERIFIED', label: 'Chưa xác thực' },
+    { key: 'REJECTED', label: 'eKYC không đạt' },
   ];
 
   const columns: ColumnsType<AdminCustomerItem> = [
@@ -92,11 +98,11 @@ export default function AdminVerifyCustomersPage() {
       render: (_, record) => (
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-[#F3E8FF] flex items-center justify-center text-[#6027D2] font-semibold text-sm shrink-0">
-            {record.account?.fullName?.charAt(0)?.toUpperCase() || 'C'}
+            {nameOf(record).charAt(0).toUpperCase() || 'K'}
           </div>
           <div className="min-w-0">
-            <div className="font-medium text-[#1E1B2E] text-sm truncate">{record.account?.fullName}</div>
-            <div className="text-xs text-[#6E6A8A] truncate">{record.account?.email}</div>
+            <div className="font-medium text-[#1E1B2E] text-sm truncate">{nameOf(record) || 'Chưa có tên'}</div>
+            <div className="text-xs text-[#6E6A8A] truncate">{emailOf(record)}</div>
           </div>
         </div>
       ),
@@ -119,25 +125,12 @@ export default function AdminVerifyCustomersPage() {
       ),
     },
     {
-      title: 'Tài liệu',
-      key: 'documents',
-      width: 100,
-      align: 'center',
-      render: (_, record) => (
-        <div className="flex items-center justify-center gap-1.5">
-          {record.cccdFrontUrl && <IdcardOutlined className="text-[#6027D2]" title="CCCD mặt trước" />}
-          {record.cccdBackUrl && <IdcardOutlined className="text-[#6027D2]" title="CCCD mặt sau" />}
-          {!record.cccdFrontUrl && !record.cccdBackUrl && <span className="text-xs text-[#A098C2]">—</span>}
-        </div>
-      ),
-    },
-    {
-      title: 'Trạng thái',
+      title: 'Xác thực eKYC',
       dataIndex: 'verificationStatus',
       key: 'verificationStatus',
-      width: 130,
-      render: (status: string) => {
-        const cfg = STATUS_TAG[status] || { color: 'default', label: status };
+      width: 170,
+      render: (status: CustomerVerificationStatus) => {
+        const cfg = CUSTOMER_STATUS[status];
         return (
           <Tag
             color={cfg.color}
@@ -161,7 +154,7 @@ export default function AdminVerifyCustomersPage() {
           onClick={() => router.push(`/admin/verify/customers/${record.id}`)}
           className="!rounded-lg !bg-[#6027D2] hover:!bg-[#4E1BA8] !text-xs !font-medium"
         >
-          Xét duyệt
+          Xem
         </Button>
       ),
     },
@@ -179,9 +172,9 @@ export default function AdminVerifyCustomersPage() {
             {/* Page Header */}
             <div className="flex items-center justify-between mb-6">
               <div>
-                <h1 className="text-2xl font-bold text-[#1E1B2E]">Duyệt Khách hàng</h1>
+                <h1 className="text-2xl font-bold text-[#1E1B2E]">Khách hàng</h1>
                 <p className="text-sm text-[#6E6A8A] mt-1">
-                  Quản lý và xét duyệt hồ sơ xác minh danh tính khách hàng.
+                  Khách tự xác thực danh tính bằng eKYC trên app. Trang này để theo dõi, không duyệt tay.
                 </p>
               </div>
               <Button icon={<DownloadOutlined />} className="!rounded-xl !border-[#ECE7FA] !text-[#4B4764] !font-medium">
@@ -210,7 +203,7 @@ export default function AdminVerifyCustomersPage() {
             <div className="mb-4">
               <Input
                 placeholder="Tìm theo tên, email, SĐT..."
-                prefix={<EyeOutlined className="text-[#A098C2]" />}
+                prefix={<SearchOutlined className="text-[#A098C2]" />}
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
                 className="!rounded-xl !w-80 !bg-white !border-[#ECE7FA]"

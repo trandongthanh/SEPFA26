@@ -118,6 +118,10 @@ export class ProviderProfile extends BaseEntity {
   @Column({ type: 'varchar', length: 100, name: 'bank_holder', nullable: true })
   bankHolder!: string | null;
 
+  // Mã BIN 6 số của ngân hàng (không bắt buộc, đi kèm bộ 3 trường trên).
+  @Column({ type: 'varchar', length: 6, name: 'bank_bin', nullable: true })
+  bankBin!: string | null;
+
   // Ngày tháng năm sinh và Quê quán phục vụ xác minh pháp lý & hợp đồng điện tử
   // (KHÔNG thu giữ/lưu trữ số CCCD, ảnh CCCD và ảnh chân dung).
   @Column({ type: 'varchar', length: 20, name: 'date_of_birth', nullable: true })

@@ -194,7 +194,7 @@ export default function ProviderAccountActions({ providerId, displayName, email 
             Sẽ xóa <b>hồ sơ, tất cả gói dịch vụ và tài khoản đăng nhập</b> của {displayName}. Thao tác{' '}
             <b>không thể hoàn tác</b>.
           </p>
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             <label htmlFor="confirm-provider-name" className="text-xs text-[#1E1B2E]">
               Gõ <b>{displayName}</b> để xác nhận
             </label>

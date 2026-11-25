@@ -52,6 +52,16 @@ export class OrdersController {
   @Roles('CUSTOMER')
   @Post()
   @ApiOperation({ summary: 'Khách tạo đơn nháp (DRAFT) — server tự tính phí' })
+  @ApiResponse({
+    status: 403,
+    description:
+      'PROFILE_NOT_APPROVED (khách chưa được duyệt hoặc chưa có SĐT)',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'REFUND_BANK_ACCOUNT_REQUIRED (khách chưa khai đủ tên ngân hàng, số tài khoản, chủ tài khoản)',
+  })
   createOrder(
     @CurrentUser() user: CurrentUserData,
     @Body() dto: CreateOrderDto,
@@ -101,6 +111,11 @@ export class OrdersController {
     status: 403,
     description:
       'PROFILE_NOT_APPROVED | PROVIDER_IDENTITY_INCOMPLETE (ACCEPT khi vườn chưa đủ SĐT/Địa chỉ/Ngày sinh/Quê quán)',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'PROVIDER_BANK_INFO_REQUIRED (ACCEPT khi vườn chưa khai đủ tên ngân hàng, số tài khoản, chủ tài khoản)',
   })
   respondNegotiation(
     @CurrentUser() user: CurrentUserData,
@@ -299,7 +314,7 @@ export class OrdersController {
   @ApiResponse({
     status: 409,
     description:
-      'CARE_NOT_DUE | INVALID_STATE_TRANSITION | ADDON_OPEN (còn add-on khách đã trả tiền mà vườn chưa báo xong)',
+      'CARE_NOT_DUE | INVALID_STATE_TRANSITION | ADDON_OPEN (còn add-on khách đã trả tiền mà vườn chưa báo xong hoặc trả lại) | ADDON_AWAITING_PAYMENT (còn add-on khách đã đồng ý, đang trong 24 giờ trả tiền)',
   })
   @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
   @ApiResponse({ status: 404, description: 'ORDER_NOT_FOUND' })
@@ -428,7 +443,18 @@ export class OrdersController {
 
   @Roles('CUSTOMER', 'PROVIDER')
   @Get()
-  @ApiOperation({ summary: 'Danh sách đơn phía mình (khách/vườn tự lọc)' })
+  @ApiOperation({
+    summary:
+      'Danh sách đơn phía mình: tìm, lọc trạng thái, sắp xếp, phân trang',
+    description:
+      'q tìm không dấu trong mã đơn, tên khách, tên gói, tên cây. sort: newest (mặc định) | oldest | pickupSoon. ' +
+      'statusCounts đếm theo q, KHÔNG theo status (để hiện số trên các tab). Vườn không thấy đơn DRAFT.',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      '{ data: [{ ...đơn, customer, provider, servicePackageName, customerName, gardenName, plantNames, handoverStatus, deadlines }], total, page, limit, statusCounts: { PENDING_PROVIDER: 3, ... } }',
+  })
   listOrders(
     @CurrentUser() user: CurrentUserData,
     @Query() query: QueryOrderDto,

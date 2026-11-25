@@ -27,6 +27,7 @@ const ADDON_STATUS: Record<AddonStatus, { label: string; color: string }> = {
   DONE: { label: 'Đã làm xong', color: 'success' },
   REJECTED: { label: 'Khách từ chối', color: 'default' },
   EXPIRED: { label: 'Hết hạn', color: 'default' },
+  REFUNDED: { label: 'Vườn trả lại, đã hoàn khách', color: 'blue' },
 };
 const EXPIRED_REASON: Record<string, string> = {
   NO_RESPONSE: 'khách không trả lời',
@@ -180,7 +181,7 @@ export function CareReportsSection({
   );
 
   return (
-    <section className="bg-white rounded-2xl border border-[#ECE7FA] p-5 space-y-3">
+    <section className="bg-white rounded-2xl border border-[#ECE7FA] p-5 flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h3 className="text-sm font-bold text-[#1E1B2E] m-0">
           Báo cáo chăm sóc {reports ? `(${reports.length} kỳ)` : ''}
@@ -223,7 +224,7 @@ export function AddonsSection({ orderId }: { orderId: string }) {
   }, [orderId]);
 
   return (
-    <section className="bg-white rounded-2xl border border-[#ECE7FA] p-5 space-y-3">
+    <section className="bg-white rounded-2xl border border-[#ECE7FA] p-5 flex flex-col gap-3">
       <h3 className="text-sm font-bold text-[#1E1B2E] m-0">
         Add-on – dịch vụ phát sinh {addons ? `(${addons.length})` : ''}
       </h3>
@@ -258,6 +259,11 @@ export function AddonsSection({ orderId }: { orderId: string }) {
                 </div>
                 {a.reason && <p className="text-[#4B4764] m-0">Lý do vườn đề xuất: “{a.reason}”</p>}
                 {a.customerNote && <p className="text-[#4B4764] m-0">Khách ghi: “{a.customerNote}”</p>}
+                {a.status === 'REFUNDED' && a.refundReason && (
+                  <p className="text-[#4B4764] m-0">
+                    Vườn trả lại{a.refundedAt ? ` lúc ${fmtDateTime(a.refundedAt)}` : ''}: “{a.refundReason}”
+                  </p>
+                )}
                 <Thumbs items={(a.photoUrls ?? []).map((url) => ({ url, caption: 'Lúc đề xuất' }))} />
                 {a.status === 'DONE' && (
                   <div className="rounded-lg bg-[#F6F4FC] p-2 space-y-1">

@@ -1,6 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUrl,
+  MaxLength,
+} from 'class-validator';
 import { toTrimmed } from '../../common/transforms';
 
 /** Body POST /admin/disbursements/:id/mark-paid — admin đã chuyển khoản tay xong mới bấm. */
@@ -21,4 +27,16 @@ export class MarkDisbursementPaidDto {
   @IsString()
   @MaxLength(1000)
   note?: string;
+
+  @ApiPropertyOptional({
+    example:
+      'https://res.cloudinary.com/demo/image/upload/lancare-hub/payment-receipts/bien-lai.jpg',
+    description:
+      'Ảnh biên lai, URL lấy từ POST /admin/disbursements/receipt-upload (không bắt buộc)',
+  })
+  @IsOptional()
+  @Transform(toTrimmed)
+  @IsUrl({ require_protocol: true })
+  @MaxLength(500)
+  receiptUrl?: string;
 }

@@ -7,7 +7,15 @@ import {
   Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, In, Not, QueryFailedError, Repository } from 'typeorm';
+import {
+  Brackets,
+  DataSource,
+  In,
+  Not,
+  QueryFailedError,
+  Repository,
+} from 'typeorm';
+import { likePattern, unaccentSql } from '../common/search';
 import { ProviderProfile } from '../providers/entities/provider-profile.entity';
 import { ServiceOrder } from '../orders/entities/service-order.entity';
 import { Plant } from '../orders/entities/plant.entity';
@@ -222,38 +230,98 @@ export class CareReportsService {
     return toCareReportView(report);
   }
 
+  /**
+   * GET /care-reports — luôn phân trang: { data, total, page, limit }.
+   * Phân quyền ngay trong SQL (nối service_orders): vườn → đơn của vườn (vườn phải đã duyệt), khách → đơn
+   * của khách, admin → mọi đơn. Lọc: serviceOrderId, late=true (nộp trễ), q (không dấu: mã đơn, tên khách,
+   * ghi chú báo cáo, tên cây, ghi chú từng cây). Xem theo 1 đơn → theo kỳ 1→n; không thì mới nộp trước.
+   * Hai bước: lấy id của trang (chỉ join nhiều-một nên đếm đúng theo báo cáo) rồi mới nạp cây + ảnh cho
+   * đúng các id đó — nếu join cây trước thì LIMIT đếm theo dòng cây. Vườn 40 đơn × 5 kỳ, trang 9 →
+   * total 200, chỉ nạp 9 báo cáo.
+   */
   async listCareReports(
     accountId: string,
     role: string,
     query: QueryCareReportDto,
   ) {
-    const allowedOrderIds =
-      role === 'ADMIN'
-        ? undefined
-        : await this.visibleOrderIds(accountId, role);
+    const page = query.page ?? 1;
+    const limit = query.limit ?? (query.serviceOrderId ? 50 : 10);
+    const qb = this.careReportRepo
+      .createQueryBuilder('r')
+      .innerJoin('r.serviceOrder', 'o');
 
-    if (allowedOrderIds) {
-      if (
-        allowedOrderIds.length === 0 ||
-        (query.serviceOrderId &&
-          !allowedOrderIds.includes(query.serviceOrderId))
-      ) {
-        return [];
+    if (role === 'PROVIDER') {
+      const provider = await this.approvedProvider(accountId, role);
+      qb.where('o.providerId = :scopeId', { scopeId: provider.id });
+    } else if (role === 'CUSTOMER') {
+      const customer = await this.customerRepo.findOne({
+        where: { accountId },
+      });
+      if (!customer) {
+        throw new ForbiddenException('CUSTOMER_NOT_ALLOWED');
       }
+      qb.where('o.customerId = :scopeId', { scopeId: customer.id });
+    } else {
+      qb.where('1 = 1');
     }
 
-    const where = query.serviceOrderId
-      ? { serviceOrderId: query.serviceOrderId }
-      : allowedOrderIds
-        ? { serviceOrderId: In(allowedOrderIds) }
-        : {};
+    if (query.serviceOrderId) {
+      qb.andWhere('r.serviceOrderId = :orderId', {
+        orderId: query.serviceOrderId,
+      });
+    }
+    if (query.late) {
+      qb.andWhere('r.isLate = true');
+    }
+    const pattern = likePattern(query.q);
+    if (pattern) {
+      qb.leftJoin('o.customer', 'customer')
+        .leftJoin('customer.account', 'account')
+        .andWhere(
+          new Brackets((match) => {
+            match
+              .where(`${unaccentSql('o.orderCode')} LIKE :pattern`)
+              .orWhere(`${unaccentSql('account.fullName')} LIKE :pattern`)
+              .orWhere(`${unaccentSql('r.otherCareNote')} LIKE :pattern`)
+              .orWhere(
+                `EXISTS (SELECT 1 FROM care_report_plants crp JOIN plants p ON p.id = crp.plant_id
+                  WHERE crp.care_report_id = r.id
+                    AND (${unaccentSql('p.name')} LIKE :pattern OR ${unaccentSql('crp.note')} LIKE :pattern))`,
+              );
+          }),
+        )
+        .setParameter('pattern', pattern);
+    }
 
-    const reports = await this.careReportRepo.find({
-      where,
-      relations: READ_RELATIONS,
-      order: { serviceOrderId: 'ASC', periodIndex: 'ASC' },
-    });
-    return reports.map(toCareReportView);
+    if (query.serviceOrderId) {
+      qb.orderBy('r.periodIndex', 'ASC').addOrderBy('r.id', 'ASC');
+    } else {
+      qb.orderBy('r.submittedAt', 'DESC').addOrderBy('r.id', 'DESC');
+    }
+
+    // Bước 1: id của trang + tổng.
+    const [rows, total] = await qb
+      .select('r.id')
+      .offset((page - 1) * limit)
+      .limit(limit)
+      .getManyAndCount();
+    const ids = rows.map((row) => row.id);
+
+    // Bước 2: nạp cây + ảnh cho đúng các id, giữ thứ tự của bước 1.
+    const reports =
+      ids.length > 0
+        ? await this.careReportRepo.find({
+            where: { id: In(ids) },
+            relations: READ_RELATIONS,
+          })
+        : [];
+    const byId = new Map(reports.map((report) => [report.id, report]));
+    const data = ids
+      .map((id) => byId.get(id))
+      .filter((report): report is CareReport => report !== undefined)
+      .map(toCareReportView);
+
+    return { data, total, page, limit };
   }
 
   private async approvedProvider(accountId: string, role: string) {

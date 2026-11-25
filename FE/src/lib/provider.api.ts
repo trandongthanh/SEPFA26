@@ -8,10 +8,10 @@ export interface ProviderProfileResponse {
   bio?: string | null;
   licenseInfo?: string | null;
   portfolioUrl?: string | null;
-  selfieUrl?: string | null;
-  cccdFrontUrl?: string | null;
-  cccdBackUrl?: string | null;
   businessLicenseUrl?: string | null;
+  // Người đại diện — in vào hợp đồng. BE KHÔNG thu số CCCD hay ảnh giấy tờ/chân dung.
+  dateOfBirth?: string | null;
+  placeOfOrigin?: string | null;
   verificationStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
   verificationNote?: string | null;
   ratingAvg?: string | null;
@@ -25,8 +25,8 @@ export interface ProviderProfileResponse {
   bankName?: string | null;
   bankAccount?: string | null;
   bankHolder?: string | null;
+  bankBin?: string | null;
   phone?: string | null;
-  cccdNumber?: string | null;
   account?: {
     id: string;
     fullName: string;
@@ -43,10 +43,10 @@ export interface UpsertProfilePayload {
   licenseInfo?: string;
   portfolioUrl?: string;
   phone?: string;
-  cccdNumber?: string;
-  selfieUrl?: string;
-  cccdFrontUrl?: string;
-  cccdBackUrl?: string;
+  // Không gửi field nào ngoài DTO: BE bật forbidNonWhitelisted → field lạ (vd cccdNumber cũ) bị 400.
+  fullName?: string;
+  dateOfBirth?: string;
+  placeOfOrigin?: string;
   businessLicenseUrl?: string;
   address?: string;
   gpsLat?: number;
@@ -58,6 +58,16 @@ export interface UpsertProfilePayload {
   bankName?: string;
   bankAccount?: string;
   bankHolder?: string;
+}
+
+// Body POST /orders/:id/handover/cancel (BE: orders/dto/cancel-handover.dto.ts).
+export type HandoverCancelReasonCode = 'CUSTOMER_ABSENT' | 'PROVIDER_CANNOT_SERVE';
+export const HANDOVER_CANCEL_MAX_PHOTOS = 5;
+export const HANDOVER_CANCEL_REASON_MAX = 500;
+export interface CancelHandoverPayload {
+  reason: string; // bắt buộc, tối đa 500 ký tự
+  reasonCode?: HandoverCancelReasonCode;
+  photos?: { photoUrl: string; gpsLat?: number; gpsLng?: number }[]; // tối đa 5
 }
 
 export type OrderStatus =
@@ -99,6 +109,10 @@ export interface OrderItem {
   provisionalTotal: string;
   finalTotal?: string;
   scheduledPickupAt: string;
+  // Hạn chờ của từng bước (cột của đơn, có trong cả danh sách và chi tiết).
+  providerRespondDueAt?: string | null;
+  agreementDueAt?: string | null;
+  paymentDueAt?: string | null;
   careDueAt?: string | null;
   careReportSchedule?: CareReportSchedule | null;
   handoverStatus?: string | null;
@@ -142,7 +156,7 @@ export interface CreatePackagePayload {
   basePrice: number;
   minDeclaredValue: number;
   maxDeclaredValue: number;
-  isActive?: boolean;
+  // Không gửi isActive: BE bỏ qua, chỉ Admin bật/tắt mở bán (tạo/sửa gói luôn isActive=false).
 }
 
 export type SubstrateMoisture = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -179,6 +193,39 @@ export interface CareReportPlantItem {
   budCount?: number | null;
   flowerCount?: number | null;
   photos: CareReportPhotoItem[];
+}
+
+// GET /orders — sort: newest (mặc định) | oldest | pickupSoon (giờ hẹn lấy cây gần nhất trước).
+export type OrderListSort = 'newest' | 'oldest' | 'pickupSoon';
+
+export interface OrderSearchParams {
+  status?: string;
+  q?: string; // tìm không dấu trong mã đơn, tên khách, tên gói, tên cây
+  sort?: OrderListSort;
+  page?: number;
+  limit?: number; // BE tối đa 50
+}
+
+export interface OrderSearchResult {
+  data: OrderItem[];
+  total: number;
+  // Số đơn theo từng trạng thái (đã lọc theo q, không lọc theo status).
+  statusCounts: Record<string, number>;
+}
+
+export interface CareReportListParams {
+  serviceOrderId?: string;
+  q?: string;
+  late?: boolean;
+  page?: number;
+  limit?: number; // BE tối đa 50
+}
+
+export interface CareReportPage {
+  data: CareReportItem[];
+  total: number;
+  page: number;
+  limit: number;
 }
 
 export interface CareReportItem {
@@ -259,9 +306,10 @@ export const providerApi = {
     return res.data;
   },
 
-  // Danh sách đơn hàng phía Provider
-  listOrders: async (status?: string) => {
-    const params = status ? { status } : {};
+  // Danh sách đơn hàng phía Provider — BE phân trang, KHÔNG truyền limit thì BE chỉ trả 10 đơn.
+  listOrders: async (status?: string, page = 1, limit = 10) => {
+    const params: Record<string, string | number> = { page, limit };
+    if (status) params.status = status;
     const res = await api.get<any>('/api/v1/orders', { params });
     const raw = res.data;
     const items: OrderItem[] = Array.isArray(raw)
@@ -275,6 +323,45 @@ export const providerApi = {
       items,
       total: raw?.total ?? items.length,
     };
+  },
+
+  // Danh sách đơn có tìm / lọc / sắp xếp / phân trang làm ở BE (GET /orders?q&status&sort&page&limit).
+  // statusCounts đếm theo q nhưng KHÔNG theo status → dùng thẳng cho số trên các tab.
+  searchOrders: async (params: OrderSearchParams): Promise<OrderSearchResult> => {
+    const query: Record<string, string | number> = {
+      page: params.page ?? 1,
+      limit: params.limit ?? 10,
+    };
+    if (params.status) query.status = params.status;
+    if (params.q?.trim()) query.q = params.q.trim();
+    if (params.sort) query.sort = params.sort;
+    const res = await api.get<{
+      data?: OrderItem[];
+      total?: number;
+      page?: number;
+      limit?: number;
+      statusCounts?: Record<string, number>;
+    }>('/api/v1/orders', { params: query });
+    const body = res.data;
+    return {
+      data: Array.isArray(body?.data) ? body.data : [],
+      total: Number(body?.total ?? 0),
+      statusCounts: body?.statusCounts ?? {},
+    };
+  },
+
+  // Tải HẾT đơn (mỗi lần 50 — mức tối đa BE cho). Chỉ dùng khi cần tra mã đơn / tên khách theo id
+  // (trang báo cáo); danh sách đơn thì dùng searchOrders để BE tìm và chia trang.
+  listAllOrders: async (status?: string) => {
+    const PAGE_SIZE = 50;
+    const MAX_PAGES = 40; // chặn vòng lặp vô hạn nếu BE trả total sai (tối đa 2.000 đơn)
+    const all: OrderItem[] = [];
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const { items, total } = await providerApi.listOrders(status, page, PAGE_SIZE);
+      all.push(...items);
+      if (items.length < PAGE_SIZE || all.length >= total) break;
+    }
+    return all;
   },
 
   // Chi tiết đơn hàng phía Provider
@@ -319,16 +406,35 @@ export const providerApi = {
     return res.data;
   },
 
+  // Sửa gói (PUT /api/v1/providers/me/packages/:packageId). DTO bắt buộc gửi đủ 8 trường.
+  // BE: sửa xong gói luôn về "Chờ duyệt" và TẠM NGƯNG bán (isActive=false) tới khi Admin duyệt lại.
+  updatePackage: async (packageId: string, payload: CreatePackagePayload) => {
+    const res = await api.put<ServicePackageItem>(`/api/v1/providers/me/packages/${packageId}`, payload);
+    return res.data;
+  },
+
   // Xóa gói dịch vụ
   deletePackage: async (packageId: string) => {
     await api.delete(`/api/v1/providers/me/packages/${packageId}`);
   },
 
-  // Danh sách báo cáo chăm sóc
-  listCareReports: async (serviceOrderId?: string) => {
-    const params = serviceOrderId ? { serviceOrderId } : undefined;
-    const res = await api.get<CareReportItem[] | { items?: CareReportItem[] }>('/api/v1/care-reports', { params });
-    return Array.isArray(res.data) ? res.data : res.data?.items ?? [];
+  // Danh sách báo cáo chăm sóc — BE luôn phân trang, trả { data, total, page, limit }.
+  // Có serviceOrderId → xếp theo kỳ 1→n; không có → mới nộp trước. q tìm không dấu, late=true chỉ lấy nộp trễ.
+  listCareReports: async (params: CareReportListParams = {}): Promise<CareReportPage> => {
+    const query: Record<string, string | number | boolean> = {};
+    if (params.serviceOrderId) query.serviceOrderId = params.serviceOrderId;
+    if (params.q?.trim()) query.q = params.q.trim();
+    if (params.late) query.late = true;
+    if (params.page) query.page = params.page;
+    if (params.limit) query.limit = params.limit;
+    const res = await api.get<CareReportPage>('/api/v1/care-reports', { params: query });
+    const body = res.data;
+    return {
+      data: Array.isArray(body?.data) ? body.data : [],
+      total: Number(body?.total ?? 0),
+      page: Number(body?.page ?? params.page ?? 1),
+      limit: Number(body?.limit ?? params.limit ?? 10),
+    };
   },
 
   // Chi tiết báo cáo chăm sóc
@@ -349,7 +455,7 @@ export const providerApi = {
     return res.data;
   },
 
-  // Upload tài liệu / CCCD lên Cloudinary (POST /api/v1/uploads/provider-document)
+  // Upload ảnh giấy phép kinh doanh / chứng chỉ lên Cloudinary (POST /api/v1/uploads/provider-document)
   uploadDocument: async (file: File) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -386,6 +492,26 @@ export const providerApi = {
   // Hoàn tất thẩm định bàn giao (POST /api/v1/orders/:orderId/handover/complete)
   completeHandover: async (orderId: string, payload?: { proposedFinalTotal?: string }) => {
     const res = await api.post(`/api/v1/orders/${orderId}/handover/complete`, payload || {});
+    return res.data;
+  },
+
+  // Vườn huỷ đơn trước khi mở phiên nhận cây (POST /api/v1/orders/:orderId/cancel) — body chỉ { reason },
+  // mã lý do và tiền hoàn do BE tự quyết theo trạng thái đơn.
+  cancelOrder: async (orderId: string, reason: string) => {
+    const res = await api.post<{ status: 'CANCELLED'; cancelCode: string }>(`/api/v1/orders/${orderId}/cancel`, {
+      reason,
+    });
+    return res.data;
+  },
+
+  // Vườn huỷ ở chặng nhận cây (POST /api/v1/orders/:orderId/handover/cancel) — khớp CancelHandoverDto:
+  //  - phiên AWAITING_DEPOSIT (chờ vườn nộp bảo đảm): chỉ cần `reason`;
+  //  - phiên IN_PROGRESS / AWAITING_CUSTOMER: bắt buộc `reasonCode`; CUSTOMER_ABSENT bắt buộc 1–5 ảnh.
+  cancelHandover: async (orderId: string, payload: CancelHandoverPayload) => {
+    const res = await api.post<{ status: 'CANCELLED'; cancelCode: string }>(
+      `/api/v1/orders/${orderId}/handover/cancel`,
+      payload,
+    );
     return res.data;
   },
 
@@ -491,6 +617,15 @@ export const providerApi = {
   },
 
   // Vườn báo đã làm xong add-on (POST /api/v1/orders/:orderId/addons/:addonId/complete)
+  // Vườn trả lại add-on khách đã trả tiền mà vườn không làm được (chỉ khi add-on PAID và đơn IN_CARE).
+  // Khách nhận lại đủ giá + 6%, BE tạo lệnh chi ngay. Lý do 5–500 ký tự, khách đọc được.
+  refundAddon: async (orderId: string, addonId: string, reason: string) => {
+    const res = await api.post<AddonItem>(`/api/v1/orders/${orderId}/addons/${addonId}/refund`, {
+      reason: reason.trim(),
+    });
+    return res.data;
+  },
+
   completeAddon: async (
     orderId: string,
     addonId: string,
@@ -514,7 +649,8 @@ export type AddonStatus =
   | 'PAID'
   | 'DONE'
   | 'REJECTED'
-  | 'EXPIRED';
+  | 'EXPIRED'
+  | 'REFUNDED'; // vườn trả lại add-on khách đã trả tiền → khách được hoàn giá + 6%
 
 export interface AddonItem {
   id: string;
@@ -539,6 +675,8 @@ export interface AddonItem {
   donePlantHealth?: 'GOOD' | 'AVERAGE' | 'POOR' | null;
   expiredReason: 'NO_RESPONSE' | 'NOT_PAID' | 'ORDER_RETURNING' | null;
   expiredAt: string | null;
+  refundedAt?: string | null;
+  refundReason?: string | null;
   createdAt: string;
 }
 

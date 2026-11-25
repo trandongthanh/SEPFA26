@@ -33,13 +33,16 @@ export interface AdminProviderItem {
   bankName: string | null;
   bankAccount: string | null;
   bankHolder: string | null;
+  // Mã BIN 6 số của ngân hàng (không bắt buộc).
+  bankBin: string | null;
   phone?: string | null;
-  cccdNumber?: string | null;
-  cccdFrontUrl: string | null;
-  cccdBackUrl: string | null;
-  selfieUrl: string | null;
+  // Người đại diện — không thu số CCCD hay ảnh giấy tờ tuỳ thân.
+  dateOfBirth: string | null;
+  placeOfOrigin: string | null;
   businessLicenseUrl: string | null;
-  canVerify: boolean;
+  cancelledOrderCount?: number;
+  // Chỉ có ở GET /admin/providers (danh sách).
+  canVerify?: boolean;
   account: AdminAccountInfo | null;
   createdAt: string;
   updatedAt: string;
@@ -72,21 +75,32 @@ export interface AdminPackageWithProvider extends AdminServicePackage {
   provider: Pick<AdminProviderItem, 'id' | 'displayName' | 'verificationStatus'> | null;
 }
 
+// NOT_SUBMITTED: chưa làm eKYC · APPROVED: eKYC đạt · REJECTED: eKYC không đạt.
+// PENDING chỉ còn ở dữ liệu cũ (hồ sơ tự khai trước khi chốt xác thực bằng eKYC).
+export type CustomerVerificationStatus = 'NOT_SUBMITTED' | 'PENDING' | 'APPROVED' | 'REJECTED';
+
+// GET /customers/admin(/:id) — không còn số CCCD hay ảnh; danh tính lấy từ eKYC.
 export interface AdminCustomerItem {
   id: string;
   accountId: string;
+  // Địa chỉ thường trú (eKYC đọc từ thẻ).
   address: string | null;
   defaultPickupAddress: string | null;
   gpsLat: string | null;
   gpsLng: string | null;
-  cccdNumber: string | null;
-  cccdFrontUrl: string | null;
-  cccdBackUrl: string | null;
-  selfieWithIdUrl: string | null;
-  verificationStatus: 'PENDING' | 'APPROVED' | 'REJECTED';
+  dateOfBirth: string | null;
+  placeOfOrigin: string | null;
+  verificationStatus: CustomerVerificationStatus;
   verificationNote: string | null;
+  bankName: string | null;
+  bankAccount: string | null;
+  bankHolder: string | null;
+  bankBin: string | null;
+  lostDisputeCount: number;
+  fullName: string | null;
+  email: string | null;
   phone: string | null;
-  account: AdminAccountInfo;
+  account: AdminAccountInfo | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -139,21 +153,6 @@ export const adminApi = {
     return res.data;
   },
 
-  verifyCustomer: async (customerId: string, payload: VerifyDecisionPayload) => {
-    const res = await api.post(`/api/v1/customers/admin/${customerId}/verify`, payload);
-    return res.data;
-  },
-
-  // --- Khung API cập nhật trạng thái người dùng (ACTIVE / SUSPENDED) ---
-  // Ảnh eKYC của khách lưu trên Cloudinary ở chế độ bảo mật — DB chỉ giữ public_id,
-  // phải xin link có chữ ký (sống 10 phút) mới xem được.
-  getEkycDocumentUrl: async (field: EkycDocumentField, targetAccountId: string) => {
-    const res = await api.get<EkycDocumentUrlResponse>(`/api/v1/ekyc/documents/${field}`, {
-      params: { targetAccountId },
-    });
-    return res.data;
-  },
-
   resetProviderPassword: async (providerId: string) => {
     const res = await api.post<{ tempPassword: string }>(
       `/api/v1/admin/providers/${providerId}/reset-password`,
@@ -180,11 +179,12 @@ export const adminApi = {
   },
 
   // --- Bằng chứng của đơn: báo cáo chăm sóc + add-on (admin được xem mọi đơn) ---
-  listOrderCareReports: async (serviceOrderId: string) => {
-    const res = await api.get<CareReportItem[]>('/api/v1/care-reports', {
-      params: { serviceOrderId },
+  // BE trả { data, total, page, limit }; xem theo 1 đơn thì xếp kỳ 1→n. limit 50 (tối đa của BE) đủ mọi kỳ của một đơn.
+  listOrderCareReports: async (serviceOrderId: string): Promise<CareReportItem[]> => {
+    const res = await api.get<{ data?: CareReportItem[] }>('/api/v1/care-reports', {
+      params: { serviceOrderId, limit: 50 },
     });
-    return res.data;
+    return Array.isArray(res.data?.data) ? res.data.data : [];
   },
 
   listOrderAddons: async (orderId: string) => {
@@ -227,6 +227,23 @@ export const adminApi = {
     return res.data;
   },
 
+  // --- Tiền chưa khớp ---
+  listUnmatchedTransactions: async (params?: { status?: 'OPEN' | 'RESOLVED'; page?: number; limit?: number }) => {
+    const res = await api.get<{ data: UnmatchedTransactionItem[]; total: number; page: number; limit: number }>(
+      '/api/v1/admin/unmatched-transactions',
+      { params },
+    );
+    return res.data;
+  },
+
+  refundUnmatchedTransaction: async (id: string, payload: RefundUnmatchedPayload) => {
+    const res = await api.post<UnmatchedTransactionItem>(
+      `/api/v1/admin/unmatched-transactions/${id}/refund`,
+      payload,
+    );
+    return res.data;
+  },
+
   markDisbursementPaid: async (
     id: string,
     payload: { transferCode: string; note?: string },
@@ -248,14 +265,20 @@ export type DisbursementType =
   | 'DECLARED_FORFEIT' // tiền bảo đảm khai giá của khách → vườn (khách khiếu nại sai)
   | 'REFUND' // hoàn tiền công + 6% → khách
   | 'COMPENSATION' // đền giá trị cây → khách
-  | 'DECLARED_RETURN'; // trả lại tiền bảo đảm khai giá → khách
+  | 'DECLARED_RETURN' // trả lại tiền bảo đảm khai giá → khách
+  | 'OVERPAY_RETURN' // thối tiền chuyển dư → khách (tiền đơn/add-on) hoặc vườn (tiền bảo đảm), chi ngay
+  | 'UNMATCHED_REFUND'; // admin hoàn một khoản tiền chưa khớp đơn nào, chi ngay
 
-export type DisbursementRecipient = 'CUSTOMER' | 'PROVIDER';
+// OTHER = không gắn khách/vườn (UNMATCHED_REFUND về tài khoản admin nhập tay).
+export type DisbursementRecipient = 'CUSTOMER' | 'PROVIDER' | 'OTHER';
 
 export interface DisbursementItem {
   id: string;
-  orderId: string;
-  orderCode: string;
+  // Null với UNMATCHED_REFUND của khoản tiền không gắn đơn nào.
+  orderId: string | null;
+  orderCode: string | null;
+  // Khoản tiền chưa khớp sinh ra lệnh này (chỉ UNMATCHED_REFUND).
+  sourceTransactionId?: string | null;
   recipient: DisbursementRecipient;
   // Tên người nhận đúng bên: tên vườn hoặc họ tên khách.
   recipientName: string | null;
@@ -272,10 +295,69 @@ export interface DisbursementItem {
     bankName: string;
     bankAccount: string;
     bankHolder: string;
+    bankBin: string | null;
   } | null;
   transferCode: string | null;
   paidAt: string | null;
   note: string | null;
+}
+
+// ===== Tiền chưa khớp — khớp BE payments/unmatched-transactions.service toView =====
+// Tiền đã vào tài khoản LanCare nhưng không ghi được vào đơn nào. Admin hoàn → BE tạo lệnh chi UNMATCHED_REFUND.
+
+export type UnmatchedReason =
+  | 'NO_CODE' // nội dung chuyển khoản không có mã
+  | 'CODE_NOT_FOUND' // có mã nhưng không khớp đơn / add-on / tiền bảo đảm nào
+  | 'ORDER_NOT_AWAITING_PAYMENT' // đơn không còn chờ thanh toán (đã trả / đã huỷ)
+  | 'PAYMENT_DEADLINE_PASSED' // tiền về sau hạn thanh toán
+  | 'INSUFFICIENT_AMOUNT' // chuyển thiếu tiền đơn
+  | 'ADDON_NOT_PAYABLE' // add-on quá hạn trả / đã trả / đã đóng
+  | 'ADDON_INSUFFICIENT' // chuyển thiếu tiền add-on
+  | 'DEPOSIT_NOT_PENDING' // tiền bảo đảm của vườn: khoản đã nộp / đã huỷ
+  | 'DEPOSIT_EXPIRED' // tiền bảo đảm về trễ
+  | 'DEPOSIT_INSUFFICIENT' // nộp thiếu tiền bảo đảm
+  | 'LEGACY_UNKNOWN'; // dòng cũ từ trước khi BE lưu lý do
+
+export interface BankInfo {
+  bankName: string;
+  bankAccount: string;
+  bankHolder: string;
+  bankBin: string | null;
+}
+
+export interface UnmatchedTransactionItem {
+  id: string;
+  sepayTxnId: string | null;
+  amount: string;
+  transferContent: string | null;
+  receivedAt: string;
+  reason: UnmatchedReason;
+  order: { id: string; orderCode: string } | null;
+  // Người BE đoán là người chuyển (tiền bảo đảm → vườn, còn lại → khách). Null khi không gắn được đơn.
+  suggestedRecipient: {
+    type: 'CUSTOMER' | 'PROVIDER';
+    id: string;
+    name: string | null;
+    bank: BankInfo | null; // null = hồ sơ chưa khai đủ tài khoản
+  } | null;
+  // Đã hoàn: lệnh chi nào, ai bấm, lúc nào, ghi chú.
+  resolution: {
+    disbursementId: string;
+    disbursementStatus: DisbursementStatus | null;
+    resolvedBy: string | null;
+    resolvedAt: string | null;
+    note: string | null;
+  } | null;
+}
+
+export interface RefundUnmatchedPayload {
+  // Bỏ trống cả 3 = dùng tài khoản gợi ý. Nhập thì phải đủ 3 trường.
+  bankName?: string;
+  bankAccount?: string;
+  bankHolder?: string;
+  bankBin?: string;
+  // Bắt buộc khi không gắn đơn hoặc khi đổi sang tài khoản khác tài khoản gợi ý.
+  note?: string;
 }
 
 export interface DisbursementListResponse {
@@ -454,20 +536,9 @@ export interface ShippingRateInput {
   isActive?: boolean;
 }
 
-// ===== Ảnh eKYC bảo mật — GET /ekyc/documents/:field?targetAccountId= =====
-
-export type EkycDocumentField = 'front' | 'back' | 'selfie';
-
-export interface EkycDocumentUrlResponse {
-  // null với hồ sơ eKYC cũ (trước khi có Cloudinary) — kèm message giải thích.
-  url: string | null;
-  expiresInSeconds: number;
-  message: string;
-}
-
 // ===== Add-on của đơn — GET /orders/:orderId/addons (khớp BE addons.service toViews) =====
 
-export type AddonStatus = 'PENDING' | 'ACCEPTED' | 'PAID' | 'DONE' | 'REJECTED' | 'EXPIRED';
+export type AddonStatus = 'PENDING' | 'ACCEPTED' | 'PAID' | 'DONE' | 'REJECTED' | 'EXPIRED' | 'REFUNDED';
 
 export interface OrderAddonItem {
   id: string;
@@ -492,5 +563,7 @@ export interface OrderAddonItem {
   donePlantHealth: 'GOOD' | 'AVERAGE' | 'POOR' | null;
   expiredReason: 'NO_RESPONSE' | 'NOT_PAID' | 'ORDER_RETURNING' | null;
   expiredAt: string | null;
+  refundedAt?: string | null;
+  refundReason?: string | null;
   createdAt: string;
 }

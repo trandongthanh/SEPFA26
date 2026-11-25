@@ -19,6 +19,7 @@ import type { CurrentUserData } from '../auth/types/current-user.type';
 import { AddonsService } from './addons.service';
 import { CompleteAddonDto } from './dto/complete-addon.dto';
 import { CreateAddonDto } from './dto/create-addon.dto';
+import { RefundAddonDto } from './dto/refund-addon.dto';
 import { RespondAddonDto } from './dto/respond-addon.dto';
 
 // Add-on của một đơn. Route lấy QR trả tiền add-on nằm ở payments.controller.ts.
@@ -115,5 +116,35 @@ export class AddonsController {
     @Body() dto: CompleteAddonDto,
   ) {
     return this.addonsService.complete(user.accountId, orderId, addonId, dto);
+  }
+
+  @Roles('PROVIDER')
+  @Post(':addonId/refund')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Vườn trả lại add-on khách đã trả tiền mà không làm được — khách nhận lại đủ giá + 6%, chi ngay',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'thiếu reason hoặc reason ngoài 5–500 ký tự',
+  })
+  @ApiResponse({ status: 403, description: 'PROFILE_NOT_APPROVED' })
+  @ApiResponse({
+    status: 404,
+    description: 'ORDER_NOT_FOUND | ADDON_NOT_FOUND',
+  })
+  @ApiResponse({
+    status: 409,
+    description:
+      'ADDON_INVALID_STATE (add-on chưa trả tiền, đã báo xong hoặc đã trả lại) | INVALID_STATE_TRANSITION (đơn không còn đang chăm)',
+  })
+  refund(
+    @CurrentUser() user: CurrentUserData,
+    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @Param('addonId', ParseUUIDPipe) addonId: string,
+    @Body() dto: RefundAddonDto,
+  ) {
+    return this.addonsService.refund(user.accountId, orderId, addonId, dto);
   }
 }
