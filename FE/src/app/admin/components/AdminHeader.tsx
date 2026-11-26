@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { App, Avatar, Drawer, Input } from 'antd';
-import { BellOutlined, MenuOutlined, SearchOutlined } from '@ant-design/icons';
+import { MenuOutlined, SearchOutlined } from '@ant-design/icons';
+import NotificationBell from '@/features/notifications/NotificationBell';
 import { useAuthStore } from '@/lib/auth.store';
 import AdminSidebar from './AdminSidebar';
 
@@ -47,12 +48,7 @@ export default function AdminHeader({ searchPlaceholder = 'Tìm kiếm giao dị
 
       {/* Right Controls */}
       <div className="flex items-center gap-3">
-        <button
-          onClick={() => message.info('Thông báo hệ thống')}
-          className="w-9 h-9 rounded-xl bg-[#F6F4FC] text-[#6E6A8A] flex items-center justify-center hover:bg-[#ECE7FA] transition-colors"
-        >
-          <BellOutlined className="text-lg" />
-        </button>
+        <NotificationBell />
 
         {/* Admin Avatar */}
         <div className="flex items-center gap-2 pl-3 border-l border-[#ECE7FA]">

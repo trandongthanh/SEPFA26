@@ -16,6 +16,7 @@ import {
   DollarOutlined,
   EnvironmentOutlined,
   ExclamationCircleOutlined,
+  FileDoneOutlined,
   FileProtectOutlined,
   FileTextOutlined,
   FormOutlined,
@@ -42,6 +43,7 @@ import HandoverCancelModal, { canCancelHandover } from '../../components/Handove
 import OrderDeadline from '../../components/OrderDeadline';
 import OrderCancelModal, { PROVIDER_CANCELLABLE_STATUSES } from '../../components/OrderCancelModal';
 import RefundAddonModal from '../../components/RefundAddonModal';
+import PaymentClaimsModal from '../../components/PaymentClaimsModal';
 import dayjs from 'dayjs';
 
 const CALL_ELIGIBLE_STATUSES = new Set([
@@ -76,6 +78,7 @@ export default function ProviderOrderDetailPage() {
   const [addons, setAddons] = useState<AddonItem[]>([]);
   // Add-on đang mở hộp thoại "Trả lại tiền" (null = đóng).
   const [refundAddon, setRefundAddon] = useState<AddonItem | null>(null);
+  const [paymentClaimsModalOpen, setPaymentClaimsModalOpen] = useState(false);
   const [addonsLoading, setAddonsLoading] = useState(false);
 
   // State for Addon Proposal Modal
@@ -842,6 +845,14 @@ export default function ProviderOrderDetailPage() {
                   Xem kết quả tranh chấp
                 </Button>
               )}
+
+              <Button
+                icon={<FileDoneOutlined />}
+                onClick={() => setPaymentClaimsModalOpen(true)}
+                className="!h-9 !px-4 !rounded-xl !bg-[#FAF8FE] hover:!bg-[#F3EFFF] !border !border-[#DDD6FE] !text-[#6027D2] font-semibold text-xs"
+              >
+                Phiếu báo chuyển tiền
+              </Button>
             </div>
           </div>
 
@@ -882,13 +893,21 @@ export default function ProviderOrderDetailPage() {
                   </p>
                 </div>
               </div>
-              <Button
-                type="primary"
-                onClick={handleOpenDepositModal}
-                className="!rounded-xl !bg-[#D97706] hover:!bg-[#B45309] text-xs font-semibold shrink-0"
-              >
-                Quét VietQR nộp tiền bảo lãnh →
-              </Button>
+              <div className="flex items-center gap-2 flex-wrap shrink-0">
+                <Button
+                  onClick={() => setPaymentClaimsModalOpen(true)}
+                  className="!rounded-xl !bg-white !border-amber-300 !text-amber-800 text-xs font-semibold"
+                >
+                  Đã chuyển? Báo đối soát
+                </Button>
+                <Button
+                  type="primary"
+                  onClick={handleOpenDepositModal}
+                  className="!rounded-xl !bg-[#D97706] hover:!bg-[#B45309] text-xs font-semibold"
+                >
+                  Quét VietQR nộp tiền bảo lãnh →
+                </Button>
+              </div>
             </div>
           )}
 
@@ -1143,11 +1162,25 @@ export default function ProviderOrderDetailPage() {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-bold text-sm text-emerald-900">Quyết toán đơn</span>
                     {payout && (
-                      <Tag color={payout.status === 'PAID' ? 'success' : 'gold'} className="!m-0 !rounded-lg">
-                        {payout.status === 'PAID'
-                          ? `Đã chuyển khoản${payout.paidAt ? ` lúc ${new Date(payout.paidAt).toLocaleString('vi-VN')}` : ''}`
-                          : `Admin chuyển khoản từ ${new Date(payout.eligibleAt).toLocaleString('vi-VN')}`}
-                      </Tag>
+                      <div className="flex items-center gap-2">
+                        <Tag color={payout.status === 'PAID' ? 'success' : 'gold'} className="!m-0 !rounded-lg">
+                          {payout.status === 'PAID'
+                            ? `Đã chuyển khoản${payout.paidAt ? ` lúc ${new Date(payout.paidAt).toLocaleString('vi-VN')}` : ''}`
+                            : `Admin chuyển khoản từ ${new Date(payout.eligibleAt).toLocaleString('vi-VN')}`}
+                        </Tag>
+                        {payout.receiptUrl && (
+                          <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-lg border border-emerald-200">
+                            <span className="text-[11px] text-emerald-800 font-semibold">Biên lai:</span>
+                            <Image
+                              src={payout.receiptUrl}
+                              alt="Biên lai chuyển khoản"
+                              width={24}
+                              height={24}
+                              className="rounded object-cover"
+                            />
+                          </div>
+                        )}
+                      </div>
                     )}
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
@@ -1541,6 +1574,16 @@ export default function ProviderOrderDetailPage() {
           }
         }}
       />
+
+      {/* Modal: Phiếu báo đã chuyển tiền */}
+      {order && (
+        <PaymentClaimsModal
+          open={paymentClaimsModalOpen}
+          onClose={() => setPaymentClaimsModalOpen(false)}
+          orderId={order.id}
+          orderCode={order.orderCode}
+        />
+      )}
 
       {/* Modal: Create Addon Proposal */}
       <Modal
