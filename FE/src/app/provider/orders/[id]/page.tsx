@@ -40,6 +40,7 @@ import ProviderHeader from '../../components/ProviderHeader';
 import ProviderSidebar from '../../components/ProviderSidebar';
 import HandoverCancelModal, { canCancelHandover } from '../../components/HandoverCancelModal';
 import OrderDeadline from '../../components/OrderDeadline';
+import CancelledOrderInfo from '../../components/CancelledOrderInfo';
 import OrderCancelModal, { PROVIDER_CANCELLABLE_STATUSES } from '../../components/OrderCancelModal';
 import RefundAddonModal from '../../components/RefundAddonModal';
 import dayjs from 'dayjs';
@@ -847,6 +848,9 @@ export default function ProviderOrderDetailPage() {
 
           {/* Hạn chót của bước hiện tại (trả lời đơn / ký HĐ / thanh toán / tới lấy cây) */}
           <OrderDeadline order={order} className="!rounded-2xl !p-3" />
+
+          {/* Đơn đã huỷ: lý do, ai huỷ, có tính lỗi cho vườn không, tiền đi đâu — tự ẩn với trạng thái khác */}
+          <CancelledOrderInfo order={order} />
 
           {/* Đang kiểm tra cây: mốc được báo "khách vắng nhà" = giờ hẹn + 30 phút (BE trả deadlines.noShowFrom). */}
           {order.handoverStatus === 'IN_PROGRESS' && order.deadlines?.noShowFrom && (

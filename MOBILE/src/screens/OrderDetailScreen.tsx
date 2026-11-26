@@ -38,6 +38,7 @@ import {
 import { providerService } from '../services/providerService';
 import { calculateRoadDistanceKm } from '../utils/distance';
 import { CustomerCancelSection } from '../components/order/CustomerCancelSection';
+import { CancelledOrderCard } from '../components/order/CancelledOrderCard';
 import { DisputeResultCard } from '../components/order/DisputeResultCard';
 import { SettlementCard, isSettlementShown } from '../components/order/SettlementCard';
 import { customerFeeFor, formatVnd, toNumber } from '../components/order/orderMoney';
@@ -738,6 +739,9 @@ export const OrderDetailScreen: React.FC<OrderDetailScreenProps> = ({
             Trạng thái: {statusInfo.label}
           </Text>
         </View>
+
+        {/* Đơn đã huỷ: vì sao, ai huỷ, được hoàn bao nhiêu — tự ẩn với trạng thái khác */}
+        <CancelledOrderCard order={order} />
 
         {/* Dynamic Action Section based on Order Status */}
         {order.status === 'AGREEMENT_PENDING' && (
