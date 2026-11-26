@@ -3,7 +3,8 @@
 import React from 'react';
 import Link from 'next/link';
 import { Avatar, message } from 'antd';
-import { BellOutlined, MailOutlined, SettingOutlined } from '@ant-design/icons';
+import { MailOutlined, SettingOutlined } from '@ant-design/icons';
+import NotificationBell from '@/features/notifications/NotificationBell';
 import { ProviderProfileResponse } from '@/lib/provider.api';
 import { useAuthStore } from '@/lib/auth.store';
 
@@ -20,15 +21,7 @@ export default function ProviderHeader({ profile, pendingCount = 0 }: ProviderHe
       {/* Ô tìm kiếm chung đã bỏ (chưa từng hoạt động) — mỗi trang danh sách có ô tìm kiếm riêng. */}
       {/* Right Header Controls */}
       <div className="flex items-center gap-4">
-        <button
-          onClick={() => message.info('Thông báo hệ thống')}
-          className="w-9 h-9 rounded-xl bg-[#F6F4FC] text-[#6E6A8A] flex items-center justify-center hover:bg-[#ECE7FA] transition-colors relative"
-        >
-          <BellOutlined className="text-lg" />
-          {pendingCount > 0 && (
-            <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-[#E53E3E]" />
-          )}
-        </button>
+        <NotificationBell />
 
         <button
           onClick={() => message.info('Tin nhắn khách hàng')}

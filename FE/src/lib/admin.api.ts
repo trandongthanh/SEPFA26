@@ -246,7 +246,7 @@ export const adminApi = {
 
   markDisbursementPaid: async (
     id: string,
-    payload: { transferCode: string; note?: string },
+    payload: { transferCode: string; note?: string; receiptUrl?: string },
   ) => {
     const res = await api.post<DisbursementItem>(
       `/api/v1/admin/disbursements/${id}/mark-paid`,
@@ -300,6 +300,7 @@ export interface DisbursementItem {
   transferCode: string | null;
   paidAt: string | null;
   note: string | null;
+  receiptUrl?: string | null;
 }
 
 // ===== Tiền chưa khớp — khớp BE payments/unmatched-transactions.service toView =====

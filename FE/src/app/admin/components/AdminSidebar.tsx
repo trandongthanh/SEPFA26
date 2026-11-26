@@ -4,6 +4,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   CarOutlined,
   AuditOutlined,
+  FileDoneOutlined,
   InteractionOutlined,
   LogoutOutlined,
   RollbackOutlined,
@@ -100,6 +101,12 @@ export default function AdminSidebar({ variant = 'fixed' }: { variant?: 'fixed' 
       icon: <RollbackOutlined />,
       label: 'Tiền chưa khớp',
       onClick: () => router.push('/admin/unmatched-transactions'),
+    },
+    {
+      key: '/admin/payment-claims',
+      icon: <FileDoneOutlined />,
+      label: 'Phiếu báo chuyển tiền',
+      onClick: () => router.push('/admin/payment-claims'),
     },
     {
       key: '/admin/shipping-rates',

@@ -7,13 +7,16 @@ import {
   CheckCircleOutlined,
   ClockCircleOutlined,
   DollarOutlined,
+  FileImageOutlined,
   ReloadOutlined,
   SendOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import {
   App,
   Button,
   Form,
+  Image,
   Input,
   Modal,
   Segmented,
@@ -32,6 +35,7 @@ import {
   DisbursementType,
   adminApi,
 } from '@/lib/admin.api';
+import { paymentClaimsApi } from '@/lib/payment-claims.api';
 import AdminSidebar from '../components/AdminSidebar';
 import AdminHeader from '../components/AdminHeader';
 
@@ -100,6 +104,8 @@ export default function AdminDisbursementsPage() {
   const [payModalOpen, setPayModalOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<DisbursementItem | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
+  const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const [form] = Form.useForm<{ transferCode: string; note?: string }>();
 
   useEffect(() => {
@@ -143,8 +149,32 @@ export default function AdminDisbursementsPage() {
 
   const handleOpenPayModal = (record: DisbursementItem) => {
     setSelectedItem(record);
+    setReceiptUrl(null);
+    setUploadingReceipt(false);
     form.resetFields();
     setPayModalOpen(true);
+  };
+
+  const handleUploadReceipt = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      message.error('Ảnh biên lai không được vượt quá 5 MB.');
+      return;
+    }
+
+    setUploadingReceipt(true);
+    try {
+      const res = await paymentClaimsApi.uploadDisbursementReceipt(file);
+      setReceiptUrl(res.url);
+      message.success('Đã tải ảnh biên lai thành công.');
+    } catch (err: any) {
+      message.error(err?.response?.data?.message || 'Tải ảnh biên lai thất bại.');
+    } finally {
+      setUploadingReceipt(false);
+    }
   };
 
   const handleConfirmPaid = async () => {
@@ -155,6 +185,7 @@ export default function AdminDisbursementsPage() {
       await adminApi.markDisbursementPaid(selectedItem.id, {
         transferCode: values.transferCode.trim(),
         note: values.note?.trim() || undefined,
+        receiptUrl: receiptUrl || undefined,
       });
       message.success(
         selectedItem.orderCode
@@ -293,6 +324,18 @@ export default function AdminDisbursementsPage() {
             {record.paidAt && (
               <div className="text-[10px] text-[#8B86A4]">
                 {dayjs(record.paidAt).format('DD/MM/YYYY HH:mm')}
+              </div>
+            )}
+            {record.receiptUrl && (
+              <div className="mt-1 flex items-center gap-1">
+                <Image
+                  src={record.receiptUrl}
+                  alt="Biên lai"
+                  width={28}
+                  height={28}
+                  className="rounded object-cover border border-emerald-300"
+                />
+                <span className="text-[10px] text-emerald-700 font-semibold">Biên lai</span>
               </div>
             )}
           </div>
@@ -527,6 +570,41 @@ export default function AdminDisbursementsPage() {
                   className="!rounded-xl"
                 />
               </Form.Item>
+
+              {/* Tải ảnh biên lai */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-[#1E1B2E] block">
+                  Ảnh biên lai ngân hàng (tuỳ chọn, tối đa 5 MB)
+                </label>
+                {receiptUrl ? (
+                  <div className="relative inline-block">
+                    <img
+                      src={receiptUrl}
+                      alt="Biên lai chuyển khoản"
+                      className="w-24 h-24 rounded-xl object-cover border border-[#DDD6FE]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setReceiptUrl(null)}
+                      className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs shadow-sm hover:bg-rose-600"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : (
+                  <label className="w-full h-16 rounded-xl border border-dashed border-[#DDD6FE] text-[#6027D2] bg-[#FAF8FE] hover:bg-[#F3EFFF] cursor-pointer flex items-center justify-center gap-2 text-xs font-semibold transition-colors">
+                    <UploadOutlined className="text-base" />
+                    <span>{uploadingReceipt ? 'Đang tải ảnh...' : 'Tải lên ảnh biên lai'}</span>
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="hidden"
+                      onChange={handleUploadReceipt}
+                      disabled={uploadingReceipt}
+                    />
+                  </label>
+                )}
+              </div>
             </Form>
           </div>
         )}
