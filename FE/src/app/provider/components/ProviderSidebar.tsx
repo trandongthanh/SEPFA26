@@ -156,12 +156,6 @@ export default function ProviderSidebar({ profile }: ProviderSidebarProps) {
                 onClick: () => setPasswordOpen(true),
               },
               {
-                key: 'settings',
-                icon: <SettingOutlined />,
-                label: 'Cài đặt tài khoản',
-                onClick: () => message.info('Trang cài đặt tài khoản'),
-              },
-              {
                 type: 'divider',
               },
               {
