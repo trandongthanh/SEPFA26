@@ -20,6 +20,7 @@ import { CustomerProfile } from '../customers/entities/customer-profile.entity';
 import { EkycRecord } from '../ekyc/entities/ekyc-record.entity';
 import { formatVnd } from '../notifications/notification.constants';
 import { NotificationsService } from '../notifications/notifications.service';
+import { loadCustomerDisbursements } from '../payments/customer-disbursements';
 import {
   loadCustomerSettlement,
   loadProviderSettlement,
@@ -723,6 +724,11 @@ export class OrdersService {
       [handover?.id, returnHandover?.id].filter((id): id is string => !!id),
     );
     const settlement = await this.loadSettlement(order, role);
+    // Lệnh chi của KHÁCH (tiền hoàn đã chuyển chưa, biên lai) — chỉ khách; vườn không tốn câu query này.
+    const customerDisbursements =
+      role === 'CUSTOMER'
+        ? await loadCustomerDisbursements(this.dataSource.manager, order)
+        : [];
     // Khoản tiền bảo đảm là việc giữa vườn và nền tảng → khách KHÔNG thấy field này.
     // Lấy khoản mới nhất của đơn (PENDING / PAID / CANCELLED); khách chưa đồng ý biên bản thì null.
     const securityDeposit =
@@ -769,6 +775,7 @@ export class OrdersService {
       deadlines: buildDeadlines(order),
       ...(role === 'CUSTOMER' ? { cancelPreview, declinePreview } : {}),
       settlement,
+      ...(role === 'CUSTOMER' ? { customerDisbursements } : {}),
       // Tiền bảo đảm khai giá khách nộp cùng tiền đơn (từng cây ở plants[].declaredDeposit).
       declaredDepositTotal: this.sumDeclaredDeposit(order.plants),
       openAddonCount,
