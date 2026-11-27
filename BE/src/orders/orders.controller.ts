@@ -464,7 +464,12 @@ export class OrdersController {
 
   @Roles('CUSTOMER', 'PROVIDER')
   @Get(':orderId')
-  @ApiOperation({ summary: 'Chi tiết đơn kèm cây + ảnh + negotiation' })
+  @ApiOperation({
+    summary: 'Chi tiết đơn kèm cây + ảnh + negotiation',
+    description:
+      'Khách gọi thì có thêm customerDisbursements (ngang hàng settlement): các lệnh chi trả về khách của đơn ' +
+      '{ id, type, amount, status, eligibleAt, paidAt, receiptUrl }, xếp theo lúc tạo; chưa có → []. Vườn gọi không có khoá này.',
+  })
   getOrderDetail(
     @CurrentUser() user: CurrentUserData,
     @Param('orderId', ParseUUIDPipe) orderId: string,
