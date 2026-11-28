@@ -114,6 +114,8 @@ export interface OrderItem {
   careReportSchedule?: CareReportSchedule | null;
   declaredDepositTotal?: string;
   settlement?: CustomerSettlement | null;
+  // Danh sách lệnh chi cho khách của đơn (tiền hoàn, bồi thường, khai giá trả lại, chuyển dư).
+  customerDisbursements?: CustomerDisbursementItem[];
   // Các mốc giờ BE trả kèm chi tiết đơn (orders.service getOrderDetail).
   deadlines?: OrderDeadlines;
   // Lúc tiền đơn về (SePay). null = chưa từng trả, kể cả đơn huỷ trước khi trả (BE PR #48).
@@ -195,6 +197,16 @@ export interface CustomerSettlement {
   // Tiền bạn chuyển DƯ (đơn / add-on) đã được trả lại ngay lúc tiền về; không nằm trong customerTotal.
   // BE cũ không có field này → coi như "0".
   overpayReturned?: string;
+}
+
+export interface CustomerDisbursementItem {
+  id: string;
+  type: 'REFUND' | 'COMPENSATION' | 'DECLARED_RETURN' | 'OVERPAY_RETURN';
+  amount: string;
+  status: 'PENDING' | 'PAID' | 'CANCELLED';
+  eligibleAt: string;
+  paidAt: string | null;
+  receiptUrl: string | null;
 }
 
 export interface PaginatedOrdersResponse {

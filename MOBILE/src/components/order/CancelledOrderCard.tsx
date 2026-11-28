@@ -143,7 +143,46 @@ export const CancelledOrderCard: React.FC<Props> = ({ order }) => {
                 <Text style={styles.totalValue}>{formatVnd(refund + declaredBack)}</Text>
               </View>
             </View>
-            <Text style={styles.foot}>Tiền hoàn chuyển về tài khoản ngân hàng bạn đã khai.</Text>
+            {order.customerDisbursements && order.customerDisbursements.length > 0 ? (
+              <View style={styles.disbBox}>
+                <Text style={styles.disbBoxTitle}>Trạng thái chuyển tiền hoàn</Text>
+                {order.customerDisbursements.map((d) => {
+                  const isPaid = d.status === 'PAID';
+                  const typeLabel =
+                    d.type === 'DECLARED_RETURN'
+                      ? 'Tiền khai giá'
+                      : d.type === 'COMPENSATION'
+                      ? 'Tiền bồi thường'
+                      : d.type === 'OVERPAY_RETURN'
+                      ? 'Tiền chuyển dư'
+                      : 'Tiền hoàn đơn';
+                  return (
+                    <View key={d.id} style={styles.disbRow}>
+                      <View style={{ flex: 1 }}>
+                        <View style={styles.row}>
+                          <Text style={styles.disbTypeLabel}>{typeLabel}</Text>
+                          <Text style={styles.disbAmountText}>{formatVnd(d.amount)}</Text>
+                        </View>
+                        <View style={styles.disbStatusRow}>
+                          <Ionicons
+                            name={isPaid ? 'checkmark-circle' : 'time-outline'}
+                            size={13}
+                            color={isPaid ? '#059669' : '#D97706'}
+                          />
+                          <Text style={[styles.disbStatusText, { color: isPaid ? '#059669' : '#D97706' }]}>
+                            {isPaid
+                              ? `Đã chuyển lúc ${formatDateTime(d.paidAt)}`
+                              : 'Đang chờ chuyển về tài khoản của bạn'}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            ) : (
+              <Text style={styles.foot}>Tiền hoàn chuyển về tài khoản ngân hàng bạn đã khai.</Text>
+            )}
           </>
         ) : (
           <Text style={styles.noMoney}>Đơn chưa thanh toán nên không có khoản hoàn tiền.</Text>
@@ -180,6 +219,46 @@ const styles = StyleSheet.create({
   totalLabel: { fontSize: 14, fontWeight: '800', color: '#1A202C' },
   totalValue: { fontSize: 14, fontWeight: '800', color: '#059669' },
   foot: { fontSize: 11, color: '#718096', marginTop: 6 },
+  disbBox: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 10,
+    gap: 6,
+  },
+  disbBoxTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#166534',
+    marginBottom: 2,
+  },
+  disbRow: {
+    paddingVertical: 4,
+    borderTopWidth: 1,
+    borderTopColor: '#DCFCE7',
+  },
+  disbTypeLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+  disbAmountText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#059669',
+  },
+  disbStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  disbStatusText: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
   noMoney: {
     fontSize: 13,
     color: '#718096',

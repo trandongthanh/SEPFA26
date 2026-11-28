@@ -2,7 +2,7 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { OrderItem } from '../../services/orderService';
-import { formatVnd, toNumber } from './orderMoney';
+import { formatDateTime, formatVnd, toNumber } from './orderMoney';
 
 interface Props {
   order: OrderItem;
@@ -94,6 +94,43 @@ export const SettlementCard: React.FC<Props> = ({ order }) => {
           <Text style={styles.note}>Chưa có khoản nào được hoàn. Phần này cập nhật khi đơn kết thúc.</Text>
         ))}
 
+      {order.customerDisbursements && order.customerDisbursements.length > 0 && (
+        <View style={styles.disbBox}>
+          <Text style={styles.disbBoxTitle}>Trạng thái chuyển tiền</Text>
+          {order.customerDisbursements.map((d) => {
+            const isPaid = d.status === 'PAID';
+            const typeLabel =
+              d.type === 'DECLARED_RETURN'
+                ? 'Tiền khai giá'
+                : d.type === 'COMPENSATION'
+                ? 'Tiền bồi thường'
+                : d.type === 'OVERPAY_RETURN'
+                ? 'Tiền chuyển dư'
+                : 'Tiền hoàn đơn';
+            return (
+              <View key={d.id} style={styles.disbRow}>
+                <View style={styles.row}>
+                  <Text style={styles.disbTypeLabel}>{typeLabel}</Text>
+                  <Text style={styles.disbAmountText}>{formatVnd(d.amount)}</Text>
+                </View>
+                <View style={styles.disbStatusRow}>
+                  <Ionicons
+                    name={isPaid ? 'checkmark-circle' : 'time-outline'}
+                    size={13}
+                    color={isPaid ? '#059669' : '#D97706'}
+                  />
+                  <Text style={[styles.disbStatusText, { color: isPaid ? '#059669' : '#D97706' }]}>
+                    {isPaid
+                      ? `Đã chuyển lúc ${formatDateTime(d.paidAt)}`
+                      : 'Đang chờ chuyển về tài khoản'}
+                  </Text>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
+
       {forfeited > 0 && (
         <View style={[styles.row, { marginTop: 8 }]}>
           <Text style={[styles.label, { color: '#C2410C', flex: 1 }]}>Tiền bảo đảm khai giá chuyển cho vườn</Text>
@@ -142,4 +179,44 @@ const styles = StyleSheet.create({
     borderColor: '#BFDBFE',
   },
   overpayNote: { fontSize: 11, color: '#1E3A8A', lineHeight: 16, marginTop: 2 },
+  disbBox: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 10,
+    gap: 6,
+  },
+  disbBoxTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#166534',
+    marginBottom: 2,
+  },
+  disbRow: {
+    paddingVertical: 4,
+    borderTopWidth: 1,
+    borderTopColor: '#DCFCE7',
+  },
+  disbTypeLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+  disbAmountText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#059669',
+  },
+  disbStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  disbStatusText: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
 });

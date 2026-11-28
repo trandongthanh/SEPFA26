@@ -78,6 +78,15 @@ export interface CancelledOrderSource {
     refundAmount?: string;
     declaredDepositReturned?: string;
   } | null;
+  customerDisbursements?: Array<{
+    id: string;
+    type: string;
+    amount: string;
+    status: string;
+    eligibleAt?: string | Date;
+    paidAt?: string | Date | null;
+    receiptUrl?: string | null;
+  }> | null;
 }
 
 export default function CancelledOrderInfo({ order }: { order: CancelledOrderSource }) {
@@ -149,6 +158,34 @@ export default function CancelledOrderInfo({ order }: { order: CancelledOrderSou
             </div>
             {kept > 0 && (
               <span className="text-[11px] text-[#8B86A4]">Phí lấy cây được chuyển cho vườn sau 3 ngày đối soát.</span>
+            )}
+            {order.customerDisbursements && order.customerDisbursements.length > 0 && (
+              <div className="rounded-xl bg-[#F0FDF4] border border-[#BBF7D0] p-2.5 flex flex-col gap-1.5 mt-1">
+                <span className="font-bold text-[11px] text-[#166534]">Trạng thái chuyển tiền hoàn cho khách</span>
+                {order.customerDisbursements.map((d) => {
+                  const isPaid = d.status === 'PAID';
+                  const typeLabel =
+                    d.type === 'DECLARED_RETURN'
+                      ? 'Tiền khai giá'
+                      : d.type === 'COMPENSATION'
+                      ? 'Tiền bồi thường'
+                      : d.type === 'OVERPAY_RETURN'
+                      ? 'Tiền chuyển dư'
+                      : 'Tiền hoàn đơn';
+                  return (
+                    <div key={d.id} className="flex items-center justify-between gap-2 border-t border-[#DCFCE7] pt-1 text-[11px]">
+                      <span className="text-[#1E293B] font-medium">
+                        {typeLabel}: <b className="text-[#059669]">{vnd(num(d.amount))}</b>
+                      </span>
+                      <span className={isPaid ? 'text-[#059669] font-medium' : 'text-[#D97706] font-medium'}>
+                        {isPaid
+                          ? `Đã chuyển lúc ${d.paidAt ? dayjs(d.paidAt).format('HH:mm DD/MM/YYYY') : ''}`
+                          : 'Đang chờ chuyển'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
         ) : (
